@@ -62,6 +62,13 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         return numbers
     }
 
+    public func apps() async throws -> [ASCApp] {
+        let query = [URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "fields[apps]", value: "name,bundleId")]
+        return try await pages(Wire.Apps.self, path: "/v1/apps", query: query).flatMap { page in
+            page.data.map { ASCApp(id: $0.id, name: $0.attributes.name, bundleID: $0.attributes.bundleId) }
+        }
+    }
+
     public func betaGroups(appID: String) async throws -> [ASCBetaGroup] {
         let query = [URLQueryItem(name: "filter[app]", value: appID), URLQueryItem(name: "limit", value: "200")]
         return try await pages(Wire.BetaGroups.self, path: "/v1/betaGroups", query: query).flatMap { page in
@@ -243,6 +250,20 @@ private enum Wire {
     struct BuildRuns: Decodable, Paged {
         struct Item: Decodable {
             struct Attributes: Decodable { var number: Int }
+            var attributes: Attributes
+        }
+        var data: [Item]
+        var links: Links?
+        var nextURL: String? { links?.next }
+    }
+
+    struct Apps: Decodable, Paged {
+        struct Item: Decodable {
+            struct Attributes: Decodable {
+                var name: String
+                var bundleId: String
+            }
+            var id: String
             var attributes: Attributes
         }
         var data: [Item]

@@ -24,6 +24,7 @@ public struct HangarServerApp: Sendable {
     public let logStore: LogStore
     public let artifactStore: ArtifactStore
     public let sweeper: RetentionSweeper
+    let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
     /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect.
@@ -38,6 +39,7 @@ public struct HangarServerApp: Sendable {
         self.database = database
         self.clock = clock
         self.now = now
+        self.appStoreConnectFactory = appStoreConnectFactory
         apps = AppRepository(database: database)
         builds = BuildRepository(database: database)
         machines = MachineRepository(database: database)
@@ -68,17 +70,35 @@ public struct HangarServerApp: Sendable {
             configuration: .init(address: .hostname(configuration.host, port: configuration.port), serverName: "hangar"))
     }
 
-    static func defaultNumberSources(
-        variables: VariableRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
-    ) throws -> [any KnownNumberSource] {
+    /// The App Store Connect credentials from the `HANGAR_ASC_*` globals, nil unless all three are set. The key-path
+    /// variable holds the `.p8` contents; the worker writes them to a file for xcodebuild.
+    static func appStoreConnectCredentials(variables: VariableRepository) throws -> ASCCredentials? {
         func global(_ name: String) throws -> String? {
             try variables.value(global: name).flatMap { $0.isEmpty ? nil : $0 }
         }
-        // The key-path variable holds the `.p8` contents; the worker writes them to a file for xcodebuild.
         guard let keyID = try global("HANGAR_ASC_KEY_ID"), let issuerID = try global("HANGAR_ASC_ISSUER_ID"),
             let privateKey = try global("HANGAR_ASC_KEY_PATH")
-        else { throw BuildNumberError.appStoreConnectNotConfigured }
-        let client = factory(ASCCredentials(keyID: keyID, issuerID: issuerID, privateKeyPEM: privateKey))
+        else { return nil }
+        return ASCCredentials(keyID: keyID, issuerID: issuerID, privateKeyPEM: privateKey)
+    }
+
+    /// A client for the configured key, nil when it is not configured. Reads the globals on every call.
+    func appStoreConnectClient() throws -> (any AppStoreConnectClient)? {
+        try Self.appStoreConnectClient(variables: variables, factory: appStoreConnectFactory)
+    }
+
+    static func appStoreConnectClient(
+        variables: VariableRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
+    ) throws -> (any AppStoreConnectClient)? {
+        try appStoreConnectCredentials(variables: variables).map(factory)
+    }
+
+    static func defaultNumberSources(
+        variables: VariableRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
+    ) throws -> [any KnownNumberSource] {
+        guard let client = try appStoreConnectClient(variables: variables, factory: factory) else {
+            throw BuildNumberError.appStoreConnectNotConfigured
+        }
         return [AppStoreConnectBuildsSource(client: client), XcodeCloudRunsSource(client: client), AppcastSource()]
     }
 }

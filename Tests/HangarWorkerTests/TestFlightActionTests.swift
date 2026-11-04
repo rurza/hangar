@@ -43,6 +43,8 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
 
+    func apps() async throws -> [ASCApp] { [] }
+
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] {
         state.withLock { $0.calls.append(.betaGroups) }
         return groups

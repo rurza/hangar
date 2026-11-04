@@ -31,6 +31,18 @@ public struct ASCBuild: Sendable, Equatable {
     }
 }
 
+public struct ASCApp: Sendable, Equatable, Codable {
+    public var id: String
+    public var name: String
+    public var bundleID: String
+
+    public init(id: String, name: String, bundleID: String) {
+        self.id = id
+        self.name = name
+        self.bundleID = bundleID
+    }
+}
+
 public struct ASCBetaGroup: Sendable, Equatable {
     public var id: String
     public var name: String

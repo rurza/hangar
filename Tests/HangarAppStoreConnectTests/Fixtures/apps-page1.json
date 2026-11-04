@@ -1,0 +1,4 @@
+{"data":[
+ {"type":"apps","id":"a2","attributes":{"name":"Zeta","bundleId":"com.acme.zeta"}},
+ {"type":"apps","id":"a1","attributes":{"name":"Alpha","bundleId":"com.acme.alpha"}}
+],"links":{"next":"https://api.appstoreconnect.apple.com/v1/apps?cursor=AQ&limit=200"}}

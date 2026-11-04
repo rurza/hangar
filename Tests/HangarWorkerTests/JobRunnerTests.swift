@@ -19,6 +19,7 @@ private struct ProcessedBuildClient: AppStoreConnectClient {
         return [ASCBuild(id: buildID, version: version ?? "", processingState: "VALID", platform: "IOS", uploadedDate: nil)]
     }
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
+    func apps() async throws -> [ASCApp] { [] }
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {}

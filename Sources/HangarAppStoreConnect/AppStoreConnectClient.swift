@@ -5,6 +5,8 @@ public protocol AppStoreConnectClient: Sendable {
     func builds(appID: String, version: String?) async throws -> [ASCBuild]
     /// Build run numbers of every Xcode Cloud product of the app (read-only).
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int]
+    /// Every app of the team (read-only); pages through `links.next`.
+    func apps() async throws -> [ASCApp]
     func betaGroups(appID: String) async throws -> [ASCBetaGroup]
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws
     /// Creates the localization, or updates the existing one for `locale`.

@@ -48,6 +48,24 @@ struct LiveClientDecodingTests {
         #expect(requests[1].url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/builds?cursor=AQ&limit=200")
     }
 
+    @Test func appsDecodesAcrossPages() async throws {
+        let transport = StubTransport(responses: [try respond("apps-page1"), try respond("apps-page2")])
+        let apps = try await makeClient(transport).apps()
+
+        #expect(apps == [
+            ASCApp(id: "a2", name: "Zeta", bundleID: "com.acme.zeta"),
+            ASCApp(id: "a1", name: "Alpha", bundleID: "com.acme.alpha"),
+            ASCApp(id: "a3", name: "Mid", bundleID: "com.acme.mid"),
+        ])
+        let requests = transport.requests
+        let first = try #require(requests[0].url)
+        let items = URLComponents(url: first, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(first.path == "/v1/apps")
+        #expect(items.contains(URLQueryItem(name: "limit", value: "200")))
+        #expect(items.contains(URLQueryItem(name: "fields[apps]", value: "name,bundleId")))
+        #expect(requests[1].url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/apps?cursor=AQ&limit=200")
+    }
+
     @Test func buildsOmitsVersionFilterWhenNil() async throws {
         let transport = StubTransport(responses: [try respond("builds-page2")])
         _ = try await makeClient(transport).builds(appID: "app1", version: nil)

@@ -11,6 +11,7 @@ enum APIErrorMapping {
     ]
     static let conflictCodes: Set<String> = [
         "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",
+        "asc_not_configured",
     ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {

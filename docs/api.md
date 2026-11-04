@@ -39,6 +39,8 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /machines` | | `200` `[Machine]` with their latest reports; never tokens |
 | `POST /machines` | `CreateMachineRequest` | `201` `CreateMachineResponse` `{machine, token}` |
 | `DELETE /machines/{id}` | | `204` |
+| `GET /settings` | | `200` `SettingsStatus` `{version, appStoreConnect: {keyID, issuerID}?, githubTokenSet}`; `appStoreConnect` is absent unless all three `HANGAR_ASC_*` globals are set; the key and the token are never returned |
+| `GET /asc/apps` | | `200` `[ASCAppSummary]` `{id, name, bundleID, registered}` sorted by name, the team's apps from App Store Connect; `registered` is true when a Hangar app already uses that ID; `409` `asc_not_configured` without the key |
 | `GET /events` | | SSE stream, see below |
 
 Numbers and deploys ask App Store Connect and Xcode Cloud for the highest known build number. They need the global variables `HANGAR_ASC_KEY_ID`, `HANGAR_ASC_ISSUER_ID` and `HANGAR_ASC_KEY_PATH` (the `.p8` contents); the server reads them on every request.
@@ -68,7 +70,7 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | `400` | `invalid_request` (malformed body or query), `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
 | `401` | `unauthorized` (worker routes) |
 | `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found` |
-| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call) |
+| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured` |
 | `502` | `app_store_connect_not_configured`, `build_number_source_unavailable` (the message names the source), `build_number_not_integer`, `source_host_error`, `upstream_unavailable` |
 | `500` | `internal_error` |
 

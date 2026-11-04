@@ -159,3 +159,44 @@ public struct HealthResponse: Codable, Equatable, Sendable {
         self.version = version
     }
 }
+
+/// What the Settings page shows: which credentials exist, never their secret values.
+public struct SettingsStatus: Codable, Equatable, Sendable {
+    public var version: String
+    /// Nil unless the key ID, issuer ID and key are all set.
+    public var appStoreConnect: ASCKeyStatus?
+    public var githubTokenSet: Bool
+
+    public init(version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool) {
+        self.version = version
+        self.appStoreConnect = appStoreConnect
+        self.githubTokenSet = githubTokenSet
+    }
+}
+
+/// The identifiers of the configured App Store Connect key; the key itself is never returned.
+public struct ASCKeyStatus: Codable, Equatable, Sendable {
+    public var keyID: String
+    public var issuerID: String
+
+    public init(keyID: String, issuerID: String) {
+        self.keyID = keyID
+        self.issuerID = issuerID
+    }
+}
+
+/// An App Store Connect app, for the "Add app" picker.
+public struct ASCAppSummary: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var bundleID: String
+    /// An app with this App Store Connect ID already exists in Hangar.
+    public var registered: Bool
+
+    public init(id: String, name: String, bundleID: String, registered: Bool) {
+        self.id = id
+        self.name = name
+        self.bundleID = bundleID
+        self.registered = registered
+    }
+}
