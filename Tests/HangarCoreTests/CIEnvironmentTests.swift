@@ -143,7 +143,26 @@ import Testing
         #expect(merged.env["FOO"] == "bar")
         #expect(merged.warnings.count == 2)
         #expect(merged.warnings[0].contains("CI_BUILD_NUMBER"))
+        #expect(merged.warnings[0].contains("names starting with CI_ are reserved"))
         #expect(!merged.warnings.joined().contains("999-secret"))
+    }
+
+    @Test func reservedNamesAreRefusedWithTheReason() {
+        // HOME is reserved even when the worker's environment has none to pass through.
+        let ci = make(processEnvironment: [:])
+        #expect(ci["HOME"] == nil)
+        let merged = CIEnvironment.merge(
+            ci: ci,
+            entries: ["PATH", "HOME", "DEVELOPER_DIR", "USER", "LOGNAME", "TMPDIR", "SHELL", "GIT_TERMINAL_PROMPT"].map {
+                EnvEntry(name: $0, value: "x")
+            },
+            secretsDirectory: "/j/secrets")
+        #expect(merged.env["HOME"] == nil)
+        #expect(merged.env["PATH"] == ci["PATH"])
+        #expect(merged.warnings.count == 8)
+        #expect(merged.warnings[0] == "Ignoring variable PATH: Hangar sets PATH for every job "
+            + "(reserved: CI_*, PATH, HOME, DEVELOPER_DIR, USER, LOGNAME, TMPDIR and SHELL)")
+        #expect(!merged.warnings.joined().contains("names starting with CI_"))
     }
 
     @Test func asFileEntryBecomesPath() {

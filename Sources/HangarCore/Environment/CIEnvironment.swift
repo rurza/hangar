@@ -35,6 +35,11 @@ public struct CIEnvironment: Sendable {
     /// like xcodegen, brew, swift and git fail without a user name, a temp directory or a UTF-8 locale.
     static let passthroughNames = ["HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL", "LC_CTYPE"]
 
+    /// Names Hangar sets for every job, which variables cannot replace, besides every `CI_` name. The web UI's
+    /// variables editor (`variables.js`) refuses the same names.
+    public static let reservedNames: Set<String> = ["PATH", "HOME", "DEVELOPER_DIR", "USER", "LOGNAME", "TMPDIR", "SHELL"]
+    static let reservedSummary = "CI_*, PATH, HOME, DEVELOPER_DIR, USER, LOGNAME, TMPDIR and SHELL"
+
     /// Locale variables an app variable may override; everything else in the job environment is fixed.
     static let overridableNames: Set<String> = ["LANG", "LC_ALL", "LC_CTYPE"]
 
@@ -100,13 +105,20 @@ public struct CIEnvironment: Sendable {
         return additions
     }
 
-    /// User entries never override the CI set (only `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden): a name in `ci`, or starting with `CI_`, is dropped with a warning.
+    /// User entries never override the CI set (only `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden): a name in `ci`,
+    /// in `reservedNames` or starting with `CI_` is dropped with a warning that says why.
     /// As-file entries become `<secretsDirectory>/<NAME>`, which is the env value; the stored value is the file body.
     public static func merge(ci: [String: String], entries: [EnvEntry], secretsDirectory: String) -> MergedEnvironment {
         var merged = MergedEnvironment(env: ci, filesToWrite: [], warnings: [])
         for entry in entries {
-            if (ci[entry.name] != nil && !overridableNames.contains(entry.name)) || entry.name.hasPrefix("CI_") {
-                merged.warnings.append("Ignoring variable \(entry.name): names starting with CI_ are reserved by Hangar")
+            if entry.name.hasPrefix("CI_") {
+                merged.warnings.append(
+                    "Ignoring variable \(entry.name): names starting with CI_ are reserved by Hangar (reserved: \(reservedSummary))")
+                continue
+            }
+            if reservedNames.contains(entry.name) || (ci[entry.name] != nil && !overridableNames.contains(entry.name)) {
+                merged.warnings.append(
+                    "Ignoring variable \(entry.name): Hangar sets \(entry.name) for every job (reserved: \(reservedSummary))")
                 continue
             }
             if entry.asFile {

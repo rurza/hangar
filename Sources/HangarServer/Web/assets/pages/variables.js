@@ -9,6 +9,9 @@ const NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** Global variables that Settings sets through its own cards; the global editor does not list them. */
 export const RESERVED_GLOBAL_NAMES = ['HANGAR_ASC_KEY_ID', 'HANGAR_ASC_ISSUER_ID', 'HANGAR_ASC_KEY_PATH', 'HANGAR_GITHUB_TOKEN'];
 
+/** Names Hangar sets for every job; the worker ignores variables with them (CIEnvironment.reservedNames). */
+const JOB_RESERVED_NAMES = ['PATH', 'HOME', 'DEVELOPER_DIR', 'USER', 'LOGNAME', 'TMPDIR', 'SHELL'];
+
 /** Names only Settings may set: the App Store Connect key is always global. */
 function settingsOnly(name, isGlobal) {
   if (/^HANGAR_ASC_/.test(name)) return true;
@@ -209,6 +212,12 @@ export function variablesEditor({ scope, signal }) {
     if (name === '') return 'Enter a name.';
     if (!NAME_PATTERN.test(name)) {
       return `“${name}” is not a valid name. Use letters, digits and underscores, and do not start with a digit.`;
+    }
+    if (name.startsWith('CI_')) {
+      return 'Names starting with CI_ are reserved: Hangar sets them for every job, as Xcode Cloud does.';
+    }
+    if (JOB_RESERVED_NAMES.includes(name)) {
+      return `${name} is reserved: Hangar sets it for every job (also ${JOB_RESERVED_NAMES.filter((n) => n !== name).join(', ')}).`;
     }
     if (settingsOnly(name, isGlobal)) return `${name} is set in Settings.`;
     if (variables.some((variable) => variable.name === name)) {
