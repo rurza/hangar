@@ -4,9 +4,12 @@
 #
 # Usage: install-worker.sh --server <url> --token <token>
 #
-# The token can instead come from the HANGAR_WORKER_TOKEN environment variable, which keeps it out of shell
-# history and the process list:
-#   HANGAR_WORKER_TOKEN=<token> install-worker.sh --server <url>
+# Keep the token out of the process list and shell history by passing it in the environment:
+#   read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
+#   install-worker.sh --server <url>
+# When neither --token nor HANGAR_WORKER_TOKEN is set and stdin is a terminal, the script asks for it (input hidden).
+# --token works too, but then the token is visible in `ps` for as long as this script runs (the whole release
+# build) and stays in shell history.
 set -euo pipefail
 
 usage() { echo "usage: $0 --server <url> --token <token>   (or set HANGAR_WORKER_TOKEN)" >&2; exit 2; }
@@ -20,6 +23,10 @@ while [ $# -gt 0 ]; do
         *) usage ;;
     esac
 done
+if [ -z "$TOKEN" ] && [ -t 0 ]; then
+    read -rs -p "Worker token: " TOKEN
+    echo
+fi
 [ -n "$SERVER" ] && [ -n "$TOKEN" ] || usage
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -86,6 +86,7 @@ public actor WorkerLoop {
                 jobs.cancel(response.cancelJobIDs)
                 await sleep(Self.heartbeatInterval)
             } catch {
+                if Task.isCancelled { break }
                 let delay = backoff.next()
                 logger.error("heartbeat failed: \(error); retrying in \(delay)")
                 await sleep(delay)

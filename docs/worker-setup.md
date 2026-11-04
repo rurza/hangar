@@ -28,14 +28,12 @@ Do these steps on every build Mac.
    hangar machines add <name>
    ```
    It prints the machine's token once.
-7. **Install the worker**, as `hangar`, from a checkout of this repository:
+7. **Install the worker**, as `hangar`, from a checkout of this repository. Enter the token without echo, so it reaches neither shell history nor the process list:
    ```sh
-   scripts/worker/install-worker.sh --server http://<tailnet-host>:8787 --token <token>
+   read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
+   scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
    ```
-   To keep the token out of shell history, pass it in the environment instead:
-   ```sh
-   HANGAR_WORKER_TOKEN=<token> scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
-   ```
+   (If the variable is unset and you are at a terminal, the script prompts for the token itself.) `--token <token>` also works, but the token is then visible in `ps` for the whole release build and stays in your shell history.
    The script builds in release mode, installs `hangar-worker` into `/usr/local/bin` (using `sudo` only if needed), runs `hangar-worker setup` (the configuration is written to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600; the token is never printed), renders `~/Library/LaunchAgents/app.hangar.worker.plist` and loads it with `launchctl bootstrap gui/$(id -u)`. Run it again to upgrade. Logs go to `~/Library/Logs/Hangar/worker.log`.
 8. **Run the doctor** as `hangar`:
    ```sh

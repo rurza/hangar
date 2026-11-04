@@ -38,16 +38,18 @@ private final class ManualClock: Clock, Sendable {
         let id = UUID()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                let cancelled = state.withLock { state -> Bool in
-                    if Task.isCancelled { return true }
-                    if deadline <= state.now { return false }
+                enum Decision { case cancelled, immediate, registered }
+                let decision = state.withLock { state -> Decision in
+                    if Task.isCancelled { return .cancelled }
+                    if deadline <= state.now { return .immediate }
                     state.requested.append(state.now.duration(to: deadline))
                     state.sleepers[id] = Sleeper(deadline: deadline, continuation: continuation)
-                    return false
+                    return .registered
                 }
-                let registered = state.withLock { $0.sleepers[id] != nil }
-                if cancelled { continuation.resume(throwing: CancellationError()) } else if !registered {
-                    continuation.resume()
+                switch decision {
+                case .cancelled: continuation.resume(throwing: CancellationError())
+                case .immediate: continuation.resume()
+                case .registered: break  // advance(by:) or onCancel resumes it, whichever removes it first.
                 }
             }
         } onCancel: {
