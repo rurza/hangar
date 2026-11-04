@@ -46,4 +46,36 @@ import Testing
         let masker = SecretMasker(secrets: [])
         #expect(masker.mask("nothing to hide") == "nothing to hide")
     }
+
+    @Test func masksSecretWithTrailingNewline() {
+        for secret in ["abcdefgh\n", "abcdefgh\r\n"] {
+            #expect(SecretMasker(secrets: [secret]).mask("tok abcdefgh end") == "tok [masked] end")
+        }
+    }
+
+    @Test func masksUnreservedAndLowercasePercentForms() {
+        let masker = SecretMasker(secrets: ["p@ss-word/x y"])
+        #expect(masker.mask("a=p%40ss-word%2Fx%20y") == "a=[masked]")
+        #expect(masker.mask("a=p%40ss%2dword%2fx%20y") == "a=[masked]")
+        #expect(masker.mask("a=p%40ss-word%2Fx+y") == "a=[masked]")
+    }
+
+    @Test func masksSecretEmbeddedInBasicAuth() {
+        let masker = SecretMasker(secrets: ["tok3n-value"])
+        let header = "Authorization: Basic dXNlcjp0b2szbi12YWx1ZQ=="
+        #expect(masker.mask(header).contains("[masked]"))
+        #expect(!masker.mask("Basic dXNlcjp0b2szbi12YWx1ZQ==").contains("0b2szbi12YWx1"))
+    }
+
+    @Test func masksEmbeddedBase64AtEveryOffsetAndUrlSafe() {
+        let masker = SecretMasker(secrets: ["tok3n-value?>"])
+        for prefix in ["", "a:", "ab:", "abc:"] {
+            let b64 = Data((prefix + "tok3n-value?>").utf8).base64EncodedString()
+            #expect(masker.mask(b64).contains("tok3n") == false)
+            #expect(masker.mask(b64) != b64)
+            let url = b64.replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+                .replacingOccurrences(of: "=", with: "")
+            #expect(masker.mask(url) != url)
+        }
+    }
 }
