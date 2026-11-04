@@ -1,0 +1,324 @@
+import Clocks
+import Foundation
+import HangarCore
+import Hummingbird
+import HummingbirdTesting
+import Testing
+
+@testable import HangarServer
+
+/// The routes worker machines call, under `/api/v1/worker`.
+@Suite(.timeLimit(.minutes(1))) struct WorkerAPITests {
+    static let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    static func report(running: [UUID] = []) -> MachineReport {
+        MachineReport(
+            macOSVersion: "26.1", xcodes: [InstalledXcode(version: "27.2", build: "27C5", path: "/Applications/Xcode.app")],
+            chip: "Apple M4 Pro", performanceCores: 10, memoryGB: 64, freeDiskGB: 400, onACPower: true,
+            tools: ["brew": "4.6.0"], canSignWithoutPrompt: true, runningJobIDs: running)
+    }
+
+    static func auth(_ token: String) -> HTTPFields { [.authorization: "Bearer \(token)"] }
+
+    /// A deployed two-job build whose jobs are both assigned to the machine `studio`.
+    struct Setup {
+        let fixture: APIFixture
+        let machine: Machine
+        let token: String
+        let build: Build
+
+        init(clock: any Clock<Duration> = ContinuousClock(), assign: Bool = true) async throws {
+            fixture = try APIFixture(clock: clock, now: { WorkerAPITests.t0 })
+            try fixture.createApp()
+            (machine, token) = try fixture.server.machines.create(name: "studio")
+            build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: "testflight", ref: "main"))
+            if assign {
+                for job in build.jobs { #expect(try fixture.server.builds.assign(jobID: job.id, to: machine.id, at: WorkerAPITests.t0)) }
+            }
+        }
+
+        var auth: HTTPFields { WorkerAPITests.auth(token) }
+    }
+
+    @Test func rejectsMissingOrWrongToken() async throws {
+        let setup = try await Setup()
+        let heartbeat = try body(HeartbeatRequest(report: Self.report()))
+        try await setup.fixture.test { client in
+            let attempts: [HTTPFields] = [[:], Self.auth("wrong"), [.authorization: "Basic \(setup.token)"], Self.auth("")]
+            for headers in attempts {
+                try await client.execute(uri: "/api/v1/worker/heartbeat", method: .post, headers: headers, body: heartbeat) {
+                    response throws in
+                    #expect(response.status == .unauthorized)
+                    #expect(try decode(APIError.self, response).code == "unauthorized")
+                }
+                try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: headers) { response in
+                    #expect(response.status == .unauthorized)
+                }
+            }
+            try await client.execute(uri: "/api/v1/worker/heartbeat", method: .post, headers: setup.auth, body: heartbeat) { response in
+                #expect(response.status == .ok)
+            }
+            // The public API needs no machine token.
+            try await client.execute(uri: "/api/v1/builds/\(setup.build.id.uuidString)", method: .get) { response in
+                #expect(response.status == .ok)
+            }
+        }
+    }
+
+    @Test func nextReturns204WhenNothingAssigned() async throws {
+        let setup = try await Setup(assign: false)
+        try await setup.fixture.test { client in
+            try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) { response in
+                #expect(response.status == .noContent)
+                #expect(response.body.readableBytes == 0)
+            }
+        }
+    }
+
+    @Test func nextReturnsAssignmentWithResolvedSecrets() async throws {
+        let setup = try await Setup()
+        let server = setup.fixture.server
+        let app = try #require(try server.apps.find(slugOrID: "legilo"))
+        try server.variables.set(scope: .global, name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-global", isSecret: true))
+        try server.variables.set(scope: .app(app.id), name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-app", isSecret: true))
+        try server.variables.set(scope: .global, name: "TEAM", input: VariableInput(value: "YL78V8PY6H"))
+        let (_, otherToken) = try server.machines.create(name: "laptop")
+        try await setup.fixture.test { client in
+            let assignment = try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) {
+                #expect($0.status == .ok)
+                return try decode(JobAssignment.self, $0)
+            }
+            #expect(setup.build.jobs.map(\.id).contains(assignment.job.id))
+            #expect(assignment.job.status == .assigned)
+            #expect(assignment.job.machineID == setup.machine.id)
+            // Compared by ID: a date's ISO 8601 round trip need not give back the identical Double.
+            #expect(assignment.app.id == app.id)
+            #expect(assignment.workflow == (try server.builds.workflow(buildID: setup.build.id)))
+            #expect(assignment.buildNumber == setup.build.buildNumber)
+            #expect(assignment.commit == setup.build.commit)
+            #expect(assignment.ref == "main")
+            #expect(
+                assignment.environment == [
+                    EnvEntry(name: "HANGAR_GITHUB_TOKEN", value: "ghp-app", isSecret: true),
+                    EnvEntry(name: "TEAM", value: "YL78V8PY6H"),
+                ])
+            // Another machine gets nothing: the secrets go only to the machine the job is assigned to.
+            try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: Self.auth(otherToken)) {
+                response in
+                #expect(response.status == .noContent)
+                #expect(!String(buffer: response.body).contains("ghp-app"))
+            }
+        }
+    }
+
+    @Test func nextLongPollWakesOnAssignmentAndTimesOutOnTheClock() async throws {
+        let clock = TestClock()
+        let setup = try await Setup(clock: clock, assign: false)
+        let server = setup.fixture.server
+        let job = setup.build.jobs[0]
+        try await setup.fixture.test { client in
+            async let woken = client.execute(uri: "/api/v1/worker/jobs/next?wait=60", method: .get, headers: setup.auth) { $0 }
+            try await setup.fixture.waitForSubscriber()
+            // What the scheduler does: assign, then publish the job.
+            #expect(try server.builds.assign(jobID: job.id, to: setup.machine.id, at: Self.t0))
+            server.events.publish(.server(.job(try #require(try server.builds.job(id: job.id)))))
+            let response = try await woken
+            #expect(response.status == .ok)
+            #expect(try decode(JobAssignment.self, response).job.id == job.id)
+
+            // Nothing for this machine: answered with 204 once the injected clock passes the deadline.
+            let (_, otherToken) = try server.machines.create(name: "laptop")
+            let status = try await withThrowingTaskGroup(of: HTTPResponse.Status?.self) { group in
+                group.addTask {
+                    try await client.execute(uri: "/api/v1/worker/jobs/next?wait=5", method: .get, headers: Self.auth(otherToken)) {
+                        $0.status
+                    }
+                }
+                group.addTask {
+                    // The handler may start sleeping after any one advance; keep advancing until it answers.
+                    while !Task.isCancelled {
+                        await clock.advance(by: .seconds(1))
+                        try? await Task.sleep(for: .milliseconds(2))
+                    }
+                    return nil
+                }
+                defer { group.cancelAll() }
+                return try await group.next() ?? nil
+            }
+            #expect(status == .noContent)
+        }
+    }
+
+    @Test func anotherMachineCannotStartTheJob() async throws {
+        let setup = try await Setup()
+        let (_, otherToken) = try setup.fixture.server.machines.create(name: "laptop")
+        let job = setup.build.jobs[0]
+        let other = Self.auth(otherToken)
+        try await setup.fixture.test { client in
+            try await client.execute(uri: "/api/v1/worker/jobs/\(job.id.uuidString)/start", method: .post, headers: other) {
+                response throws in
+                #expect(response.status == .conflict)
+                #expect(try decode(APIError.self, response).code == "job_not_assigned_to_machine")
+            }
+            let log = try body(LogBatch(entries: [LogEntry(t: Self.t0, step: "checkout", line: "x")]))
+            try await client.execute(uri: "/api/v1/worker/jobs/\(job.id.uuidString)/log", method: .post, headers: other, body: log) {
+                response in
+                #expect(response.status == .conflict)
+            }
+            try await client.execute(
+                uri: "/api/v1/worker/jobs/\(job.id.uuidString)/finish", method: .post, headers: other,
+                body: try body(JobResult(status: .failed))
+            ) { response in #expect(response.status == .conflict) }
+            try await client.execute(uri: "/api/v1/worker/jobs/\(UUID().uuidString)/start", method: .post, headers: other) {
+                response throws in
+                #expect(response.status == .notFound)
+                #expect(try decode(APIError.self, response).code == "job_not_found")
+            }
+            #expect(try setup.fixture.server.builds.job(id: job.id)?.status == .assigned)
+
+            // The owner can start it once.
+            try await client.execute(uri: "/api/v1/worker/jobs/\(job.id.uuidString)/start", method: .post, headers: setup.auth) {
+                response throws in
+                #expect(response.status == .ok)
+                #expect(try decode(Job.self, response).status == .running)
+            }
+            try await client.execute(uri: "/api/v1/worker/jobs/\(job.id.uuidString)/start", method: .post, headers: setup.auth) {
+                response throws in
+                #expect(response.status == .conflict)
+                #expect(try decode(APIError.self, response).code == "job_state_conflict")
+            }
+        }
+    }
+
+    @Test func lifecycleStartStepsLogFinishUpdatesBuild() async throws {
+        let setup = try await Setup()
+        let server = setup.fixture.server
+        let updates = server.events.subscribe()
+        // Larger than Hummingbird's default 2 MB upload limit: the body is streamed, never collected.
+        let archive = ByteBuffer(repeating: 0x5A, count: 3 * 1024 * 1024)
+        try await setup.fixture.test { client in
+            for job in setup.build.jobs {
+                let path = "/api/v1/worker/jobs/\(job.id.uuidString)"
+                // Steps, logs and artifacts are refused until the job runs.
+                try await client.execute(
+                    uri: "\(path)/steps", method: .post, headers: setup.auth,
+                    body: try body(StepUpdate(name: StepName.checkout, status: .running, at: Self.t0))
+                ) { response in #expect(response.status == .conflict) }
+
+                try await client.execute(uri: "\(path)/start", method: .post, headers: setup.auth) { response in
+                    #expect(response.status == .ok)
+                }
+                try await client.execute(
+                    uri: "\(path)/steps", method: .post, headers: setup.auth,
+                    body: try body(StepUpdate(name: StepName.checkout, status: .succeeded, at: Self.t0))
+                ) { response throws in
+                    #expect(response.status == .ok)
+                    #expect(try decode(Job.self, response).steps == [StepRecord(name: "checkout", status: .succeeded, finishedAt: Self.t0)])
+                }
+                let entries = [LogEntry(t: Self.t0, step: "checkout", line: "Cloning \(job.action.scheme)")]
+                try await client.execute(
+                    uri: "\(path)/log", method: .post, headers: setup.auth, body: try body(LogBatch(entries: entries))
+                ) { response in #expect(response.status == .noContent) }
+                #expect(try await server.logStore.read(jobID: job.id, step: nil, tail: nil) == entries)
+
+                try await client.execute(uri: "\(path)/artifacts/Legilo.xcarchive.zip", method: .post, headers: setup.auth, body: archive) {
+                    response throws in
+                    #expect(response.status == .created)
+                    #expect(try decode(ArtifactInfo.self, response) == ArtifactInfo(name: "Legilo.xcarchive.zip", sizeBytes: archive.readableBytes))
+                }
+                try await client.execute(uri: "\(path)/artifacts/..", method: .post, headers: setup.auth, body: archive) { response in
+                    #expect(response.status == .badRequest)
+                }
+
+                try await client.execute(
+                    uri: "\(path)/finish", method: .post, headers: setup.auth, body: try body(JobResult(status: .running))
+                ) { response throws in
+                    #expect(response.status == .badRequest)
+                    #expect(try decode(APIError.self, response).code == "invalid_job_result")
+                }
+                try await client.execute(
+                    uri: "\(path)/finish", method: .post, headers: setup.auth,
+                    body: try body(JobResult(status: .succeeded, outputs: ["testflight.buildID": "abc"]))
+                ) { response throws in
+                    #expect(response.status == .ok)
+                    let finished = try decode(Job.self, response)
+                    #expect(finished.status == .succeeded)
+                    #expect(finished.startedAt == Self.t0)
+                    #expect(finished.finishedAt == Self.t0)
+                    #expect(finished.outputs == ["testflight.buildID": "abc"])
+                }
+                // A finished job takes no more finishes or uploads.
+                try await client.execute(
+                    uri: "\(path)/finish", method: .post, headers: setup.auth, body: try body(JobResult(status: .failed))
+                ) { response throws in
+                    #expect(response.status == .conflict)
+                    #expect(try decode(APIError.self, response).code == "job_state_conflict")
+                }
+                try await client.execute(uri: "\(path)/artifacts/late.zip", method: .post, headers: setup.auth, body: archive) { response in
+                    #expect(response.status == .conflict)
+                }
+            }
+
+            try await client.execute(uri: "/api/v1/builds/\(setup.build.id.uuidString)", method: .get) { response throws in
+                let build = try decode(Build.self, response)
+                #expect(build.status == .succeeded)
+                #expect(build.finishedAt != nil)
+            }
+            let job = setup.build.jobs[0]
+            try await client.execute(uri: "/api/v1/jobs/\(job.id.uuidString)/artifacts", method: .get) { response throws in
+                #expect(try decode([ArtifactInfo].self, response) == [ArtifactInfo(name: "Legilo.xcarchive.zip", sizeBytes: archive.readableBytes)])
+            }
+        }
+
+        // Every change was published: the log batch, the jobs, and the build reaching `succeeded`.
+        var logs = 0
+        var succeededBuild = false
+        for await event in updates {
+            switch event {
+            case .log: logs += 1
+            case .server(.build(let build)) where build.status == .succeeded: succeededBuild = true
+            default: break
+            }
+            if logs == 2 && succeededBuild { break }
+        }
+        #expect(logs == 2)
+    }
+
+    @Test func heartbeatReturnsCancelRequests() async throws {
+        let setup = try await Setup()
+        let server = setup.fixture.server
+        let (running, assigned) = (setup.build.jobs[0], setup.build.jobs[1])
+        let (_, otherToken) = try server.machines.create(name: "laptop")
+        try await setup.fixture.test { client in
+            try await client.execute(uri: "/api/v1/worker/jobs/\(running.id.uuidString)/start", method: .post, headers: setup.auth) {
+                response in
+                #expect(response.status == .ok)
+            }
+            func heartbeat(_ headers: HTTPFields, running: [UUID]) async throws -> [UUID] {
+                try await client.execute(
+                    uri: "/api/v1/worker/heartbeat", method: .post, headers: headers,
+                    body: try body(HeartbeatRequest(report: Self.report(running: running)))
+                ) {
+                    #expect($0.status == .ok)
+                    return try decode(HeartbeatResponse.self, $0).cancelJobIDs
+                }
+            }
+            #expect(try await heartbeat(setup.auth, running: [running.id]) == [])
+            let machine = try #require(try server.machines.find(nameOrID: "studio"))
+            #expect(machine.lastSeenAt == Self.t0)
+            #expect(machine.report == Self.report(running: [running.id]))
+
+            _ = try await server.buildService.cancel(buildID: setup.build.id)
+            // The running job (reported and in the DB) and the assigned one (in the DB only) are both to stop.
+            #expect(Set(try await heartbeat(setup.auth, running: [running.id])) == [running.id, assigned.id])
+            #expect(try await heartbeat(Self.auth(otherToken), running: []) == [])
+
+            // Once the worker reports the job cancelled, it is no longer handed out, even while the worker still lists it.
+            try await client.execute(
+                uri: "/api/v1/worker/jobs/\(running.id.uuidString)/finish", method: .post, headers: setup.auth,
+                body: try body(JobResult(status: .cancelled))
+            ) { response in #expect(response.status == .ok) }
+            #expect(try await heartbeat(setup.auth, running: [running.id]) == [assigned.id])
+        }
+    }
+}

@@ -9,7 +9,9 @@ enum APIErrorMapping {
         "not_found", "app_not_found", "build_not_found", "job_not_found", "machine_not_found", "workflow_not_found",
         "artifact_not_found", "ref_not_found",
     ]
-    static let conflictCodes: Set<String> = ["app_exists", "machine_exists", "bump_not_higher"]
+    static let conflictCodes: Set<String> = [
+        "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",
+    ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {
         switch error {
@@ -29,6 +31,7 @@ enum APIErrorMapping {
     }
 
     static func status(code: String) -> HTTPResponse.Status {
+        if code == "unauthorized" { return .unauthorized }
         if notFoundCodes.contains(code) { return .notFound }
         if conflictCodes.contains(code) { return .conflict }
         return .badRequest

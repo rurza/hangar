@@ -5,6 +5,8 @@ import Hummingbird
 /// Request context of every Hangar route: the shared JSON coders (ISO 8601 dates with milliseconds).
 public struct HangarRequestContext: RequestContext {
     public var coreContext: CoreRequestContextStorage
+    /// The authenticated worker machine; set by `MachineAuth` on the worker routes, nil on the public ones.
+    public var machine: Machine?
 
     public init(source: ApplicationRequestContextSource) { coreContext = .init(source: source) }
 
@@ -27,6 +29,7 @@ extension HangarServerApp {
         addBuildRoutes(to: api)
         addJobRoutes(to: api)
         addMachineRoutes(to: api)
+        addWorkerRoutes(to: api)
         api.get("events") { _, _ in eventsResponse() }
         return router
     }

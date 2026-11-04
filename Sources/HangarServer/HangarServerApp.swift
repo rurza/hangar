@@ -9,6 +9,8 @@ public struct HangarServerApp: Sendable {
     public let configuration: ServerConfiguration
     public let database: Database
     public let clock: any Clock<Duration>
+    /// The wall clock for stored timestamps (job start and finish, heartbeats); tests pass a fixed date.
+    public let now: @Sendable () -> Date
     public let apps: AppRepository
     public let builds: BuildRepository
     public let machines: MachineRepository
@@ -28,11 +30,13 @@ public struct HangarServerApp: Sendable {
         configuration: ServerConfiguration, database: Database,
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient,
         sourceHost: any SourceHost = GitHubSourceHost(), clock: any Clock<Duration> = ContinuousClock(),
-        numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil
+        numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil,
+        now: @escaping @Sendable () -> Date = Date.init
     ) throws {
         self.configuration = configuration
         self.database = database
         self.clock = clock
+        self.now = now
         apps = AppRepository(database: database)
         builds = BuildRepository(database: database)
         machines = MachineRepository(database: database)
@@ -45,7 +49,7 @@ public struct HangarServerApp: Sendable {
         events = EventBus()
         scheduler = SchedulerLoop(
             builds: builds, machines: machines, events: events,
-            config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock)
+            config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock, now: now)
         cancelRequests = CancelRequests()
         buildService = BuildService(
             apps: apps, builds: builds, machines: machines, variables: variables, numbers: numbers,

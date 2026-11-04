@@ -2,7 +2,7 @@
 
 The `hangar` CLI and the web UI talk to the server only through this API. Every route lives under `/api/v1` on the server's address (port 8787 by default). Bodies are JSON with camelCase keys; dates are ISO 8601 with milliseconds (`2026-11-04T09:30:00.123Z`). The types named below are the `HangarCore` models.
 
-**No endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine; afterwards only its hash is stored. Error messages name variables but never contain their values.
+**No public endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine; afterwards only its hash is stored. Error messages name variables but never contain their values.
 
 ## Routes
 
@@ -40,15 +40,32 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 
 Numbers and deploys ask App Store Connect and Xcode Cloud for the highest known build number. They need the global variables `HANGAR_ASC_KEY_ID`, `HANGAR_ASC_ISSUER_ID` and `HANGAR_ASC_KEY_PATH` (the `.p8` contents); the server reads them on every request.
 
+## Worker routes
+
+Worker machines call these routes under `/api/v1/worker`. Each needs `Authorization: Bearer <machine token>`; a missing or unknown token gets `401` `unauthorized`. A `{id}` job must be assigned to the calling machine, else `409` `job_not_assigned_to_machine`.
+
+| Method and path | Request | Response |
+| --- | --- | --- |
+| `POST /worker/heartbeat` | `HeartbeatRequest` | `200` `HeartbeatResponse`: the IDs of the machine's jobs a user asked to cancel |
+| `GET /worker/jobs/next?wait=` | `wait` in seconds, default 25, at most 60 | `200` `JobAssignment` for the oldest job assigned to the machine; `204` when none is assigned within `wait` |
+| `POST /worker/jobs/{id}/start` | | `200` `Job`, now `running`; the job must be `assigned` |
+| `POST /worker/jobs/{id}/steps` | `StepUpdate` | `200` `Job`; the job must be `running` |
+| `POST /worker/jobs/{id}/log` | `LogBatch` | `204`; the job must be `running` |
+| `POST /worker/jobs/{id}/artifacts/{name}` | the raw file, streamed | `201` `ArtifactInfo`; the job must be `running` |
+| `POST /worker/jobs/{id}/finish` | `JobResult` with `succeeded`, `failed` or `cancelled` | `200` `Job`; the job must be `assigned` or `running` |
+
+A `JobAssignment` carries the job's environment: the global and app variables with their values, an app variable replacing a global one of the same name. It is the only response that holds secret values, and it goes only to the machine the job is assigned to.
+
 ## Errors
 
 Every error is a JSON body `{"code": "...", "message": "..."}` with one of these statuses.
 
 | Status | Codes |
 | --- | --- |
-| `400` | `invalid_request` (malformed body or query), `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
+| `400` | `invalid_request` (malformed body or query), `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
+| `401` | `unauthorized` (worker routes) |
 | `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found` |
-| `409` | `app_exists`, `machine_exists`, `bump_not_higher` |
+| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call) |
 | `502` | `app_store_connect_not_configured`, `build_number_source_unavailable` (the message names the source), `build_number_not_integer`, `source_host_error`, `upstream_unavailable` |
 | `500` | `internal_error` |
 

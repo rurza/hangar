@@ -63,7 +63,7 @@ extension HangarServerApp {
         return build
     }
 
-    private func job(_ context: HangarRequestContext) throws -> Job {
+    func job(_ context: HangarRequestContext) throws -> Job {
         let key = try context.parameters.require("id")
         guard let id = UUID(uuidString: key), let job = try builds.job(id: id) else {
             throw APIError(code: "job_not_found", message: "No job '\(key)'.")

@@ -44,7 +44,8 @@ struct APIFixture {
         sources: [any KnownNumberSource]? = [StaticSource()], clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient = {
             RecordingASC(credentials: $0)
-        }
+        },
+        now: @escaping @Sendable () -> Date = Date.init
     ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
         let database = try HangarServer.Database(path: ":memory:")
@@ -52,7 +53,7 @@ struct APIFixture {
         server = try HangarServerApp(
             configuration: ServerConfiguration(host: "127.0.0.1", dataDirectory: directory.path), database: database,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
-            numberSources: sources.map { sources in { @Sendable in sources } })
+            numberSources: sources.map { sources in { @Sendable in sources } }, now: now)
     }
 
     func test(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {
