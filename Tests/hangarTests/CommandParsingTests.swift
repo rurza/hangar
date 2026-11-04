@@ -31,6 +31,34 @@ import Testing
                 .absoluteString == "http://other:1")
     }
 
+    @Test func workflowsSetSendsFileContents() async throws {
+        let yaml = "version: 1\nworkflows: {}\n"
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-\(UUID().uuidString).yml")
+        try yaml.write(to: file, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let stored = StoredWorkflowFile(yaml: yaml, workflows: WorkflowFile(version: 1, workflows: [:]), updatedAt: H.t0)
+        let harness = H(responses: [try H.json(stored)])
+        let result = await harness.run(["workflows", "legilo", "--set", file.path])
+
+        #expect(result.exitCode == 0)
+        let request = try #require(result.requests.first)
+        #expect(request.httpMethod == "PUT")
+        #expect(request.url?.path == "/api/v1/apps/legilo/workflow-file")
+        #expect(try result.bodies(PutWorkflowFileRequest.self).map(\.yaml) == [yaml])
+    }
+
+    @Test func workflowsClearDeletesAndShowsSource() async throws {
+        let cleared = await H(responses: [StubTransport.Response(status: 204)]).run(["workflows", "legilo", "--clear"])
+        #expect(cleared.exitCode == 0)
+        #expect(cleared.requests.first?.httpMethod == "DELETE")
+        #expect(cleared.requests.first?.url?.path == "/api/v1/apps/legilo/workflow-file")
+
+        let response = WorkflowsResponse(
+            commit: "abc1234def5678", workflows: WorkflowFile(version: 1, workflows: [:]), source: .hangar)
+        let shown = await H(responses: [try H.json(response)]).run(["workflows", "legilo"])
+        #expect(shown.out.contains("Source: defined in Hangar"))
+    }
+
     @Test func varSetReadsStdinWhenNoValue() async throws {
         let harness = H(responses: [StubTransport.Response(status: 204)], stdin: "s3cret-value\n")
         let result = await harness.run(["var", "set", "API_KEY", "--app", "legilo", "--secret"])

@@ -21,9 +21,12 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /variables` | | `200` `[VariableSummary]` (global scope) |
 | `PUT /variables/{name}` | `VariableInput` | `204` |
 | `DELETE /variables/{name}` | | `204` |
+| `GET /apps/{id}/workflow-file` | | `200` `StoredWorkflowFile` `{yaml, workflows, updatedAt}`; `404` `workflow_file_not_found` when the app has none |
+| `PUT /apps/{id}/workflow-file` | `PutWorkflowFileRequest` `{yaml}` | `200` `StoredWorkflowFile`; the YAML is parsed first and `400` `invalid_workflow_file` stores nothing (also above 64 KB) |
+| `DELETE /apps/{id}/workflow-file` | | `204`; the repository's `.hangar.yml` is used again |
 | `GET /apps/{id}/numbers` | | `200` `NumbersReport` |
 | `PUT /apps/{id}/numbers/next` | `BumpNumberRequest` | `200` `NumbersReport` |
-| `GET /apps/{id}/workflows?ref=` | `ref` required | `200` `WorkflowsResponse` `{commit, workflows: WorkflowFile}` |
+| `GET /apps/{id}/workflows?ref=` | `ref` required | `200` `WorkflowsResponse` `{commit, workflows: WorkflowFile, source}`; `source` is `hangar` (the stored workflow file wins) or `repository` (`.hangar.yml` at `commit`) |
 | `POST /builds` | `DeployRequest` | `202` `Build` with its queued jobs |
 | `GET /builds?app=&limit=` | `app` optional (slug or UUID); `limit` defaults to 50, at most 200 | `200` `[Build]`, newest first |
 | `GET /builds/{id}` | | `200` `Build` |

@@ -19,8 +19,8 @@ extension HangarServerApp {
             guard let ref = request.uri.queryParameters.get("ref"), !ref.isEmpty else {
                 throw APIError(code: "invalid_request", message: "The 'ref' query parameter is required.")
             }
-            let (commit, file) = try await buildService.workflows(app: app, ref: ref)
-            return try Response.json(WorkflowsResponse(commit: commit, workflows: file))
+            let (commit, file, source) = try await buildService.workflows(app: app, ref: ref)
+            return try Response.json(WorkflowsResponse(commit: commit, workflows: file, source: source))
         }
     }
 }

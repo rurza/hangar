@@ -7,7 +7,7 @@ import Hummingbird
 enum APIErrorMapping {
     static let notFoundCodes: Set<String> = [
         "not_found", "app_not_found", "build_not_found", "job_not_found", "machine_not_found", "workflow_not_found",
-        "artifact_not_found", "ref_not_found",
+        "artifact_not_found", "ref_not_found", "workflow_file_not_found",
     ]
     static let conflictCodes: Set<String> = [
         "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",

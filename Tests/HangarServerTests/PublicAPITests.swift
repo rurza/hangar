@@ -242,10 +242,11 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/apps/legilo/workflows?ref=main", method: .get) { response throws in
                 #expect(response.status == .ok)
-                struct Payload: Decodable { var commit: String; var workflows: WorkflowFile }
+                struct Payload: Decodable { var commit: String; var workflows: WorkflowFile; var source: WorkflowSource }
                 let payload = try decode(Payload.self, response)
                 #expect(payload.commit == "0123456789abcdef0123456789abcdef01234567")
                 #expect(payload.workflows.workflows.keys.sorted() == ["beta", "testflight"])
+                #expect(payload.source == .repository)
             }
         }
     }

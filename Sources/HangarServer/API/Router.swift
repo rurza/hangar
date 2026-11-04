@@ -25,6 +25,7 @@ extension HangarServerApp {
         api.get("health") { _, _ in try Response.json(HealthResponse(ok: true, version: HangarVersion.current)) }
         addAppRoutes(to: api)
         addVariableRoutes(to: api)
+        addWorkflowFileRoutes(to: api)
         addNumberRoutes(to: api)
         addBuildRoutes(to: api)
         addJobRoutes(to: api)

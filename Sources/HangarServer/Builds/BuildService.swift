@@ -21,6 +21,7 @@ public struct BuildService: Sendable {
     let builds: BuildRepository
     let machines: MachineRepository
     let variables: VariableRepository
+    let workflowFiles: WorkflowFileRepository
     let numbers: BuildNumberService
     let sourceHost: any SourceHost
     let events: EventBus
@@ -29,13 +30,14 @@ public struct BuildService: Sendable {
 
     public init(
         apps: AppRepository, builds: BuildRepository, machines: MachineRepository, variables: VariableRepository,
-        numbers: BuildNumberService, sourceHost: any SourceHost, events: EventBus, scheduler: SchedulerLoop,
+        workflowFiles: WorkflowFileRepository, numbers: BuildNumberService, sourceHost: any SourceHost, events: EventBus, scheduler: SchedulerLoop,
         cancelRequests: CancelRequests
     ) {
         self.apps = apps
         self.builds = builds
         self.machines = machines
         self.variables = variables
+        self.workflowFiles = workflowFiles
         self.numbers = numbers
         self.sourceHost = sourceHost
         self.events = events
@@ -51,7 +53,7 @@ public struct BuildService: Sendable {
             guard let machine = try machines.find(nameOrID: name) else { throw DeployError.machineNotFound(name) }
             pinned = machine
         }
-        let (commit, file) = try await workflows(app: app, ref: request.ref)
+        let (commit, file, _) = try await workflows(app: app, ref: request.ref)
         guard let workflow = file.workflows[request.workflow] else {
             throw DeployError.workflowNotFound(name: request.workflow, available: file.workflows.keys.sorted())
         }
@@ -102,16 +104,25 @@ public struct BuildService: Sendable {
         return refreshed
     }
 
-    /// The parsed `.hangar.yml` at the commit `ref` resolves to.
-    public func workflows(app: App, ref: String) async throws -> (commit: String, file: WorkflowFile) {
+    /// The workflow file for the commit `ref` resolves to: the one defined in Hangar if there is one, otherwise
+    /// `.hangar.yml` at that commit. The commit is resolved either way, so a build always records one.
+    public func workflows(app: App, ref: String) async throws -> (commit: String, file: WorkflowFile, source: WorkflowSource) {
         let token = try variables.resolvedEntries(appID: app.id).first { $0.name == Self.tokenVariable }?.value
         let commit: String
         do { commit = try await sourceHost.resolveCommit(repoURL: app.repoURL, ref: ref, token: token) } catch SourceHostError.refNotFound {
             throw DeployError.refNotFound(ref)
         }
-        guard let text = try await sourceHost.readFile(repoURL: app.repoURL, commit: commit, path: WorkflowFile.path, token: token)
-        else { throw DeployError.workflowFileMissing(commit: commit) }
-        do { return (commit, try WorkflowFileParser.parse(text)) } catch {
+        let text: String
+        let source: WorkflowSource
+        if let stored = try workflowFiles.get(appID: app.id) {
+            (text, source) = (stored.yaml, .hangar)
+        } else {
+            guard let repositoryText = try await sourceHost.readFile(
+                repoURL: app.repoURL, commit: commit, path: WorkflowFile.path, token: token)
+            else { throw DeployError.workflowFileMissing(commit: commit) }
+            (text, source) = (repositoryText, .repository)
+        }
+        do { return (commit, try WorkflowFileParser.parse(text), source) } catch {
             throw DeployError.workflowFile(error)
         }
     }

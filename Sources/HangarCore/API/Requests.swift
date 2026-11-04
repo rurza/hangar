@@ -105,15 +105,39 @@ public enum ServerEvent: Codable, Equatable, Sendable {
     }
 }
 
-/// `GET /apps/{id}/workflows?ref=`: `.hangar.yml` as parsed at the commit `ref` resolves to.
+/// Where an app's workflow file comes from: defined in Hangar, or `.hangar.yml` in the repository.
+public enum WorkflowSource: String, Codable, Sendable { case hangar, repository }
+
+/// `GET /apps/{id}/workflows?ref=`: the workflow file in effect at the commit `ref` resolves to.
 public struct WorkflowsResponse: Codable, Equatable, Sendable {
     public var commit: String
     public var workflows: WorkflowFile
+    public var source: WorkflowSource
 
-    public init(commit: String, workflows: WorkflowFile) {
+    public init(commit: String, workflows: WorkflowFile, source: WorkflowSource) {
         self.commit = commit
         self.workflows = workflows
+        self.source = source
     }
+}
+
+/// `GET` and `PUT /apps/{id}/workflow-file`: the YAML defined in Hangar with its parsed form.
+public struct StoredWorkflowFile: Codable, Equatable, Sendable {
+    public var yaml: String
+    public var workflows: WorkflowFile
+    public var updatedAt: Date
+
+    public init(yaml: String, workflows: WorkflowFile, updatedAt: Date) {
+        self.yaml = yaml
+        self.workflows = workflows
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct PutWorkflowFileRequest: Codable, Sendable {
+    public var yaml: String
+
+    public init(yaml: String) { self.yaml = yaml }
 }
 
 public struct ArtifactInfo: Codable, Equatable, Sendable {

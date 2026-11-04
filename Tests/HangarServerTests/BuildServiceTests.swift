@@ -63,6 +63,7 @@ final class FakeSourceHost: SourceHost {
     let builds: BuildRepository
     let machines: MachineRepository
     let variables: VariableRepository
+    let workflowFiles: WorkflowFileRepository
     let cancelRequests = CancelRequests()
     let events = EventBus()
     let app: App
@@ -79,8 +80,10 @@ final class FakeSourceHost: SourceHost {
             CreateAppRequest(name: "Legilo", repoURL: "https://github.com/acme/legilo.git", appStoreConnectAppID: "42"))
         let numbers = BuildNumberService(repository: builds, sources: { [FixedSource()] })
         let scheduler = SchedulerLoop(builds: builds, machines: machines, events: events)
+        workflowFiles = WorkflowFileRepository(database: database)
         service = BuildService(
-            apps: apps, builds: builds, machines: machines, variables: variables, numbers: numbers, sourceHost: host,
+            apps: apps, builds: builds, machines: machines, variables: variables, workflowFiles: workflowFiles,
+            numbers: numbers, sourceHost: host,
             events: events, scheduler: scheduler, cancelRequests: cancelRequests)
     }
 
@@ -203,6 +206,7 @@ final class FakeSourceHost: SourceHost {
         let failing = BuildService(
             apps: apps, builds: repo, machines: machines,
             variables: VariableRepository(database: database, box: SecretBox(key: SymmetricKey(size: .bits256))),
+            workflowFiles: WorkflowFileRepository(database: database),
             numbers: BuildNumberService(repository: repo, sources: { [Down()] }), sourceHost: host, events: events,
             scheduler: SchedulerLoop(builds: repo, machines: machines, events: events), cancelRequests: CancelRequests())
         await #expect(throws: DeployError.numbering(.appStoreConnectNotConfigured)) { _ = try await failing.deploy(request()) }
@@ -224,6 +228,34 @@ final class FakeSourceHost: SourceHost {
         let result = try await service.workflows(app: app, ref: "main")
         #expect(result.commit == "0123456789abcdef0123456789abcdef01234567")
         #expect(result.file.workflows.keys.sorted() == ["beta", "testflight"])
+    }
+
+    @Test func repositoryFileUsedWhenNoneStored() async throws {
+        let result = try await service.workflows(app: app, ref: "main")
+        #expect(result.source == .repository)
+    }
+
+    @Test func storedWorkflowFileWinsOverRepository() async throws {
+        try workflowFiles.set(
+            appID: app.id,
+            yaml: """
+                version: 1
+                workflows:
+                  testflight:
+                    project: Legilo.xcodeproj
+                    xcode: "27.2"
+                    actions:
+                      - { scheme: Stored, platform: ios, export: app-store-connect }
+                """)
+        let result = try await service.workflows(app: app, ref: "main")
+        #expect(result.source == .hangar)
+        #expect(result.commit == "0123456789abcdef0123456789abcdef01234567")
+        #expect(result.file.workflows.keys.sorted() == ["testflight"])
+        let build = try await service.deploy(request())
+        #expect(build.jobs.map(\.action.scheme) == ["Stored"])
+        // The repository's file is not even read.
+        host.state.withLock { $0.files = [:] }
+        _ = try await service.deploy(request())
     }
 
     @Test func cancelQueuedBuild() async throws {

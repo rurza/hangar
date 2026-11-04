@@ -15,6 +15,7 @@ public struct HangarServerApp: Sendable {
     public let builds: BuildRepository
     public let machines: MachineRepository
     public let variables: VariableRepository
+    public let workflowFiles: WorkflowFileRepository
     public let numbers: BuildNumberService
     public let events: EventBus
     public let scheduler: SchedulerLoop
@@ -40,6 +41,7 @@ public struct HangarServerApp: Sendable {
         apps = AppRepository(database: database)
         builds = BuildRepository(database: database)
         machines = MachineRepository(database: database)
+        workflowFiles = WorkflowFileRepository(database: database)
         let variables = VariableRepository(
             database: database, box: SecretBox(key: try MasterKey.loadOrCreate(at: configuration.masterKeyPath)))
         self.variables = variables
@@ -52,8 +54,8 @@ public struct HangarServerApp: Sendable {
             config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock, now: now)
         cancelRequests = CancelRequests()
         buildService = BuildService(
-            apps: apps, builds: builds, machines: machines, variables: variables, numbers: numbers,
-            sourceHost: sourceHost, events: events, scheduler: scheduler, cancelRequests: cancelRequests)
+            apps: apps, builds: builds, machines: machines, variables: variables, workflowFiles: workflowFiles,
+            numbers: numbers, sourceHost: sourceHost, events: events, scheduler: scheduler, cancelRequests: cancelRequests)
         logStore = LogStore(jobsDirectory: configuration.jobsDirectory)
         artifactStore = ArtifactStore(jobsDirectory: configuration.jobsDirectory)
         sweeper = RetentionSweeper(

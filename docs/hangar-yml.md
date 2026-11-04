@@ -67,3 +67,7 @@ An entry is either a bare name (`- testflight`) or a one-key map (`- testflight:
 | `groups` | list of strings | `[]` | Beta groups to add the build to. |
 | `what-to-test` | bool | `true` | Set the "What to Test" text. |
 | `submit-for-external-review` | bool | `false` | Submit the build for external beta review. |
+
+## Defining the workflow in Hangar instead
+
+An app does not need a committed `.hangar.yml`. Its workflow file can be stored in Hangar instead, in the same format, with `hangar workflows <app> --set <file.yml>` (or `PUT /apps/{id}/workflow-file`). The file is validated when you store it and again whenever a build uses it. While an app has a stored file, deploys and `hangar workflows` use it and ignore the repository's `.hangar.yml`; the commit is still resolved and recorded as usual. `hangar workflows <app> --clear` removes it, and the repository's `.hangar.yml` is required again. Stored files are limited to 64 KB. Hangar never writes to your repository, so to move a stored workflow into the repo, copy its YAML to `.hangar.yml` and clear the stored one.

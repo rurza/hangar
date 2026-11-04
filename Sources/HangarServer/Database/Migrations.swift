@@ -88,6 +88,16 @@ enum Migrations {
         migrator.registerMigration("v2") { db in
             try db.execute(sql: "ALTER TABLE builds ADD COLUMN workflow_json TEXT")
         }
+        // An app's workflow can be defined in Hangar instead of a committed `.hangar.yml`.
+        migrator.registerMigration("v3") { db in
+            try db.execute(sql: """
+                CREATE TABLE app_workflows (
+                    app_id TEXT PRIMARY KEY REFERENCES apps(id) ON DELETE CASCADE,
+                    yaml TEXT NOT NULL,
+                    updated_at DOUBLE NOT NULL
+                );
+                """)
+        }
         return migrator
     }
 }

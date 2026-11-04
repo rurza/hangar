@@ -72,6 +72,18 @@ public struct HangarAPI: Sendable {
         try await get("apps/\(segment(app))/workflows", query: ["ref": ref])
     }
 
+    public func workflowFile(app: String) async throws -> StoredWorkflowFile {
+        try await get("apps/\(segment(app))/workflow-file")
+    }
+
+    public func setWorkflowFile(app: String, yaml: String) async throws -> StoredWorkflowFile {
+        try await send("PUT", "apps/\(segment(app))/workflow-file", body: PutWorkflowFileRequest(yaml: yaml))
+    }
+
+    public func clearWorkflowFile(app: String) async throws {
+        try await sendEmpty("DELETE", "apps/\(segment(app))/workflow-file")
+    }
+
     // MARK: - Builds and jobs
 
     public func deploy(_ request: DeployRequest) async throws -> Build { try await send("POST", "builds", body: request) }
