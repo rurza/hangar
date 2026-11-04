@@ -76,4 +76,25 @@ final class LineCollector: Sendable {
         #expect(received.values == Array(repeating: text, count: 600))
         #expect(outcome.output == Array(repeating: text, count: 600).joined(separator: "\n"))
     }
+
+    @Test func manyConcurrentShortRunsDeliverEveryLine() async throws {
+        // Many short children at once make the exit, EOF and line delivery race. When `onLine` was only borrowed for
+        // the call, a delivery still holding it after the continuation resumed trapped with "closure argument was
+        // escaped" (debug builds).
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for task in 0..<16 {
+                group.addTask {
+                    for run in 0..<100 {
+                        let received = LineCollector()
+                        let outcome = try await runner.run(
+                            ProcessCommand(executable: "/bin/echo", arguments: ["\(task)-\(run)"])
+                        ) { received.append($0) }
+                        #expect(outcome.exitCode == 0)
+                        #expect(received.values == ["\(task)-\(run)"])
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
 }

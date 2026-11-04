@@ -1,6 +1,5 @@
 import Foundation
 import HangarCore
-import Synchronization
 import Testing
 
 @testable import HangarWorker
@@ -29,11 +28,11 @@ import Testing
     private static let environment = ["PATH": "/usr/bin:/bin", "CI_BUILD_NUMBER": "42"]
 
     private func run(
-        _ hook: Hook = .postClone, _ fixture: Fixture, lines: borrowing Mutex<[String]>
+        _ hook: Hook = .postClone, _ fixture: Fixture, lines: LineSink
     ) async throws -> HookOutcome {
         try await HookRunner(runner: LiveProcessRunner()).run(
             hook, scriptsDirectory: fixture.scripts, environment: Self.environment
-        ) { line in lines.withLock { $0.append(line) } }
+        ) { line in lines.append(line) }
     }
 
     @Test func absentHookIsSkipped() async throws {
@@ -42,17 +41,17 @@ import Testing
         // A directory with the hook's name counts as absent too.
         try FileManager.default.createDirectory(
             atPath: fixture.scripts + "/" + Hook.preXcodebuild.rawValue, withIntermediateDirectories: false)
-        let lines = Mutex<[String]>([])
+        let lines = LineSink()
         #expect(try await run(.postClone, fixture, lines: lines) == .absent)
         #expect(try await run(.preXcodebuild, fixture, lines: lines) == .absent)
-        #expect(lines.withLock { $0 }.isEmpty)
+        #expect(lines.all.isEmpty)
     }
 
     @Test func runsWithCwdInCiScriptsAndEnv() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try fixture.write(.postClone, "pwd -P > \"$1\" 2>/dev/null; echo \"$PWD|$CI_BUILD_NUMBER\" > ../out.txt", permissions: 0o755)
-        #expect(try await run(.postClone, fixture, lines: Mutex<[String]>([])) == .ran)
+        #expect(try await run(.postClone, fixture, lines: LineSink()) == .ran)
         let output = try String(contentsOfFile: fixture.root + "/out.txt", encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let expected = URL(fileURLWithPath: fixture.scripts).resolvingSymlinksInPath().path
@@ -65,9 +64,9 @@ import Testing
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try fixture.write(.postClone, "echo ran-anyway", permissions: 0o644)
-        let lines = Mutex<[String]>([])
+        let lines = LineSink()
         #expect(try await run(.postClone, fixture, lines: lines) == .ran)
-        let logged = lines.withLock { $0 }
+        let logged = lines.all
         #expect(
             logged.first
                 == "warning: ci_scripts/ci_post_clone.sh is not executable; running it with /bin/sh (Xcode Cloud requires chmod +x)"
@@ -79,7 +78,7 @@ import Testing
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try fixture.write(.postClone, "exit 3", permissions: 0o755)
-        let lines = Mutex<[String]>([])
+        let lines = LineSink()
         await #expect(throws: HookError.failed(hook: .postClone, exitCode: 3)) {
             try await run(.postClone, fixture, lines: lines)
         }
@@ -89,8 +88,8 @@ import Testing
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         try fixture.write(.postXcodebuild, "echo one; echo two; echo three", permissions: 0o755)
-        let lines = Mutex<[String]>([])
+        let lines = LineSink()
         #expect(try await run(.postXcodebuild, fixture, lines: lines) == .ran)
-        #expect(lines.withLock { $0 } == ["one", "two", "three"])
+        #expect(lines.all == ["one", "two", "three"])
     }
 }

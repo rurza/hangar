@@ -34,7 +34,7 @@ public final class RecordingProcessRunner: ProcessRunner {
         state.withLock { $0.scripts.append(Script(match: match, reply: .hang)) }
     }
 
-    public func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome {
+    public func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
         let reply = state.withLock { state -> Reply? in
             state.commands.append(command)
             return state.scripts.first { $0.match(command) }?.reply

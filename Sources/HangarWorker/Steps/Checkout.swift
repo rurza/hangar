@@ -26,7 +26,7 @@ public struct Checkout: Sendable {
         self.extraEnvironment = extraEnvironment
     }
 
-    public func run(repoURL: String, commit: String, token: String?, log: @Sendable (String) -> Void) async throws {
+    public func run(repoURL: String, commit: String, token: String?, log: @escaping @Sendable (String) -> Void) async throws {
         let fileManager = FileManager.default
         let repository = layout.repository
         try fileManager.createDirectory(
@@ -68,7 +68,7 @@ public struct Checkout: Sendable {
     }
 
     @discardableResult
-    private func git(_ arguments: [String], token: String?, log: @Sendable (String) -> Void) async throws -> String {
+    private func git(_ arguments: [String], token: String?, log: @escaping @Sendable (String) -> Void) async throws -> String {
         let display = (["git"] + arguments).joined(separator: " ")
         log(display)
         let environment = Self.environment(token: token, extra: extraEnvironment)

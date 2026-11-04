@@ -28,7 +28,7 @@ private final class ExportingRunner: ProcessRunner {
     /// Directory contents at the moment the export command started.
     var contentsAtExport: [String] { seen.withLock { $0 } }
 
-    func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome {
+    func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
         if command.arguments.contains("-exportArchive") {
             seen.withLock { $0 = ((try? FileManager.default.contentsOfDirectory(atPath: exportPath)) ?? []).sorted() }
             if let produce {

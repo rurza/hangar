@@ -37,7 +37,7 @@ private final class PipelineRunner: ProcessRunner {
 
     var commands: [ProcessCommand] { recording.commands }
 
-    func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome {
+    func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
         onCommand.withLock { $0 }?(command)
         let outcome = try await recording.run(command, onLine: onLine)
         guard outcome.exitCode == 0 else { return outcome }

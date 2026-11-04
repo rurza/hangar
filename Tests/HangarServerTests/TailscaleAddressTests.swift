@@ -39,7 +39,7 @@ import Testing
         let failures: Int
         init(failures: Int) { self.failures = failures }
         var callCount: Int { calls.withLock { $0 } }
-        func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome {
+        func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
             let n = calls.withLock { n -> Int in n += 1; return n }
             return n <= failures
                 ? ProcessOutcome(exitCode: 1, output: "stopped") : ProcessOutcome(exitCode: 0, output: "100.64.0.7")

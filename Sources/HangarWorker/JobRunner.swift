@@ -125,7 +125,7 @@ public struct JobRunner: Sendable {
     /// Picks Xcode, assembles the environment, writes as-file variables and checks the App Store Connect key.
     private func prepare(
         _ assignment: JobAssignment, layout: WorkspaceLayout, materializer: SecretsMaterializer,
-        log: @Sendable (String) -> Void
+        log: @escaping @Sendable (String) -> Void
     ) async throws -> Prepared {
         let workflow = assignment.workflow
         let action = assignment.job.action
@@ -229,7 +229,7 @@ public struct JobRunner: Sendable {
 
     /// Wipes the secrets, cleans the repository and removes the job directory. Every problem is logged and the rest
     /// still runs; returns whether all of it worked.
-    private func cleanup(layout: WorkspaceLayout, materializer: SecretsMaterializer, log: @Sendable (String) -> Void) async -> Bool {
+    private func cleanup(layout: WorkspaceLayout, materializer: SecretsMaterializer, log: @escaping @Sendable (String) -> Void) async -> Bool {
         var succeeded = true
         func attempt(_ what: String, _ body: () async throws -> Void) async {
             do { try await body() } catch {

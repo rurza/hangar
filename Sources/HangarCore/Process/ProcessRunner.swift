@@ -32,7 +32,7 @@ public struct ProcessOutcome: Sendable, Equatable {
 /// Every external tool (git, xcodebuild, hooks, codesign) runs through this seam.
 /// stdout and stderr are merged and delivered line by line, in order of arrival.
 public protocol ProcessRunner: Sendable {
-    func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome
+    func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome
 }
 
 /// Runs a real child process with Foundation `Process`.
@@ -42,17 +42,15 @@ public protocol ProcessRunner: Sendable {
 public struct LiveProcessRunner: ProcessRunner {
     public init() {}
 
-    public func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome {
+    public func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
         try Task.checkCancellation()
         let session = Session()
-        let outcome = try await withoutActuallyEscaping(onLine) { onLine in
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { continuation in
-                    session.start(command, onLine: onLine, continuation: continuation)
-                }
-            } onCancel: {
-                session.cancel()
+        let outcome = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                session.start(command, onLine: onLine, continuation: continuation)
             }
+        } onCancel: {
+            session.cancel()
         }
         if session.wasCancelled { throw CancellationError() }
         return outcome

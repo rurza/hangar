@@ -55,7 +55,7 @@ public struct ExportStep: Sendable {
         archivePath: String, method: ExportMethod, destination: String, exportPath: String, jobDirectory: String,
         teamID: String?,
         developerDir: String, key: ASCKeyArguments, signing: SigningMode, environment: [String: String],
-        log: @Sendable (String) -> Void
+        log: @escaping @Sendable (String) -> Void
     ) async throws -> ExportResult {
         guard case .cloudManaged = signing else { throw ExportError.unsupportedSigningMode }
 

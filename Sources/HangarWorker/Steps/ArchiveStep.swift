@@ -72,7 +72,7 @@ public struct ArchiveStep: Sendable {
     /// xcodebuild refuses to overwrite an existing result bundle and archive, so both are removed first.
     public func run(
         workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
-        key: ASCKeyArguments, environment: [String: String], log: @Sendable (String) -> Void
+        key: ASCKeyArguments, environment: [String: String], log: @escaping @Sendable (String) -> Void
     ) async throws {
         // The scheme comes from the repository's `.hangar.yml` and ends up in a path that is deleted below.
         guard !action.scheme.isEmpty, !action.scheme.contains("/"), !action.scheme.contains("..") else {

@@ -33,7 +33,7 @@ public struct ArtifactCollector: Sendable {
 
     /// Throws only when the staging directory cannot be created.
     public func collect(
-        layout: WorkspaceLayout, scheme: String, log: @Sendable (String) -> Void
+        layout: WorkspaceLayout, scheme: String, log: @escaping @Sendable (String) -> Void
     ) async throws -> ArtifactCollection {
         let fileManager = FileManager.default
         let staging = layout.jobDirectory + "/artifacts"

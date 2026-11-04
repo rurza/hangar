@@ -33,7 +33,7 @@ public struct HookRunner: Sendable {
     /// `scriptsDirectory` is `<repository>/<projectDirectory>/ci_scripts`. A missing hook (or a directory with its
     /// name) is skipped. A script without the executable bit still runs, through `/bin/sh`, with a warning.
     public func run(
-        _ hook: Hook, scriptsDirectory: String, environment: [String: String], log: @Sendable (String) -> Void
+        _ hook: Hook, scriptsDirectory: String, environment: [String: String], log: @escaping @Sendable (String) -> Void
     ) async throws -> HookOutcome {
         let script = scriptsDirectory + "/" + hook.rawValue
         var isDirectory: ObjCBool = false
