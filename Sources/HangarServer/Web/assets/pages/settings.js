@@ -16,18 +16,21 @@ export async function settingsPage(params, context) {
   let status = await api.get('/settings', { signal });
 
   const about = card({ class: 'settings-card' });
-  const asc = ascCard(() => status, refresh);
-  const github = githubCard(() => status, refresh);
+  const asc = ascCard(() => status, (options) => refresh(asc, options));
+  const github = githubCard(() => status, (options) => refresh(github, options));
 
-  async function refresh() {
+  /**
+   * Reloads the status and redraws only `changed` (unless `redraw` is false), so a form open in the other card
+   * keeps what was typed.
+   */
+  async function refresh(changed, { redraw = true } = {}) {
     try {
       status = await api.get('/settings', { signal });
     } catch (error) {
       if (error.code === 'aborted') return;
       toast(error.message, 'error');
     }
-    asc.render();
-    github.render();
+    if (redraw) changed.render();
     renderAbout();
   }
 
@@ -179,16 +182,38 @@ function ascCard(getStatus, refresh) {
           toast('Choose the .p8 file.', 'error');
           return;
         }
-        const saved = await busy([save, cancel].filter(Boolean), async () => {
-          // The same calls as `hangar settings asc-key`.
-          await api.put(`/variables/${ASC_KEY_ID}`, { value: keyID, isSecret: false, asFile: false });
+        // The key ID goes last: the key counts as configured once the ID and the key are both set, so until then
+        // a half-saved key stays unconfigured (or keeps its old ID, which then fails visibly) instead of
+        // pairing a new ID with an old key.
+        let writes = 0;
+        let failure = null;
+        const buttons = [save, cancel].filter(Boolean);
+        buttons.forEach((b) => { b.disabled = true; });
+        try {
+          await api.put(`/variables/${ASC_KEY_PATH}`, { value: keyText, isSecret: true, asFile: true });
+          writes += 1;
           if (issuerID) await api.put(`/variables/${ASC_ISSUER_ID}`, { value: issuerID, isSecret: false, asFile: false });
           else await api.del(`/variables/${ASC_ISSUER_ID}`);
-          await api.put(`/variables/${ASC_KEY_PATH}`, { value: keyText, isSecret: true, asFile: true });
-        });
+          writes += 1;
+          await api.put(`/variables/${ASC_KEY_ID}`, { value: keyID, isSecret: false, asFile: false });
+        } catch (error) {
+          failure = error;
+        } finally {
+          buttons.forEach((b) => { if (b.isConnected) b.disabled = false; });
+        }
+        if (failure) {
+          // The form stays as it is (the .p8 file too), so Save Key tries every write again.
+          if (writes > 0) {
+            toast(`Partially saved — save again. ${failure.message}`, 'error');
+            // The status changes, but the form keeps what was entered so Save Key can run again.
+            await refresh({ redraw: false });
+          } else {
+            toast(failure.message, 'error');
+          }
+          return;
+        }
         keyText = null;
         fileInput.value = '';
-        if (!saved) return;
         toast(`Saved the ${issuerID ? 'team' : 'individual'} key ${keyID}`, 'success');
         editing = false;
         await refresh();
