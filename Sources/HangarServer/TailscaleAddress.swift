@@ -19,6 +19,21 @@ public enum TailscaleAddress {
         return nil
     }
 
+    /// Retries `detect` every `interval` until `timeout` has passed, because at login Tailscale may not be up yet.
+    /// Tries at least once. Nil when no address showed up in time.
+    public static func waitForAddress(
+        runner: any ProcessRunner, timeout: Duration = .seconds(60), interval: Duration = .seconds(2),
+        clock: any Clock<Duration> = ContinuousClock()
+    ) async -> String? {
+        var waited = Duration.zero
+        while true {
+            if let address = await detect(runner: runner) { return address }
+            guard waited + interval <= timeout else { return nil }
+            do { try await clock.sleep(for: interval) } catch { return nil }
+            waited += interval
+        }
+    }
+
     static func isIPv4(_ text: String) -> Bool {
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         return parts.count == 4 && parts.allSatisfy { part in

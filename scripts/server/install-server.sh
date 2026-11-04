@@ -41,6 +41,16 @@ render_plist "$INSTALL_DIR/hangar-server" "$HOME" > "$PLIST_DEST"
 plutil -lint "$PLIST_DEST"
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
+# bootout can return before the job is gone; wait up to 10 s so bootstrap does not fail with an I/O error.
+for _ in $(seq 1 20); do
+    launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.5
+done
+# Retry a few times in case the unload is still finishing.
+for attempt in 1 2 3 4 5; do
+    if launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"; then break; fi
+    if [ "$attempt" = 5 ]; then echo "error: launchctl bootstrap failed" >&2; exit 1; fi
+    sleep 1
+done
 
 echo "hangar-server installed and started. Log: $HOME/Library/Logs/Hangar/server.log"

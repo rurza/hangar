@@ -15,7 +15,7 @@ struct HangarServerCommand: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Runs the server. Precedence: flag, then HANGAR_HOST / HANGAR_PORT / HANGAR_DATA_DIR, then default.")
 
-        @Option(help: "Address to bind. Default: this Mac's Tailscale IPv4, else 127.0.0.1.")
+        @Option(help: "Address to bind. Default: this Mac's Tailscale IPv4 (waits up to 60 s for it).")
         var host: String?
         @Option(help: "Port to listen on. Default: 8787.")
         var port: Int?
@@ -41,9 +41,12 @@ struct HangarServerCommand: AsyncParsableCommand {
                 ?? NSHomeDirectory() + "/Library/Application Support/Hangar/server"
             var resolvedHost = host ?? environment["HANGAR_HOST"]
             if resolvedHost == nil {
-                resolvedHost = await TailscaleAddress.detect(runner: LiveProcessRunner())
-                if resolvedHost == nil {
-                    logger.warning("Tailscale address not found; binding 127.0.0.1 (reachable from this Mac only)")
+                // No loopback fallback: it would stick after a login-time race. Exit so launchd KeepAlive retries.
+                resolvedHost = await TailscaleAddress.waitForAddress(runner: LiveProcessRunner())
+                guard resolvedHost != nil else {
+                    FileHandle.standardError.write(
+                        Data("Tailscale address not found; start Tailscale or pass --host <address>\n".utf8))
+                    throw ExitCode.failure
                 }
             }
 
@@ -51,7 +54,7 @@ struct HangarServerCommand: AsyncParsableCommand {
             let database = try Database(path: resolvedDirectory + "/hangar.sqlite")
             try database.migrate()
             let configuration = ServerConfiguration(
-                host: resolvedHost ?? "127.0.0.1", port: resolvedPort, dataDirectory: resolvedDirectory,
+                host: resolvedHost!, port: resolvedPort, dataDirectory: resolvedDirectory,
                 retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb)
             let server = try HangarServerApp(
                 configuration: configuration, database: database,

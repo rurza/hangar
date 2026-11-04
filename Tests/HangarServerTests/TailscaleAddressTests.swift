@@ -1,4 +1,5 @@
 import HangarCore
+import Synchronization
 import Testing
 
 @testable import HangarServer
@@ -30,5 +31,34 @@ import Testing
         let garbage = RecordingProcessRunner()
         garbage.script({ _ in true }, lines: ["", "fd7a:115c::1", "not an ip"])
         #expect(await TailscaleAddress.detect(runner: garbage) == nil)
+    }
+
+    /// Fails the first `failures` `tailscale` calls (both candidates count), then prints an address.
+    private final class FlakyRunner: ProcessRunner {
+        private let calls = Mutex(0)
+        let failures: Int
+        init(failures: Int) { self.failures = failures }
+        var callCount: Int { calls.withLock { $0 } }
+        func run(_ command: ProcessCommand, onLine: @Sendable (String) -> Void) async throws -> ProcessOutcome {
+            let n = calls.withLock { n -> Int in n += 1; return n }
+            return n <= failures
+                ? ProcessOutcome(exitCode: 1, output: "stopped") : ProcessOutcome(exitCode: 0, output: "100.64.0.7")
+        }
+    }
+
+    @Test func waitSucceedsAfterARetry() async {
+        let runner = FlakyRunner(failures: 4)  // two rounds of two candidates
+        let address = await TailscaleAddress.waitForAddress(
+            runner: runner, timeout: .seconds(2), interval: .milliseconds(5))
+        #expect(address == "100.64.0.7")
+        #expect(runner.callCount == 5)
+    }
+
+    @Test func waitGivesUpAfterTheTimeout() async {
+        let runner = FlakyRunner(failures: .max)
+        let address = await TailscaleAddress.waitForAddress(
+            runner: runner, timeout: .milliseconds(40), interval: .milliseconds(10))
+        #expect(address == nil)
+        #expect(runner.callCount >= 2)
     }
 }

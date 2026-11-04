@@ -44,7 +44,7 @@ hangar-server run [--host <addr>] [--port 8787] [--data-dir <path>] [--retention
 
 Each of host, port and data directory is taken from the flag first, then from the environment (`HANGAR_HOST`, `HANGAR_PORT`, `HANGAR_DATA_DIR`), then the default.
 
-- Host default: the first IPv4 printed by `tailscale ip -4`. If Tailscale is not running or not found, the server binds `127.0.0.1` and prints a warning, which means it is reachable from the server Mac only.
+- Host default: the first IPv4 printed by `tailscale ip -4`. At login Tailscale may not be up yet, so the server retries for up to 60 seconds (every 2 s). If no address shows up, it exits with status 1 and prints `Tailscale address not found; start Tailscale or pass --host <address>` to stderr; launchd then restarts it. It never falls back to loopback silently. Pass `--host 127.0.0.1` explicitly for a local-only server.
 - Port default: 8787.
 - Data directory default: `~/Library/Application Support/Hangar/server`.
 
