@@ -7,11 +7,11 @@ import Hummingbird
 enum APIErrorMapping {
     static let notFoundCodes: Set<String> = [
         "not_found", "app_not_found", "build_not_found", "job_not_found", "machine_not_found", "workflow_not_found",
-        "artifact_not_found", "ref_not_found", "workflow_file_not_found",
+        "artifact_not_found", "ref_not_found", "workflow_file_not_found", "icon_not_found", "repository_not_found",
     ]
     static let conflictCodes: Set<String> = [
         "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",
-        "asc_not_configured",
+        "asc_not_configured", "github_not_configured",
     ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {
@@ -21,6 +21,10 @@ enum APIErrorMapping {
         case let error as DeployError: return map(error)
         case let error as BuildNumberError: return map(error)
         case let error as SourceHostError: return map(error)
+        case WorkflowDetectionError.noProjectFound:
+            return self.error(
+                "no_project_found",
+                "No Xcode workspace, project or XcodeGen project.yml was found in the repository (Pods, Carthage and other dependency folders are skipped).")
         case let error as WorkflowFileError: return (.badRequest, APIError(code: "invalid_workflow_file", message: error.description))
         case let error as HTTPError: return map(error)
         case is DecodingError: return (.badRequest, APIError(code: "invalid_request", message: "The request body is not valid."))
@@ -39,6 +43,9 @@ enum APIErrorMapping {
         if code == "worker_binary_missing" { return .serviceUnavailable }
         if code == "host_not_allowed" { return .misdirectedRequest }
         if code == "unsupported_media_type" { return .unsupportedMediaType }
+        if code == "github_unauthorized" { return .badGateway }
+        if code == "detection_timeout" { return .gatewayTimeout }
+        if code == "no_project_found" { return .unprocessableContent }
         if notFoundCodes.contains(code) { return .notFound }
         if conflictCodes.contains(code) { return .conflict }
         return .badRequest
@@ -103,6 +110,7 @@ enum APIErrorMapping {
         case .unsupportedRepository(let url):
             self.error("unsupported_repository", "'\(url)' is not a supported repository URL (GitHub only).")
         case .invalidPath(let path): self.error("invalid_path", "'\(path)' is not a valid repository path.")
+        case .http(401, _): GitHubRepositories.unauthorized.mapped
         case .http(let status, _):
             // The body is left out: it is the host's text, not ours, and may be large.
             (.badGateway, APIError(code: "source_host_error", message: "The source host answered HTTP \(status)."))
@@ -119,4 +127,8 @@ enum APIErrorMapping {
             }
         return (error.status, APIError(code: code, message: error.body ?? error.status.reasonPhrase))
     }
+}
+
+extension APIError {
+    var mapped: (HTTPResponse.Status, APIError) { (APIErrorMapping.status(code: code), self) }
 }

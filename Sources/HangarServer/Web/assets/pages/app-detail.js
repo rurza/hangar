@@ -189,10 +189,11 @@ function workflowCard(app, signal) {
     if (error.code === 'workflow_file_not_found') {
       replaceChildren(element,
         cardTitle('Workflow'),
-        h('p', { class: 'card-headline' }, 'From .hangar.yml in the repository (if present)'),
-        h('p', { class: 'card-detail' }, 'Define the workflow in Hangar to build without a file in the repository.'),
+        h('p', { class: 'card-headline' }, 'Set up the workflow'),
+        h('p', { class: 'card-detail' },
+          'Hangar fills it in from the Xcode project in the repository. Until then, builds use the repository’s .hangar.yml, if it has one.'),
         h('div', { class: 'card-actions' },
-          h('a', { href: editor, 'data-link': true, class: 'button button-secondary' }, 'Define in Hangar')));
+          h('a', { href: `${editor}?suggest=1`, 'data-link': true, class: 'button button-primary' }, 'Set Up Workflow')));
       return;
     }
     replaceChildren(element, cardTitle('Workflow'), h('p', { class: 'inline-error-message' }, error.message));

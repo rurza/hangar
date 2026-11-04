@@ -48,7 +48,8 @@ struct APIFixture {
             RecordingASC(credentials: $0)
         },
         now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = [],
-        iconTransport: any HTTPTransport = StubTransport(), workerBinaryPath: String? = nil, port: Int = 8787
+        iconTransport: any HTTPTransport = StubTransport(), workerBinaryPath: String? = nil, port: Int = 8787,
+        githubTransport: any HTTPTransport = StubTransport()
     ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
         let database = try HangarServer.Database(path: ":memory:")
@@ -58,7 +59,8 @@ struct APIFixture {
                 host: boundHost, port: port, dataDirectory: directory.path, allowedHosts: allowedHosts,
                 workerBinaryPath: workerBinaryPath), database: database,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
-            numberSources: sources.map { sources in { @Sendable in sources } }, iconTransport: iconTransport, now: now)
+            numberSources: sources.map { sources in { @Sendable in sources } }, iconTransport: iconTransport, githubTransport: githubTransport,
+            now: now)
     }
 
     func test(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {

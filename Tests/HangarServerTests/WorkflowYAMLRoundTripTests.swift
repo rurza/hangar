@@ -156,11 +156,11 @@ import Testing
         try runJXA(json: String(decoding: try JSONEncoder().encode(file), as: UTF8.self), expression)
     }
 
-    /// Loads yaml.js and workflow-model.js (each without its final `export { ... };` line) and returns the string
+    /// Loads `files` (yaml.js and workflow-model.js by default), each without its final `export { ... };` line, and returns the string
     /// `expression` evaluates to, with `input` bound to the parsed `json`.
-    static func runJXA(json: String, _ expression: String) throws -> String {
+    static func runJXA(json: String, files: [String] = ["yaml.js", "workflow-model.js"], _ expression: String) throws -> String {
         var source = ""
-        for name in ["yaml.js", "workflow-model.js"] {
+        for name in files {
             let text = try String(contentsOf: assets.appendingPathComponent(name), encoding: .utf8)
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
             let exports = lines.filter { $0.hasPrefix("export ") }

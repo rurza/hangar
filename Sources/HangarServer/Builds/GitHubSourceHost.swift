@@ -23,19 +23,42 @@ public struct GitHubSourceHost: SourceHost {
     }
 
     public func readFile(repoURL: String, commit: String, path: String, token: String?) async throws -> String? {
+        try await readData(repoURL: repoURL, commit: commit, path: path, token: token).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    public func readData(repoURL: String, commit: String, path: String, token: String?) async throws -> Data? {
         let (owner, repo) = try Self.parse(repoURL)
         guard let escapedPath = Self.escapePath(path) else { throw SourceHostError.invalidPath(path) }
         let escapedCommit = Self.escapeQuery(commit)
         let url = "\(Self.apiBase)/repos/\(owner)/\(repo)/contents/\(escapedPath)?ref=\(escapedCommit)"
         let (data, response) = try await transport.send(try request(url, accept: "application/vnd.github.raw", token: token))
         switch response.statusCode {
-        case 200..<300: return String(decoding: data, as: UTF8.self)
+        case 200..<300: return data
         case 404: return nil
         default: throw Self.failure(response, data)
         }
     }
 
-    private func request(_ url: String, accept: String, token: String?) throws -> URLRequest {
+    public func tree(repoURL: String, commit: String, token: String?) async throws -> RepositoryTree {
+        let (owner, repo) = try Self.parse(repoURL)
+        guard let escapedCommit = Self.escapePath(commit), !commit.contains("/") else { throw SourceHostError.refNotFound(commit) }
+        let url = "\(Self.apiBase)/repos/\(owner)/\(repo)/git/trees/\(escapedCommit)?recursive=1"
+        let (data, response) = try await transport.send(try request(url, accept: "application/vnd.github+json", token: token))
+        switch response.statusCode {
+        case 200..<300:
+            struct Tree: Decodable {
+                struct Entry: Decodable { var path: String }
+                var tree: [Entry]
+                var truncated: Bool?
+            }
+            let tree = try JSONDecoder().decode(Tree.self, from: data)
+            return RepositoryTree(paths: tree.tree.map(\.path), truncated: tree.truncated ?? false)
+        case 404, 422: throw SourceHostError.refNotFound(commit)
+        default: throw Self.failure(response, data)
+        }
+    }
+
+    func request(_ url: String, accept: String, token: String?) throws -> URLRequest {
         guard let url = URL(string: url) else { throw SourceHostError.unsupportedRepository(url) }
         var request = URLRequest(url: url)
         request.setValue(accept, forHTTPHeaderField: "Accept")

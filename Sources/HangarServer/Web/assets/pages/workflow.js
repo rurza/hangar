@@ -6,7 +6,7 @@ import { api, ApiError, seg } from '../api.js';
 import { addLeaveGuard, navigate } from '../router.js';
 import {
   button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, section, selectContents,
-  switchField, toast,
+  spinner, switchField, toast,
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
 import {
@@ -86,6 +86,7 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   let saved = models ? snapshot() : null; // the file as last loaded or saved; null for an unsaved new one
   let tab = 'form';
   let busy = false;
+  let detectedNotes = []; // what workflow detection guessed, shown above the form until the workflow is saved
 
   const element = h('div', { class: 'workflow-editor' });
   const banner = h('div', { class: 'workflow-banner', role: 'alert', hidden: true });
@@ -163,6 +164,11 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     saveButton.hidden = false;
     replaceChildren(element,
       banner,
+      detectedNotes.length && !stored
+        ? h('div', { class: 'workflow-notes', role: 'note' },
+          h('p', { class: 'workflow-notes-title' }, 'Detected from the repository. Check these before saving:'),
+          h('ul', null, detectedNotes.map((note) => h('li', null, note))))
+        : null,
       h('div', { class: 'workflow-toolbar' }, tabs(), status),
       tab === 'form' ? formView() : yamlView(),
       stored ? section({ title: 'Remove' }, removeCard()) : null);
@@ -194,32 +200,49 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
 
   function startView() {
     const message = h('p', { class: 'inline-error-message', role: 'alert', hidden: true });
-    const importButton = button('Start from the Repository’s .hangar.yml', { kind: 'primary' });
+    const progress = h('p', { class: 'workflow-detecting', hidden: true });
+    const repoName = app.repoURL.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/, '');
+    const detectButton = button('Use Detected Settings', { kind: 'primary' });
+    const importButton = button('Start from the Repository’s .hangar.yml');
     const scratchButton = button('Start from Scratch', {
       onClick: () => begin([scratchWorkflow('testflight')]),
     });
-    importButton.addEventListener('click', async () => {
+    const all = [detectButton, importButton, scratchButton];
+    async function attempt(work) {
       message.hidden = true;
-      importButton.disabled = true;
-      scratchButton.disabled = true;
+      all.forEach((b) => { b.disabled = true; });
       try {
-        const response = await api.get(`${base}/workflows?ref=main`, { signal: context.signal });
-        begin(modelsFromFile(response.workflows));
-        toast(`Imported .hangar.yml at ${String(response.commit ?? '').slice(0, 7)}`, 'success');
+        await work();
       } catch (error) {
         if (error.code === 'aborted') return;
         message.textContent = error.message;
         message.hidden = false;
-        importButton.disabled = false;
-        scratchButton.disabled = false;
+      } finally {
+        progress.hidden = true;
+        if (element.contains(detectButton)) all.forEach((b) => { b.disabled = false; });
       }
-    });
+    }
+    detectButton.addEventListener('click', () => attempt(async () => {
+      replaceChildren(progress, spinner(`Reading ${repoName}`), ` Reading ${repoName}…`);
+      progress.hidden = false;
+      const suggestion = await api.get(`${base}/workflow-suggestion`, { signal: context.signal });
+      detectedNotes = suggestion.notes ?? [];
+      begin(modelsFromFile(suggestion.workflows));
+    }));
+    importButton.addEventListener('click', () => attempt(async () => {
+      const response = await api.get(`${base}/workflows?ref=main`, { signal: context.signal });
+      begin(modelsFromFile(response.workflows));
+      toast(`Imported .hangar.yml at ${String(response.commit ?? '').slice(0, 7)}`, 'success');
+    }));
+    // Coming from Add App: start reading the repository at once.
+    if (context.query?.get('suggest') === '1') queueMicrotask(() => detectButton.click());
     return card({ class: 'workflow-start' },
       emptyState({
         title: 'No Workflow in Hangar',
-        message: `${app.name} builds with the .hangar.yml in its repository. Define the workflow here to build without one.`,
-        action: h('div', { class: 'workflow-start-actions' }, importButton, scratchButton),
+        message: `${app.name} builds with the .hangar.yml in its repository. Define the workflow here to build without one: Hangar can fill it in from the Xcode project.`,
+        action: h('div', { class: 'workflow-start-actions' }, detectButton, importButton, scratchButton),
       }),
+      progress,
       message);
   }
 

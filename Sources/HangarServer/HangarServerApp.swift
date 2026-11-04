@@ -32,17 +32,23 @@ public struct HangarServerApp: Sendable {
     public let appIconBackfill: AppIconBackfill
     /// The one-time codes new Macs enroll with; in memory, so a restart forgets them.
     public let pairings: PairingCodes
+    /// The repositories the global GitHub token sees, cached for the "Add app" picker.
+    public let githubRepositories: GitHubRepositories
+    /// Reads repositories for workflow and app detection.
+    public let repositoryDetector: RepositoryDetector
     let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
     /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
-    /// carries the public iTunes lookup that finds icons App Store Connect has none for.
+    /// carries the public iTunes lookup that finds icons App Store Connect has none for; `githubTransport` the
+    /// repository list.
     public init(
         configuration: ServerConfiguration, database: Database,
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient,
         sourceHost: any SourceHost = GitHubSourceHost(), clock: any Clock<Duration> = ContinuousClock(),
         numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil,
         iconTransport: any HTTPTransport = URLSessionTransport(),
+        githubTransport: any HTTPTransport = URLSessionTransport(),
         now: @escaping @Sendable () -> Date = Date.init
     ) throws {
         self.configuration = configuration
@@ -77,6 +83,8 @@ public struct HangarServerApp: Sendable {
             transport: iconTransport, clock: clock, now: now)
         appIconBackfill = AppIconBackfill(resolver: appIcons, apps: apps, now: now)
         pairings = PairingCodes(now: now)
+        githubRepositories = GitHubRepositories(transport: githubTransport, now: now)
+        repositoryDetector = RepositoryDetector(sourceHost: sourceHost, clock: clock, now: now)
     }
 
     /// Starts resolving icons for every app without one (at start-up); returns at once.

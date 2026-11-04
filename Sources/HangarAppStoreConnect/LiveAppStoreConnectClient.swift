@@ -69,6 +69,20 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         }
     }
 
+    public func apps(bundleIDs: [String]) async throws -> [ASCApp] {
+        guard !bundleIDs.isEmpty else { return [] }
+        let query = [
+            URLQueryItem(name: "filter[bundleId]", value: bundleIDs.joined(separator: ",")),
+            URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "fields[apps]", value: "name,bundleId"),
+        ]
+        // The filter matches bundle ID prefixes too, so only exact matches are kept.
+        let wanted = Set(bundleIDs)
+        return try await pages(Wire.Apps.self, path: "/v1/apps", query: query).flatMap { page in
+            page.data.map { ASCApp(id: $0.id, name: $0.attributes.name, bundleID: $0.attributes.bundleId) }
+        }
+        .filter { wanted.contains($0.bundleID) }
+    }
+
     public func appIconURL(appID: String) async throws -> String? {
         let query = [
             URLQueryItem(name: "filter[app]", value: appID), URLQueryItem(name: "sort", value: "-uploadedDate"),

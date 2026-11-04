@@ -39,21 +39,46 @@ final class FakeSourceHost: SourceHost {
         var files: [String: String] = [WorkflowFile.path: legilo]
         var unknownRefs: Set<String> = []
         var tokens: [String?] = []
+        var refs: [String] = []
+        var repoURLs: [String] = []
+        var tree = RepositoryTree(paths: [])
+        var data: [String: Data] = [:]
+        var reads: [String] = []
+        /// Each call waits this long first (real time), to test timeouts.
+        var delay: Duration = .zero
     }
     let state = Mutex(State())
 
     func resolveCommit(repoURL: String, ref: String, token: String?) async throws -> String {
         try state.withLock { state in
             state.tokens.append(token)
+            state.refs.append(ref)
+            state.repoURLs.append(repoURL)
             if state.unknownRefs.contains(ref) { throw SourceHostError.refNotFound(ref) }
             return state.commit
         }
     }
 
     func readFile(repoURL: String, commit: String, path: String, token: String?) async throws -> String? {
-        state.withLock { state in
+        try await readData(repoURL: repoURL, commit: commit, path: path, token: token).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    func readData(repoURL: String, commit: String, path: String, token: String?) async throws -> Data? {
+        let delay = state.withLock { $0.delay }
+        if delay > .zero { try await Task.sleep(for: delay) }
+        return state.withLock { state in
             state.tokens.append(token)
-            return state.files[path]
+            state.reads.append(path)
+            return state.data[path] ?? state.files[path].map { Data($0.utf8) }
+        }
+    }
+
+    func tree(repoURL: String, commit: String, token: String?) async throws -> RepositoryTree {
+        let delay = state.withLock { $0.delay }
+        if delay > .zero { try await Task.sleep(for: delay) }
+        return state.withLock { state in
+            state.tokens.append(token)
+            return state.tree
         }
     }
 }

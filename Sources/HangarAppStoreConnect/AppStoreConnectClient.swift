@@ -7,6 +7,8 @@ public protocol AppStoreConnectClient: Sendable {
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int]
     /// Every app of the team (read-only); pages through `links.next`.
     func apps() async throws -> [ASCApp]
+    /// The team's apps with one of these bundle IDs (read-only); none asked for, none returned.
+    func apps(bundleIDs: [String]) async throws -> [ASCApp]
     /// The app's icon (512 × 512 PNG) from the newest of its last five builds that carries one; nil when none does.
     func appIconURL(appID: String) async throws -> String?
     func betaGroups(appID: String) async throws -> [ASCBetaGroup]
@@ -14,6 +16,15 @@ public protocol AppStoreConnectClient: Sendable {
     /// Creates the localization, or updates the existing one for `locale`.
     func setWhatToTest(buildID: String, locale: String, text: String) async throws
     func submitForBetaReview(buildID: String) async throws
+}
+
+extension AppStoreConnectClient {
+    /// Filters `apps()`; the live client asks App Store Connect for just these.
+    public func apps(bundleIDs: [String]) async throws -> [ASCApp] {
+        guard !bundleIDs.isEmpty else { return [] }
+        let wanted = Set(bundleIDs)
+        return try await apps().filter { wanted.contains($0.bundleID) }
+    }
 }
 
 private enum AppStoreConnectKey: DependencyKey {

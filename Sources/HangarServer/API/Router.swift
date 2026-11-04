@@ -43,6 +43,7 @@ extension HangarServerApp {
         addBuildRoutes(to: api)
         addJobRoutes(to: api)
         addMachineRoutes(to: api)
+        addGitHubRoutes(to: api)
         addWorkerRoutes(to: api)
         api.get("events") { _, _ in eventsResponse() }
         // The worker install script and binary: outside /api/v1, GETs only, so no cross-site guard; Host-checked.

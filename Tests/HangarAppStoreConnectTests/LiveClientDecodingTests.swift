@@ -66,6 +66,23 @@ struct LiveClientDecodingTests {
         #expect(requests[1].url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/apps?cursor=AQ&limit=200")
     }
 
+    @Test func appsByBundleIDFilters() async throws {
+        let transport = StubTransport(responses: [try respond("apps-page2")])
+        let apps = try await makeClient(transport).apps(bundleIDs: ["com.acme.mid", "com.acme.zeta"])
+        #expect(apps == [ASCApp(id: "a3", name: "Mid", bundleID: "com.acme.mid")])
+        let url = try #require(transport.requests.first?.url)
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(url.path == "/v1/apps")
+        #expect(items.contains(URLQueryItem(name: "filter[bundleId]", value: "com.acme.mid,com.acme.zeta")))
+        #expect(items.contains(URLQueryItem(name: "fields[apps]", value: "name,bundleId")))
+    }
+
+    @Test func appsByNoBundleIDsAsksNothing() async throws {
+        let transport = StubTransport()
+        #expect(try await makeClient(transport).apps(bundleIDs: []) == [])
+        #expect(transport.requests.isEmpty)
+    }
+
     @Test func appIconURLFillsTemplate() async throws {
         let transport = StubTransport(responses: [try respond("builds-icons")])
         let url = try await makeClient(transport).appIconURL(appID: "app1")

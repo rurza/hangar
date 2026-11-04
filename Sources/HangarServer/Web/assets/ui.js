@@ -201,7 +201,8 @@ let sheetCount = 0;
  * stays inside while it is open and returns to where it was afterwards. `onClose` runs once it has closed. With
  * `submitOnEnter`, Return in a single-line input runs the first primary action, as in a form. `beforeDismiss`
  * (async, resolving to a boolean) is asked before Esc, the close button or the backdrop closes the sheet; false
- * keeps it open. Actions and `close()` are not asked.
+ * keeps it open. Actions and `close()` are not asked. `setActions(actions)` on the returned handle replaces the
+ * footer's buttons.
  */
 export function sheet({
   title, body, actions = [{ label: 'Done', kind: 'primary' }], onClose, submitOnEnter = false, beforeDismiss,
@@ -213,12 +214,21 @@ export function sheet({
   let busy = false;
   let asking = false;
 
-  const buttons = actions.map((action) => h('button', {
-    type: 'button',
-    class: ['button', `button-${action.kind === 'cancel' ? 'secondary' : action.kind ?? 'secondary'}`],
-    disabled: action.disabled,
-    onClick: () => run(action),
-  }, action.label));
+  let buttons = [];
+  const footer = h('footer', { class: 'sheet-actions' });
+
+  /** Replaces the footer's buttons (a stepped sheet's Back and Next, say). */
+  function setActions(list) {
+    actions = list ?? [];
+    buttons = actions.map((action) => h('button', {
+      type: 'button',
+      class: ['button', `button-${action.kind === 'cancel' ? 'secondary' : action.kind ?? 'secondary'}`],
+      disabled: action.disabled || busy,
+      onClick: () => run(action),
+    }, action.label));
+    replaceChildren(footer, buttons);
+    footer.hidden = buttons.length === 0;
+  }
 
   const closeButton = h('button', { type: 'button', class: 'sheet-close', 'aria-label': 'Close', onClick: () => dismiss() },
     svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true' },
@@ -227,7 +237,8 @@ export function sheet({
   const panel = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': id, tabindex: '-1' },
     h('header', { class: 'sheet-header' }, h('h2', { class: 'sheet-title', id }, title), closeButton),
     h('div', { class: 'sheet-body' }, body, error),
-    buttons.length ? h('footer', { class: 'sheet-actions' }, buttons) : null);
+    footer);
+  setActions(actions);
 
   const backdrop = h('div', { class: 'sheet-backdrop' }, panel);
   backdrop.addEventListener('mousedown', (event) => {
@@ -322,7 +333,7 @@ export function sheet({
     onClose?.();
   }
 
-  const handle = { close, element: panel, setError };
+  const handle = { close, element: panel, setError, setActions };
   openSheets.push({ handle, backdrop });
   document.body.append(backdrop);
   syncInert();

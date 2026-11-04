@@ -125,4 +125,18 @@ import Testing
         _ = try await host.resolveCommit(repoURL: "https://github.com/a/b", ref: "x?y#z", token: nil)
         #expect(transport.requests.first?.url?.absoluteString == "https://api.github.com/repos/a/b/commits/x%3Fy%23z")
     }
+
+    @Test func treeListsEveryPathAtTheCommit() async throws {
+        let body = #"{"sha":"abc","tree":[{"path":"project.yml","type":"blob"},{"path":"App","type":"tree"}],"truncated":true}"#
+        let (host, transport) = make([.init(body: body)])
+        let tree = try await host.tree(repoURL: "https://github.com/a/b", commit: "abc123", token: "t")
+        #expect(tree == RepositoryTree(paths: ["project.yml", "App"], truncated: true))
+        #expect(transport.requests.first?.url?.absoluteString == "https://api.github.com/repos/a/b/git/trees/abc123?recursive=1")
+    }
+
+    @Test func readDataReturnsBytes() async throws {
+        let (host, _) = make([.init(body: Data([0x89, 0x50])), .init(status: 404, body: "{}")])
+        #expect(try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "a.png", token: nil) == Data([0x89, 0x50]))
+        #expect(try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "b.png", token: nil) == nil)
+    }
 }
