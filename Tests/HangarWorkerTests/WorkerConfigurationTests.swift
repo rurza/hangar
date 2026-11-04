@@ -26,3 +26,23 @@ import Testing
         #expect(throws: WorkerConfiguration.LoadError.self) { try WorkerConfiguration.load(from: path) }
     }
 }
+
+@Suite struct WorkerConfigurationWriteTests {
+    @Test func writesAPrivateFileThatLoadsBack() throws {
+        let directory = NSTemporaryDirectory() + "hangar-config-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let path = directory + "/worker/config.json"
+        let config = WorkerConfiguration(
+            serverURL: URL(string: "http://mac-mini:8787")!, token: "secret-token", maxConcurrentJobs: 2,
+            dataDirectory: "/var/hangar")
+        try config.write(to: path)
+        try config.write(to: path)  // rewriting keeps the mode
+
+        func mode(_ path: String) throws -> Int {
+            (try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int) ?? -1
+        }
+        #expect(try mode(path) == 0o600)
+        #expect(try mode(directory + "/worker") == 0o700)
+        #expect(try WorkerConfiguration.load(from: path) == config)
+    }
+}

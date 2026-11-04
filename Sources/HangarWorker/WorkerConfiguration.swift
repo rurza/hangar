@@ -37,3 +37,31 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
         }
     }
 }
+
+extension WorkerConfiguration {
+    /// Writes the configuration as JSON. The file holds the machine's token, so it is created with mode 0600 and its
+    /// directory with 0700; an existing file is replaced in place and its mode corrected.
+    public func write(to path: String) throws {
+        let directory = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(
+            atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let encoder = JSONCoding.encoder
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw SecretsError.io(path: path, errno: errno) }
+        defer { close(descriptor) }
+        guard fchmod(descriptor, 0o600) == 0 else { throw SecretsError.io(path: path, errno: errno) }
+        var offset = 0
+        try data.withUnsafeBytes { buffer in
+            while offset < buffer.count {
+                let written = Foundation.write(descriptor, buffer.baseAddress! + offset, buffer.count - offset)
+                if written < 0 {
+                    if errno == EINTR { continue }
+                    throw SecretsError.io(path: path, errno: errno)
+                }
+                offset += written
+            }
+        }
+    }
+}
