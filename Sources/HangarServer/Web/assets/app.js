@@ -1,13 +1,15 @@
 // The shell: header with the brand and the tab navigation (a bottom tab bar on phones), the page outlet and
 // the route table. Pages live in ./pages/ and are registered below.
 
-import { emptyState, h, page, svg } from './ui.js';
+import { h, svg } from './ui.js';
 import { route, start } from './router.js';
 import { appsPage } from './pages/apps.js';
 import { appDetailPage } from './pages/app-detail.js';
 import { workflowPage } from './pages/workflow.js';
 import { buildPage } from './pages/build.js';
 import { historyPage } from './pages/history.js';
+import { machinesPage } from './pages/machines.js';
+import { settingsPage } from './pages/settings.js';
 
 // MARK: Icons
 
@@ -119,18 +121,13 @@ function shell(root) {
 
 // MARK: Routes
 
-function placeholder(title, iconName, emptyTitle, message, subtitle) {
-  return () => page({ title, subtitle },
-    emptyState({ icon: icon(iconName, 'empty-icon'), title: emptyTitle, message }));
-}
-
 route('/', appsPage);
 route('/apps/:app', appDetailPage);
 route('/apps/:app/workflow', workflowPage);
 route('/builds', historyPage);
 route('/builds/:id', buildPage);
-route('/machines', placeholder('Machines', 'machines', 'No Machines Yet', 'Macs that run your builds appear here.'));
-route('/settings', placeholder('Settings', 'settings', 'Nothing to Set Yet', 'App Store Connect, GitHub and global variables appear here.'));
+route('/machines', machinesPage);
+route('/settings', settingsPage);
 
 const app = shell(document.getElementById('app'));
 start(app.main, { onRendered: (path) => app.rendered(path) });

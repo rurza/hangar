@@ -1416,6 +1416,87 @@ li + li > .artifact-link::before {
   .history-filter-field, .history-filter-field .select { width: 100%; }
 }
 
+/* MARK: Machines */
+
+.machine-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); align-items: start; }
+.machine-card { display: grid; gap: var(--space-2); min-width: 0; }
+.machine-card .card-actions { margin-top: 0; padding-top: 0; justify-content: flex-end; }
+.machine-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-1); }
+.machine-heading { min-width: 0; display: grid; gap: 2px; }
+.machine-name { font: var(--headline); font-size: 19px; line-height: 24px; letter-spacing: -0.3px; overflow-wrap: anywhere; }
+.machine-status { display: flex; align-items: center; gap: 6px; color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
+.machine-body { display: grid; gap: var(--space-2); min-width: 0; }
+.machine-load { display: flex; align-items: center; gap: var(--space-2); }
+.machine-load-text { display: grid; gap: 2px; }
+.machine-group { display: grid; gap: 2px; }
+.machine-group-title { font: var(--footnote); font-weight: 600; color: var(--secondary); letter-spacing: -0.08px; }
+.machine-group .chips { margin-top: 2px; }
+.machine-card .chip { overflow-wrap: anywhere; }
+.machine-card .fact-value { text-align: right; overflow-wrap: anywhere; min-width: 0; }
+
+.signing { display: flex; align-items: flex-start; gap: 10px; font: var(--subhead); letter-spacing: -0.24px; }
+.signing-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--tone);
+  color: #ffffff;
+  font: 700 12px/1 var(--font);
+}
+.signing-ok { --tone: var(--success); }
+.signing-warning {
+  --tone: var(--warning);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+.signing-warning > div { display: grid; gap: 2px; min-width: 0; }
+.signing-title { font-weight: 600; }
+
+.code-field { display: grid; gap: 6px; min-width: 0; }
+.code-block {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  font: 400 13px/20px var(--font-mono);
+  white-space: pre;
+  user-select: all;
+}
+.token-block { white-space: pre-wrap; overflow-wrap: anywhere; }
+.token-warning {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  font: var(--subhead);
+  font-weight: 600;
+  letter-spacing: -0.24px;
+}
+
+/* MARK: Settings */
+
+.settings-card { display: grid; gap: var(--space-1); min-width: 0; }
+.settings-card .form { gap: var(--space-2); }
+.settings-card .card-actions { margin-top: 0; }
+.settings-card .field-pair { align-items: start; }
+.settings-state { display: flex; align-items: center; gap: var(--space-1); }
+.settings-value { text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.file-input { padding-block: 8px; height: auto; cursor: pointer; }
+.file-input::file-selector-button {
+  margin-right: var(--space-1);
+  padding: 4px 12px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--fill-strong);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
 /* MARK: Reduced motion */
 
 @media (prefers-reduced-motion: reduce) {
