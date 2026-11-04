@@ -6,11 +6,14 @@ public enum HangarAPIError: Error, CustomStringConvertible {
     case server(APIError, status: Int)
     /// The request never got an HTTP answer, or a stream was cut off.
     case transport(any Error)
+    /// A 2xx answer (or stream frame) whose body is not the expected JSON.
+    case invalidResponse(any Error)
 
     public var description: String {
         switch self {
         case .server(let error, _): "\(error.message) (\(error.code))"
         case .transport(let error): "\(error)"
+        case .invalidResponse(let error): "unreadable response: \(error)"
         }
     }
 }
@@ -120,7 +123,11 @@ public struct HangarAPI: Sendable {
     }
 
     private func decode<Response: Decodable>(_ data: Data) throws -> Response {
-        try JSONCoding.decoder.decode(Response.self, from: data)
+        do {
+            return try JSONCoding.decoder.decode(Response.self, from: data)
+        } catch {
+            throw HangarAPIError.invalidResponse(error)
+        }
     }
 
     private func perform(_ request: URLRequest) async throws -> Data {

@@ -146,3 +146,11 @@ import Testing
         }
     }
 }
+
+extension HangarAPITests {
+    @Test func undecodableSuccessBodyIsInvalidResponse() async throws {
+        let api = HangarAPI(baseURL: Self.base, transport: StubTransport(responses: [StubTransport.Response(body: "{\"nope\":1}")]))
+        let error = await #expect(throws: HangarAPIError.self) { try await api.apps() }
+        guard case .invalidResponse = error else { Issue.record("expected .invalidResponse, got \(String(describing: error))"); return }
+    }
+}

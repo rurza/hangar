@@ -75,4 +75,49 @@ import Testing
         #expect(result.requests.count == 1)
         #expect(try JSONCoding.decoder.decode(Build.self, from: Data(result.out.utf8)) == H.build())
     }
+
+    /// A watch whose event stream drops at once and whose polls run every millisecond.
+    static func polling(_ responses: [StubTransport.Response]) -> H {
+        var harness = H(responses: responses, isTTY: true)
+        harness.pollInterval = .milliseconds(1)
+        harness.lostContactAfter = .milliseconds(200)
+        return harness
+    }
+
+    static let running = H.build(H.job(status: .running, steps: [step("archive", .running)]))
+
+    @Test func transientPollFailureKeepsWatching() async throws {
+        let done = H.build(H.job(status: .succeeded, steps: [Self.step("archive", .succeeded, finished: Self.t2)]))
+        let harness = Self.polling([
+            try H.json(H.build(), status: 202), try H.json(Self.running),
+            try H.json(APIError(code: "upstream_unavailable", message: "Bad gateway"), status: 502),
+            try H.json(done),
+        ])
+        let result = await harness.run(["deploy", "legilo", "testflight"])
+
+        #expect(result.exitCode == 0)
+        #expect(result.requests.count == 4)
+        #expect(result.out.hasSuffix("08:00:20 [Legilo/ios] archive succeeded\nBuild 42 succeeded.\n"))
+        #expect(result.err.isEmpty)
+    }
+
+    @Test func droppedStreamFallsBackToPolling() async throws {
+        let harness = Self.polling([
+            try H.json(H.build(), status: 202), try H.json(Self.running), try H.json(H.build(H.job(status: .cancelled))),
+        ])
+        let result = await harness.run(["deploy", "legilo", "testflight"])
+        #expect(result.exitCode == 2)
+        #expect(result.out.hasSuffix("Build 42 cancelled.\n"))
+    }
+
+    @Test func pollsFailingPastTheWindowExitThree() async throws {
+        // After the initial read every request fails: the stub has no responses left.
+        let harness = Self.polling([try H.json(H.build(), status: 202), try H.json(Self.running)])
+        let result = await harness.run(["deploy", "legilo", "testflight"])
+
+        #expect(result.exitCode == 3)
+        #expect(result.requests.count > 3)
+        #expect(result.err == "error: lost contact with the server; build \(H.buildID.uuidString.lowercased()) is still running\n")
+        #expect(!result.out.contains("Build 42 running."))
+    }
 }

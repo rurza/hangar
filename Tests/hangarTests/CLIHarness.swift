@@ -35,6 +35,8 @@ struct CLIHarness {
     var isTTY = false
     /// The `/events` stream's text; empty means the stream closes at once.
     var events = ""
+    var pollInterval: Duration = .seconds(3600)
+    var lostContactAfter: Duration = .seconds(120)
 
     static func json(_ value: some Encodable, status: Int = 200) throws -> StubTransport.Response {
         StubTransport.Response(status: status, body: try JSONCoding.encoder.encode(value))
@@ -62,7 +64,7 @@ struct CLIHarness {
             },
             console: Console(
                 write: { capture.out($0) }, writeError: { capture.err($0) }, readInput: { stdinData }, isTTY: isTTY),
-            environment: [:], timeZone: Self.utc, pollInterval: .seconds(3600))
+            environment: [:], timeZone: Self.utc, pollInterval: pollInterval, lostContactAfter: lostContactAfter)
 
         let exitCode: Int32 = await CLIContext.$current.withValue(context) {
             do {

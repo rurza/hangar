@@ -52,6 +52,8 @@ extension HangarAPI {
                     throw HangarAPIError.transport(StreamClosed())
                 } catch let error as HangarAPIError {
                     continuation.finish(throwing: error)
+                } catch let error as DecodingError {
+                    continuation.finish(throwing: HangarAPIError.invalidResponse(error))
                 } catch {
                     continuation.finish(throwing: HangarAPIError.transport(error))
                 }

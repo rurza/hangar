@@ -151,4 +151,11 @@ import Testing
         let result = await H().run(["cancel", "not-a-uuid"])
         #expect(result.exitCode == 64)
     }
+
+    @Test func undecodableResponseIsAnErrorLine() async throws {
+        let result = await H(responses: [StubTransport.Response(body: "{\"nope\":1}")]).run(["apps", "list"])
+        #expect(result.exitCode == 1)
+        #expect(result.err.hasPrefix("error: the server at http://localhost:8787 sent a response the CLI cannot read: "))
+        #expect(result.out.isEmpty)
+    }
 }

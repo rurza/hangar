@@ -65,6 +65,8 @@ struct CLIContext: Sendable {
     var timeZone: TimeZone
     /// How often a watch re-reads the build, besides following `/events`.
     var pollInterval: Duration
+    /// How long a watch keeps retrying failed re-reads before it gives up with exit code 3.
+    var lostContactAfter: Duration = .seconds(120)
 
     @TaskLocal static var current = CLIContext(
         makeAPI: { HangarAPI(baseURL: $0, transport: URLSessionTransport()) },
@@ -88,8 +90,8 @@ struct CLI: Sendable {
     func printJSON(_ value: some Encodable) throws { print(try Format.json(value)) }
 }
 
-/// A command that talks to the server. Its `run()` maps API failures to `error: <message> (<code>)` on stderr
-/// and exit code 1; `ExitCode` and ArgumentParser errors pass through.
+/// A command that talks to the server. Its `run()` prints every failure as one `error: ...` line on stderr
+/// (`error: <message> (<code>)` for a server error) and exits 1; `ExitCode` and `ValidationError` pass through.
 protocol HangarCommand: AsyncParsableCommand {
     var global: GlobalOptions { get }
     func run(_ cli: CLI) async throws
@@ -108,8 +110,18 @@ extension HangarCommand {
         } catch HangarAPIError.transport(let error) {
             cli.printError("error: cannot reach the Hangar server at \(server.absoluteString): \(Format.describe(error))")
             throw ExitCode.failure
+        } catch HangarAPIError.invalidResponse(let error) {
+            cli.printError("error: the server at \(server.absoluteString) sent a response the CLI cannot read: \(error)")
+            throw ExitCode.failure
         } catch let error as CLIError {
             cli.printError("error: \(error.message)")
+            throw ExitCode.failure
+        } catch let error as ExitCode {
+            throw error
+        } catch let error as ValidationError {
+            throw error
+        } catch {
+            cli.printError("error: \(Format.describe(error))")
             throw ExitCode.failure
         }
     }
