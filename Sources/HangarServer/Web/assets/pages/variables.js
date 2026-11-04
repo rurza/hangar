@@ -115,12 +115,13 @@ export function variablesEditor({ scope, signal }) {
         placeholder: existing ? 'New value' : null,
         onInput: () => valueControl.removeAttribute('aria-invalid'),
       };
+      const masked = isSecret && !revealed;
       valueControl = multiline
-        ? h('textarea', { class: 'textarea', rows: 6, ...attrs })
-        : h('input', { class: 'input mono', type: isSecret && !revealed ? 'password' : 'text', ...attrs });
+        ? h('textarea', { class: ['textarea', masked ? 'textarea-masked' : null], rows: 6, ...attrs })
+        : h('input', { class: 'input mono', type: masked ? 'password' : 'text', ...attrs });
       if (existing) valueControl.setAttribute('autofocus', '');
       valueControl.value = typed;
-      const reveal = isSecret && !multiline
+      const reveal = isSecret
         ? h('button', {
           type: 'button', class: 'field-toggle', 'aria-label': revealed ? 'Hide value' : 'Show value',
           onClick: () => {
@@ -131,7 +132,7 @@ export function variablesEditor({ scope, signal }) {
         }, revealed ? 'Hide' : 'Show')
         : null;
       const hint = asFile
-        ? 'Jobs get the path of a file that holds this text.'
+        ? `Jobs get the path of a file that holds this text.${isSecret ? ' After saving it cannot be read back, only replaced.' : ''}`
         : isSecret ? 'Shown only while you type. After saving it cannot be read back, only replaced.' : null;
       replaceChildren(valueSlot, field({ label: 'Value', hint, control: valueControl, trailing: reveal }));
     }

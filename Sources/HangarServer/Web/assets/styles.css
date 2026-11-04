@@ -552,6 +552,8 @@ a.row:hover { text-decoration: none; background: var(--fill); }
   transition: box-shadow 160ms ease, background-color 160ms ease;
 }
 .textarea { min-height: 120px; resize: vertical; font-family: var(--font-mono); font-size: 14px; line-height: 20px; }
+/* A secret file's text: masked like a password field until Show. */
+.textarea-masked { -webkit-text-security: disc; }
 .input::placeholder, .textarea::placeholder { color: var(--tertiary); }
 .input:focus-visible, .textarea:focus-visible, .select:focus-visible {
   outline: none;
