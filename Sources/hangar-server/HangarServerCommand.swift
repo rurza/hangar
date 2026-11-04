@@ -71,6 +71,8 @@ struct HangarServerCommand: AsyncParsableCommand {
                 configuration: configuration, database: database,
                 appStoreConnectFactory: { LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport()) })
 
+            try server.backfillAppIcons()
+
             logger.info("data directory \(resolvedDirectory)")
             logger.info("allowed host names: \(configuration.hostPolicy.description)")
             logger.info("Hangar is running at \(Self.webURL(host: configuration.host, port: configuration.port))")

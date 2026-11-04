@@ -50,6 +50,14 @@ public struct AppRepository: Sendable {
         }
     }
 
+    /// Sets the icon of an app that has none; an icon set meanwhile, or a deleted app, is left alone.
+    public func setIcon(id: UUID, url: String) throws {
+        try database.write { db in
+            try db.execute(
+                sql: "UPDATE apps SET icon_url = ? WHERE id = ? AND icon_url IS NULL", arguments: [url, id.uuidString])
+        }
+    }
+
     /// Removes the app with its builds, jobs, numbers and variables.
     public func delete(id: UUID) throws {
         try database.write { db in

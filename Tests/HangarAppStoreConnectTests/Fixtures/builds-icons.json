@@ -1,0 +1,15 @@
+{
+  "data": [
+    { "type": "builds", "id": "b9", "attributes": { "iconAssetToken": null } },
+    {
+      "type": "builds", "id": "b8",
+      "attributes": {
+        "iconAssetToken": {
+          "templateUrl": "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/aa/bb/cc/AppIcon-0-1x_U007emarketing.png/{w}x{h}bb.{f}",
+          "width": 1024, "height": 1024
+        }
+      }
+    }
+  ],
+  "links": { "self": "https://api.appstoreconnect.apple.com/v1/builds" }
+}

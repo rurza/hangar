@@ -4,10 +4,16 @@ import Hummingbird
 
 extension HangarServerApp {
     func addAppRoutes(to api: APIGroup) {
-        api.get("apps") { _, _ in try Response.json(apps.all()) }
+        api.get("apps") { _, _ in
+            let all = try apps.all()
+            appIconBackfill.fill(all)  // apps without an icon; the UI shows a stored one on its next load
+            return try Response.json(all)
+        }
         api.post("apps") { request, context in
             let input = try await request.decode(as: CreateAppRequest.self, context: context)
-            return try Response.json(apps.create(input), status: .created)
+            let app = try apps.create(input)
+            appIconBackfill.fill([app])  // only when no icon was given
+            return try Response.json(app, status: .created)
         }
         api.get("apps/:id") { _, context in try Response.json(app(context)) }
         api.delete("apps/:id") { _, context in

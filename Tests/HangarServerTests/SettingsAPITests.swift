@@ -10,13 +10,27 @@ import Testing
 
 private struct AppsASC: AppStoreConnectClient {
     var apps: [ASCApp]
+    var icons: [String: String] = [:]
     func builds(appID: String, version: String?) async throws -> [ASCBuild] { [] }
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
     func apps() async throws -> [ASCApp] { apps }
+    func appIconURL(appID: String) async throws -> String? { icons[appID] }
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {}
     func submitForBetaReview(buildID: String) async throws {}
+}
+
+/// Answers the iTunes lookup by the `id` query item: the artwork for known IDs, no results otherwise.
+private struct LookupTransport: HTTPTransport {
+    var artwork: [String: String]
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let url = request.url!
+        let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value ?? ""
+        let body = artwork[id].map { #"{"resultCount":1,"results":[{"artworkUrl512":"\#($0)"}]}"# }
+            ?? #"{"resultCount":0,"results":[]}"#
+        return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
 }
 
 private let privateKey = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49\n-----END PRIVATE KEY-----\n"
@@ -106,6 +120,27 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
                     ASCAppSummary(id: "7", name: "Atlas", bundleID: "com.acme.atlas", registered: false),
                     ASCAppSummary(id: "42", name: "legilo", bundleID: "com.acme.legilo", registered: true),
                 ])
+            }
+        }
+    }
+
+    @Test func ascAppsCarryIcons() async throws {
+        let apps = [
+            ASCApp(id: "42", name: "Legilo", bundleID: "com.acme.legilo"),
+            ASCApp(id: "7", name: "Atlas", bundleID: "com.acme.atlas"),
+            ASCApp(id: "9", name: "Zeta", bundleID: "com.acme.zeta"),
+        ]
+        let icon = "https://is1-ssl.mzstatic.com/icon/42/512x512bb.png"
+        let artwork = "https://is1-ssl.mzstatic.com/artwork/9/512x512bb.jpg"
+        // "7": no build icon, two empty lookups; "9": the iTunes artwork. Lookups run concurrently, so answer by URL.
+        let transport = LookupTransport(artwork: ["9": artwork])
+        let fixture = try APIFixture(
+            appStoreConnectFactory: { _ in AppsASC(apps: apps, icons: ["42": icon]) }, iconTransport: transport)
+        try configureASC(fixture)
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/asc/apps", method: .get) { response throws in
+                #expect(response.status == .ok)
+                #expect(try decode([ASCAppSummary].self, response).map(\.iconURL) == [nil, icon, artwork])
             }
         }
     }

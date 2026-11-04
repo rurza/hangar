@@ -203,11 +203,14 @@ public struct ASCAppSummary: Codable, Equatable, Sendable {
     public var bundleID: String
     /// An app with this App Store Connect ID already exists in Hangar.
     public var registered: Bool
+    /// The app's icon (https), when App Store Connect or the iTunes lookup has one.
+    public var iconURL: String?
 
-    public init(id: String, name: String, bundleID: String, registered: Bool) {
+    public init(id: String, name: String, bundleID: String, registered: Bool, iconURL: String? = nil) {
         self.id = id
         self.name = name
         self.bundleID = bundleID
         self.registered = registered
+        self.iconURL = iconURL
     }
 }

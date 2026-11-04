@@ -66,6 +66,26 @@ struct LiveClientDecodingTests {
         #expect(requests[1].url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/apps?cursor=AQ&limit=200")
     }
 
+    @Test func appIconURLFillsTemplate() async throws {
+        let transport = StubTransport(responses: [try respond("builds-icons")])
+        let url = try await makeClient(transport).appIconURL(appID: "app1")
+
+        #expect(url == "https://is1-ssl.mzstatic.com/image/thumb/Purple221/v4/aa/bb/cc/AppIcon-0-1x_U007emarketing.png/512x512bb.png")
+        let request = try #require(transport.requests.first?.url)
+        let items = URLComponents(url: request, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        #expect(request.path == "/v1/builds")
+        #expect(items.contains(URLQueryItem(name: "filter[app]", value: "app1")))
+        #expect(items.contains(URLQueryItem(name: "sort", value: "-uploadedDate")))
+        #expect(items.contains(URLQueryItem(name: "limit", value: "5")))
+        #expect(items.contains(URLQueryItem(name: "fields[builds]", value: "iconAssetToken")))
+        #expect(transport.requests.count == 1)
+    }
+
+    @Test func appIconURLNilWithoutBuilds() async throws {
+        let transport = StubTransport(responses: [try respond("builds-empty")])
+        #expect(try await makeClient(transport).appIconURL(appID: "app1") == nil)
+    }
+
     @Test func buildsOmitsVersionFilterWhenNil() async throws {
         let transport = StubTransport(responses: [try respond("builds-page2")])
         _ = try await makeClient(transport).builds(appID: "app1", version: nil)

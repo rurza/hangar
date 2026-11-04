@@ -6,7 +6,7 @@ import {
   button, card, emptyState, field, h, page, relativeTime, replaceChildren, section, sheet, spinner, statusBadge,
   toast,
 } from '../ui.js';
-import { appIcon } from './apps.js';
+import { appIcon, recheckIconSoon } from './apps.js';
 import { openDeploySheet } from './deploy.js';
 import { variablesEditor } from './variables.js';
 
@@ -38,12 +38,21 @@ export async function appDetailPage(params, context) {
     if (event.type === 'build' && event.build?.appID === app.id) builds.upsert(event.build);
   }, { onReconnect: () => builds.reload() }));
 
+  let icon = appIcon(app, 'large');
+  recheckIconSoon([app], context, async () => {
+    const updated = await api.get(`/apps/${slug}`, { signal });
+    if (!updated.iconURL || !icon.isConnected) return;
+    const next = appIcon(updated, 'large');
+    icon.replaceWith(next);
+    icon = next;
+  });
+
   return page({
     title: app.name,
     subtitle: /^https:\/\//i.test(app.repoURL)
       ? h('a', { href: app.repoURL, target: '_blank', rel: 'noopener noreferrer' }, app.repoURL.replace(/^https:\/\//i, ''))
       : app.repoURL,
-    leading: appIcon(app, 'large'),
+    leading: icon,
     actions: button('Deploy', { kind: 'primary', onClick: () => openDeploySheet(app) }),
   },
   h('div', { class: 'detail-grid' }, numbers, workflow),

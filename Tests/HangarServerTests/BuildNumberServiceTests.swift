@@ -24,6 +24,7 @@ private struct FakeASC: AppStoreConnectClient {
     }
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { runs }
     func apps() async throws -> [ASCApp] { [] }
+    func appIconURL(appID: String) async throws -> String? { nil }
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {}

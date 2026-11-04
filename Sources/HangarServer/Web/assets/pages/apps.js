@@ -27,17 +27,41 @@ function monogram(app, size) {
     letter.toLocaleUpperCase());
 }
 
+function isHTTPS(url) {
+  return typeof url === 'string' && /^https:\/\//i.test(url);
+}
+
 /**
  * The app's icon: its `iconURL` image (https only, which the CSP allows) or a rounded-square monogram coloured
  * from the name. `size` is `large` (detail page), `medium` (cards) or `small` (lists).
  */
 export function appIcon(app, size = 'medium') {
-  if (typeof app.iconURL !== 'string' || !/^https:\/\//i.test(app.iconURL)) return monogram(app, size);
+  if (!isHTTPS(app.iconURL)) return monogram(app, size);
   const image = h('img', {
     class: ['app-icon', `app-icon-${size}`], src: app.iconURL, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer',
   });
   image.addEventListener('error', () => image.replaceWith(monogram(app, size)), { once: true });
   return image;
+}
+
+// MARK: Icon resolved after adding
+
+/** How long after adding an app without an icon its page looks again for the one the server resolves. */
+const ICON_RECHECK_MS = 3000;
+const awaitingIcon = new Set(); // ids of apps added here without an icon, not yet looked at again
+
+/**
+ * Once, ~3 s after this page shows, calls `recheck()` if any of `apps` was just added without an icon: the server
+ * resolves one in the background. Cancelled when the page is left.
+ */
+export function recheckIconSoon(apps, context, recheck) {
+  const pending = apps.filter((app) => awaitingIcon.has(app.id));
+  if (pending.length === 0) return;
+  const timer = setTimeout(() => {
+    pending.forEach((app) => awaitingIcon.delete(app.id));
+    Promise.resolve(recheck()).catch(() => {});
+  }, ICON_RECHECK_MS);
+  context.onCleanup(() => clearTimeout(timer));
 }
 
 // MARK: Apps page
@@ -84,6 +108,7 @@ export async function appsPage(params, context) {
 
   await load();
   render();
+  recheckIconSoon(apps, context, () => load().then(render));
 
   context.onCleanup(events((event) => {
     if (event.type !== 'build' || !event.build) return;
@@ -177,6 +202,7 @@ export function openAddAppSheet({ onAdded } = {}) {
           }
           if (iconURL && !/^https:\/\/\S+$/i.test(iconURL)) invalid(icon, 'The icon URL must start with https://.');
           const app = await api.post('/apps', request);
+          if (!app.iconURL) awaitingIcon.add(app.id);
           toast(`Added ${app.name}`, 'success');
           onAdded?.(app);
         },
@@ -187,8 +213,10 @@ export function openAddAppSheet({ onAdded } = {}) {
   loadPicker(picker, (app) => {
     name.value = app.name;
     ascID.value = app.id;
+    if (isHTTPS(app.iconURL)) icon.value = app.iconURL;
     name.removeAttribute('aria-invalid');
     ascID.removeAttribute('aria-invalid');
+    icon.removeAttribute('aria-invalid');
     repo.focus();
   }).catch(() => {});
   return handle;
@@ -252,7 +280,7 @@ async function loadPicker(picker, onPick) {
             onPick(app);
           },
         },
-        monogram(app, 'small'),
+        appIcon(app, 'small'),
         h('span', { class: 'asc-item-text' },
           h('span', { class: 'asc-item-name' }, app.name),
           h('span', { class: 'asc-item-detail' }, `${app.bundleID} · ${app.id}`)),

@@ -29,6 +29,7 @@ private struct RecordingASC: AppStoreConnectClient {
     }
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [12] }
     func apps() async throws -> [ASCApp] { [] }
+    func appIconURL(appID: String) async throws -> String? { "https://is1-ssl.mzstatic.com/icon/\(appID)/512x512bb.png" }
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {}
@@ -46,7 +47,8 @@ struct APIFixture {
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient = {
             RecordingASC(credentials: $0)
         },
-        now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = []
+        now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = [],
+        iconTransport: any HTTPTransport = StubTransport()
     ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
         let database = try HangarServer.Database(path: ":memory:")
@@ -55,7 +57,7 @@ struct APIFixture {
             configuration: ServerConfiguration(
                 host: boundHost, dataDirectory: directory.path, allowedHosts: allowedHosts), database: database,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
-            numberSources: sources.map { sources in { @Sendable in sources } }, now: now)
+            numberSources: sources.map { sources in { @Sendable in sources } }, iconTransport: iconTransport, now: now)
     }
 
     func test(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {
@@ -122,6 +124,44 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
             }
             try await client.execute(uri: "/api/v1/apps/legilo", method: .delete) { response in #expect(response.status == .noContent) }
             try await client.execute(uri: "/api/v1/apps/legilo", method: .get) { response in #expect(response.status == .notFound) }
+        }
+    }
+
+    @Test func createdAppWithoutIconGetsOneInTheBackground() async throws {
+        let fixture = try APIFixture()
+        for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
+            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
+        }
+        try await fixture.test { client in
+            let request = CreateAppRequest(
+                name: "Legilo", repoURL: "https://github.com/acme/legilo.git", appStoreConnectAppID: "42")
+            let created = try await client.execute(uri: "/api/v1/apps", method: .post, headers: jsonHeaders, body: try body(request)) {
+                #expect($0.status == .created)
+                return try decode(App.self, $0)
+            }
+            #expect(created.iconURL == nil)  // the response does not wait for the icon
+            await fixture.server.appIconBackfill.waitForIdle()
+            try await client.execute(uri: "/api/v1/apps/\(created.id)", method: .get) { response throws in
+                #expect(try decode(App.self, response).iconURL == "https://is1-ssl.mzstatic.com/icon/42/512x512bb.png")
+            }
+        }
+    }
+
+    @Test func givenIconIsKeptAndListingBackfillsMissingOnes() async throws {
+        let fixture = try APIFixture()
+        for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
+            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
+        }
+        let own = "https://example.com/own.png"
+        _ = try fixture.server.apps.create(CreateAppRequest(
+            name: "Atlas", repoURL: "https://github.com/acme/atlas.git", appStoreConnectAppID: "7", iconURL: own))
+        try fixture.createApp()  // "42", no icon
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps", method: .get) { response in #expect(response.status == .ok) }
+            await fixture.server.appIconBackfill.waitForIdle()
+            try await client.execute(uri: "/api/v1/apps", method: .get) { response throws in
+                #expect(try decode([App].self, response).map(\.iconURL) == [own, "https://is1-ssl.mzstatic.com/icon/42/512x512bb.png"])
+            }
         }
     }
 

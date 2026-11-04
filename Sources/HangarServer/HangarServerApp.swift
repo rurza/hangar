@@ -24,15 +24,19 @@ public struct HangarServerApp: Sendable {
     public let logStore: LogStore
     public let artifactStore: ArtifactStore
     public let sweeper: RetentionSweeper
+    public let appIcons: AppIconResolver
+    public let appIconBackfill: AppIconBackfill
     let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
-    /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect.
+    /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
+    /// carries the public iTunes lookup that finds icons App Store Connect has none for.
     public init(
         configuration: ServerConfiguration, database: Database,
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient,
         sourceHost: any SourceHost = GitHubSourceHost(), clock: any Clock<Duration> = ContinuousClock(),
         numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil,
+        iconTransport: any HTTPTransport = URLSessionTransport(),
         now: @escaping @Sendable () -> Date = Date.init
     ) throws {
         self.configuration = configuration
@@ -62,6 +66,15 @@ public struct HangarServerApp: Sendable {
         artifactStore = ArtifactStore(jobsDirectory: configuration.jobsDirectory)
         sweeper = RetentionSweeper(
             jobsDirectory: configuration.jobsDirectory, builds: builds, retentionDays: configuration.retentionDays)
+        appIcons = AppIconResolver(
+            client: { try Self.appStoreConnectClient(variables: variables, factory: appStoreConnectFactory) },
+            transport: iconTransport, clock: clock, now: now)
+        appIconBackfill = AppIconBackfill(resolver: appIcons, apps: apps, now: now)
+    }
+
+    /// Starts resolving icons for every app without one (at start-up); returns at once.
+    public func backfillAppIcons() throws {
+        appIconBackfill.fill(try apps.all())
     }
 
     public func build() -> some ApplicationProtocol {

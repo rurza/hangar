@@ -69,6 +69,18 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         }
     }
 
+    public func appIconURL(appID: String) async throws -> String? {
+        let query = [
+            URLQueryItem(name: "filter[app]", value: appID), URLQueryItem(name: "sort", value: "-uploadedDate"),
+            URLQueryItem(name: "limit", value: "5"), URLQueryItem(name: "fields[builds]", value: "iconAssetToken"),
+        ]
+        let page = try decode(Wire.BuildIcons.self, from: try await request("GET", url: try url(path: "/v1/builds", query: query), body: nil))
+        return page.data.lazy.compactMap { $0.attributes?.iconAssetToken?.templateUrl }.first.map { template in
+            template.replacingOccurrences(of: "{w}", with: "512").replacingOccurrences(of: "{h}", with: "512")
+                .replacingOccurrences(of: "{f}", with: "png")
+        }
+    }
+
     public func betaGroups(appID: String) async throws -> [ASCBetaGroup] {
         let query = [URLQueryItem(name: "filter[app]", value: appID), URLQueryItem(name: "limit", value: "200")]
         return try await pages(Wire.BetaGroups.self, path: "/v1/betaGroups", query: query).flatMap { page in
@@ -269,6 +281,17 @@ private enum Wire {
         var data: [Item]
         var links: Links?
         var nextURL: String? { links?.next }
+    }
+
+    struct BuildIcons: Decodable {
+        struct Item: Decodable {
+            struct Attributes: Decodable {
+                struct Token: Decodable { var templateUrl: String? }
+                var iconAssetToken: Token?
+            }
+            var attributes: Attributes?
+        }
+        var data: [Item]
     }
 
     struct BetaGroups: Decodable, Paged {

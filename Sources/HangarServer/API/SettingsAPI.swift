@@ -19,8 +19,14 @@ extension HangarServerApp {
                 throw APIError(code: "asc_not_configured", message: "Set the App Store Connect key in Settings first.")
             }
             let registered = Set(try apps.all().map(\.appStoreConnectAppID))
-            let summaries = try await client.apps()
-                .map { ASCAppSummary(id: $0.id, name: $0.name, bundleID: $0.bundleID, registered: registered.contains($0.id)) }
+            let ascApps = try await client.apps()
+            let icons = await appIcons.iconURLs(ascAppIDs: ascApps.map(\.id), client: client)
+            let summaries = ascApps
+                .map {
+                    ASCAppSummary(
+                        id: $0.id, name: $0.name, bundleID: $0.bundleID, registered: registered.contains($0.id),
+                        iconURL: icons[$0.id])
+                }
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             return try Response.json(summaries)
         }

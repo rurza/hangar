@@ -7,6 +7,8 @@ public protocol AppStoreConnectClient: Sendable {
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int]
     /// Every app of the team (read-only); pages through `links.next`.
     func apps() async throws -> [ASCApp]
+    /// The app's icon (512 × 512 PNG) from the newest of its last five builds that carries one; nil when none does.
+    func appIconURL(appID: String) async throws -> String?
     func betaGroups(appID: String) async throws -> [ASCBetaGroup]
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws
     /// Creates the localization, or updates the existing one for `locale`.
