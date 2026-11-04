@@ -33,15 +33,21 @@ Requires macOS 15+, Xcode and [Tailscale](https://tailscale.com) on every Mac. D
    export HANGAR_SERVER=http://<tailnet-host>:8787
    ```
 
-3. **Create a machine and install the worker** on each build Mac, as the dedicated `hangar` user (prepare it as described in the worker setup):
+3. **Create a machine and install the worker.** Create the machine from a Mac that has the `hangar` CLI (the server Mac, where `install-server.sh` installs it; elsewhere run `swift build -c release --product hangar` and copy the binary), with `HANGAR_SERVER` set. Copy the token it prints:
 
    ```sh
    hangar machines add <name>        # prints the worker token once
+   ```
+
+   Then on the build Mac, as the dedicated `hangar` user (prepared as described in the worker setup), enter the token without echo and install the worker:
+
+   ```sh
    read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
    scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
    hangar-worker doctor
-   hangar machines list
    ```
+
+   Back on a Mac with the CLI, check that the machine is online with `hangar machines list`.
 
 4. **Set the App Store Connect key and a GitHub token:**
 

@@ -648,8 +648,8 @@ Fill-in checklist for the author. Everything here runs on the author's Macs and 
   - Run: `scripts/server/install-server.sh`, then from `rurzobuk-max` `curl http://rurzomac-mini:8787/api/v1/health`, and from outside the tailnet `curl http://<server public address>:8787/api/v1/health`.
   - Expect: `{"ok":true,...}` on the tailnet; unreachable from outside.
   - Date: ______  Result: ______
-- [ ] **Task 22, Step 5: worker install** (as `hangar`, on `rurzomac-mini`, then on `rurzobuk-max`).
-  - Run: `hangar machines add <name>`; `read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN`; `scripts/worker/install-worker.sh --server http://rurzomac-mini:8787`; `hangar-worker doctor`; then `hangar machines list` on any tailnet Mac.
+- [ ] **Task 22, Step 5: worker install** (on `rurzomac-mini`, then on `rurzobuk-max`).
+  - Run, on a Mac that has the CLI (the server Mac, where `install-server.sh` installs `hangar`; elsewhere `swift build -c release --product hangar` and copy the binary) with `HANGAR_SERVER` set: `hangar machines add <name>`, and copy the token. Then on the build Mac as `hangar`: `read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN`; `scripts/worker/install-worker.sh --server http://rurzomac-mini:8787`; `hangar-worker doctor`. Then `hangar machines list` on the Mac with the CLI.
   - Expect: machine online with Xcode 27.2, `canSignWithoutPrompt: true`, `tools` containing `xcodegen` and `brew`.
   - rurzomac-mini date: ______  Result: ______  rurzobuk-max date: ______  Result: ______
 - [ ] **Task 24, Step 2: plugin** (Claude Code).
@@ -667,15 +667,17 @@ workflows:
   testflight:
     project: Legilo.xcodeproj        # or `workspace:`; relative to the repo root
     xcode: "27.2"                    # prefix match against installed Xcodes
-    team: YL78V8PY6H                 # optional
+    team: YL78V8PY6H                 # optional; adjust to Legilo's actual value
     tools: [brew]                    # optional; names the worker must report
     actions:
       - { scheme: Legilo, platform: macos, export: app-store-connect }
-      - { scheme: LegiloMobile, platform: ios, export: app-store-connect }
+      - { scheme: LegiloMobile, platform: ios, export: app-store-connect }   # adjust scheme to Legilo's actual value
     post-actions:
       - testflight:
-          groups: [Internal]
+          groups: [Internal]         # adjust to Legilo's actual value
 ```
+
+Adjust `team`, the `LegiloMobile` scheme and the `Internal` group to Legilo's actual values. The group must match an existing internal beta group in App Store Connect, or be omitted.
 
 - [ ] **Step 1: Configure.**
   - Run: `hangar settings asc-key --key-id <ID> --issuer-id <ID> --p8 AuthKey_<ID>.p8` (team key, Admin role); `hangar settings github-token` (token on stdin); `hangar apps add Legilo --repo https://github.com/rurza/Legilo --asc-app-id <id>`; `hangar numbers legilo`.
