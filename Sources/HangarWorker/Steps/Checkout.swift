@@ -78,26 +78,32 @@ public struct Checkout: Sendable {
         return outcome.output
     }
 
-    /// The complete environment of a git child. The helper reads the token from `HANGAR_GITHUB_TOKEN`, so it never
-    /// lands in a URL or `.git/config`. The two empty values reset any helper from the user's gitconfig (generic and
-    /// github.com-scoped), so nothing like osxkeychain can store the token, and ours answers for github.com only.
+    /// The complete environment of a git child: a fixed `PATH` and `HOME`, no prompts, no system gitconfig, and the
+    /// token's `credentialEnvironment` when there is a token.
     static func environment(token: String?, extra: [String: String] = [:]) -> [String: String] {
-        var environment = extra.merging([
+        let base = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
             "HOME": NSHomeDirectory(),
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_CONFIG_NOSYSTEM": "1",
-        ]) { _, new in new }
-        if let token {
-            environment["GIT_CONFIG_COUNT"] = "3"
-            environment["GIT_CONFIG_KEY_0"] = "credential.helper"
-            environment["GIT_CONFIG_VALUE_0"] = ""
-            environment["GIT_CONFIG_KEY_1"] = "credential.https://github.com.helper"
-            environment["GIT_CONFIG_VALUE_1"] = ""
-            environment["GIT_CONFIG_KEY_2"] = "credential.https://github.com.helper"
-            environment["GIT_CONFIG_VALUE_2"] = "!f() { echo username=x-access-token; echo password=$HANGAR_GITHUB_TOKEN; }; f"
-            environment["HANGAR_GITHUB_TOKEN"] = token
-        }
-        return environment
+        ]
+        return extra.merging(base) { _, new in new }.merging(token.map(credentialEnvironment) ?? [:]) { _, new in new }
+    }
+
+    /// What lets any git child (ours, or the one xcodebuild runs to resolve packages) authenticate to github.com with
+    /// the token. The helper reads the token from `HANGAR_GITHUB_TOKEN`, so it never lands in a URL or `.git/config`.
+    /// The two empty values reset any helper from the user's gitconfig (generic and github.com-scoped), so nothing
+    /// like osxkeychain can store the token, and ours answers for github.com only.
+    static func credentialEnvironment(token: String) -> [String: String] {
+        [
+            "GIT_CONFIG_COUNT": "3",
+            "GIT_CONFIG_KEY_0": "credential.helper",
+            "GIT_CONFIG_VALUE_0": "",
+            "GIT_CONFIG_KEY_1": "credential.https://github.com.helper",
+            "GIT_CONFIG_VALUE_1": "",
+            "GIT_CONFIG_KEY_2": "credential.https://github.com.helper",
+            "GIT_CONFIG_VALUE_2": "!f() { echo username=x-access-token; echo password=$HANGAR_GITHUB_TOKEN; }; f",
+            "HANGAR_GITHUB_TOKEN": token,
+        ]
     }
 }

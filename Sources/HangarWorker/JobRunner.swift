@@ -197,7 +197,7 @@ public struct JobRunner: Sendable {
             try await ArchiveStep(runner: runner).run(
                 workflow: workflow, action: action, repository: layout.repository, layout: layout,
                 developerDir: prepared.developerDir, key: prepared.key, environment: prepared.xcodebuildEnvironment,
-                log: log.lines(StepName.archive))
+                gitHubToken: environment["HANGAR_GITHUB_TOKEN"], log: log.lines(StepName.archive))
         }
         await pipeline.step(StepName.stamp) {
             try BuildNumberStamper().stamp(

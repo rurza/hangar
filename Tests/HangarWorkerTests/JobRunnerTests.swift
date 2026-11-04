@@ -350,9 +350,23 @@ private final class Shared<Value: Sendable>: Sendable {
 
         _ = await fixture.run()
 
-        let xcodebuilds = fixture.runner.commands.filter { $0.executable == "/usr/bin/xcodebuild" }
-        // archive, the export, and TestFlight's upload export
-        #expect(xcodebuilds.count == 3)
+        let all = fixture.runner.commands.filter { $0.executable == "/usr/bin/xcodebuild" }
+        // Package resolution first, then archive, the export, and TestFlight's upload export.
+        #expect(all.count == 4)
+        let resolve = try #require(all.first)
+        #expect(resolve.arguments.first == "-resolvePackageDependencies")
+        let xcodebuilds = Array(all.dropFirst())
+        #expect(xcodebuilds.first?.arguments.first == "archive")
+        #expect(xcodebuilds.first?.arguments.contains("-disableAutomaticPackageResolution") == true)
+        // Resolution gets git's credential helper and the GitHub token on top of the archive's environment, and
+        // no other secret.
+        let archive = try #require(xcodebuilds.first)
+        #expect(resolve.environment == archive.environment.merging(Checkout.credentialEnvironment(token: Self.githubToken)) { _, new in new })
+        #expect(resolve.environment["HANGAR_GITHUB_TOKEN"] == Self.githubToken)
+        #expect(resolve.environment["GIT_CONFIG_KEY_2"] == "credential.https://github.com.helper")
+        #expect(resolve.environment["HANGAR_ASC_KEY_PATH"] == nil)
+        #expect(!resolve.environment.values.contains { $0.contains(Self.pemBody) })
+        #expect(!resolve.environment.filter { $0.key != "HANGAR_GITHUB_TOKEN" }.values.contains { $0.contains(Self.githubToken) })
         for command in xcodebuilds {
             #expect(command.environment["HANGAR_GITHUB_TOKEN"] == nil)
             #expect(command.environment["HANGAR_ASC_KEY_PATH"] == nil)

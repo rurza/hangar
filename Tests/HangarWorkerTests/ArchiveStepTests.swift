@@ -16,7 +16,7 @@ import Testing
     ]
     private static let tail = [
         "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration", "-skipMacroValidation",
-        "-skipPackagePluginValidation",
+        "-skipPackagePluginValidation", "-disableAutomaticPackageResolution",
     ]
 
     private func command(_ workflow: Workflow, _ action: ArchiveAction) -> ProcessCommand {
@@ -42,6 +42,52 @@ import Testing
                 ] + Self.tail + Self.keyArguments)
         #expect(command.environment["DEVELOPER_DIR"] == "/Applications/Xcode-27.2.app/Contents/Developer")
         #expect(command.environment["PATH"] == "/usr/bin:/bin")
+    }
+
+    @Test func resolveCommandUsesSystemGitWithTheTokenOnly() {
+        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
+        let command = ArchiveStep.resolveCommand(
+            workflow: workflow, action: action, repository: Self.layout.repository, layout: Self.layout,
+            developerDir: "/Applications/Xcode-27.2.app/Contents/Developer", environment: ["PATH": "/usr/bin:/bin"],
+            gitHubToken: "ghp_token")
+        #expect(command.executable == "/usr/bin/xcodebuild")
+        #expect(
+            command.arguments == [
+                "-resolvePackageDependencies", "-project", "/data/workspaces/legilo/repository/Legilo.xcodeproj",
+                "-scheme", "LegiloMobile", "-derivedDataPath", "/data/workspaces/legilo/DerivedData",
+                "-scmProvider", "system",
+            ])
+        #expect(
+            command.environment
+                == Checkout.credentialEnvironment(token: "ghp_token").merging([
+                    "PATH": "/usr/bin:/bin", "DEVELOPER_DIR": "/Applications/Xcode-27.2.app/Contents/Developer",
+                ]) { _, new in new })
+        #expect(command.environment["HANGAR_GITHUB_TOKEN"] == "ghp_token")
+
+        // Without a token (public packages only) there is no credential helper.
+        let anonymous = ArchiveStep.resolveCommand(
+            workflow: workflow, action: action, repository: Self.layout.repository, layout: Self.layout,
+            developerDir: "/dev", environment: ["PATH": "/usr/bin:/bin"], gitHubToken: nil)
+        #expect(anonymous.environment == ["PATH": "/usr/bin:/bin", "DEVELOPER_DIR": "/dev"])
+    }
+
+    @Test func failedResolutionStopsBeforeTheArchive() async throws {
+        let root = NSTemporaryDirectory() + "hangar-archive-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let layout = WorkspaceLayout(dataDirectory: root, appSlug: "legilo", jobID: Self.jobID)
+        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
+        let runner = RecordingProcessRunner()
+        runner.script({ $0.arguments.first == "-resolvePackageDependencies" }, lines: ["error: auth"], exitCode: 74)
+        let lines = LineSink()
+        await #expect(throws: ArchiveError.packageResolutionFailed(exitCode: 74)) {
+            try await ArchiveStep(runner: runner).run(
+                workflow: workflow, action: action, repository: layout.repository, layout: layout,
+                developerDir: "/dev", key: Self.key, environment: [:], gitHubToken: "ghp_token", log: lines.append)
+        }
+        #expect(lines.all == ["error: auth"])
+        #expect(runner.commands.count == 1)
     }
 
     @Test func workspaceInSubdirectory() {
@@ -86,15 +132,16 @@ import Testing
         let lines = LineSink()
         try await ArchiveStep(runner: runner).run(
             workflow: workflow, action: action, repository: layout.repository, layout: layout,
-            developerDir: "/dev", key: Self.key, environment: [:], log: lines.append)
+            developerDir: "/dev", key: Self.key, environment: [:], gitHubToken: nil, log: lines.append)
 
         #expect(!FileManager.default.fileExists(atPath: layout.resultBundle))
         #expect(!FileManager.default.fileExists(atPath: layout.archive(scheme: "LegiloMobile")))
         var isDirectory: ObjCBool = false
         let archiveParent = (layout.archive(scheme: "LegiloMobile") as NSString).deletingLastPathComponent
         #expect(FileManager.default.fileExists(atPath: archiveParent, isDirectory: &isDirectory) && isDirectory.boolValue)
-        #expect(lines.all == ["** ARCHIVE SUCCEEDED **"])
-        #expect(runner.commands.count == 1)
+        // The script answers both runs: package resolution, then the archive.
+        #expect(lines.all == ["** ARCHIVE SUCCEEDED **", "** ARCHIVE SUCCEEDED **"])
+        #expect(runner.commands.map { $0.arguments.first } == ["-resolvePackageDependencies", "archive"])
     }
 
     @Test func nonZeroExitThrows() async throws {
@@ -104,11 +151,11 @@ import Testing
         let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         let runner = RecordingProcessRunner()
-        runner.script({ _ in true }, lines: ["error: boom"], exitCode: 65)
+        runner.script({ $0.arguments.first == "archive" }, lines: ["error: boom"], exitCode: 65)
         await #expect(throws: ArchiveError.xcodebuildFailed(exitCode: 65)) {
             try await ArchiveStep(runner: runner).run(
                 workflow: workflow, action: action, repository: layout.repository, layout: layout,
-                developerDir: "/dev", key: Self.key, environment: [:], log: { _ in })
+                developerDir: "/dev", key: Self.key, environment: [:], gitHubToken: nil, log: { _ in })
         }
     }
 
@@ -125,7 +172,7 @@ import Testing
             await #expect(throws: ArchiveError.invalidScheme(scheme)) {
                 try await ArchiveStep(runner: runner).run(
                     workflow: workflow, action: action, repository: layout.repository, layout: layout,
-                    developerDir: "/dev", key: Self.key, environment: [:], log: { _ in })
+                    developerDir: "/dev", key: Self.key, environment: [:], gitHubToken: nil, log: { _ in })
             }
             #expect(runner.commands.isEmpty)
         }

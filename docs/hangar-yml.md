@@ -50,6 +50,10 @@ workflows:
 
 Secret variables are available to `ci_scripts` hooks and post-actions but not to `xcodebuild`, so not to build phases: xcodebuild records its environment in DerivedData logs and in the result bundle, which is uploaded as an artifact. If a build phase needs a secret, write it to a file from `ci_pre_xcodebuild.sh`.
 
+### Private Swift packages
+
+Swift packages are resolved before the archive, in a separate `xcodebuild -resolvePackageDependencies` run that uses the system git. That run, and only that run, can authenticate to github.com with the `HANGAR_GITHUB_TOKEN` variable, so private packages hosted on GitHub resolve as long as the token can read them. The archive itself then runs with automatic package resolution disabled and without the token. Packages on other hosts must be reachable without credentials.
+
 ### Post-actions
 
 An entry is either a bare name (`- testflight`) or a one-key map (`- testflight: { ... }`). Every post-action accepts `requires-approval: true`, which holds the step until someone approves it. Unknown post-action names, unknown settings and wrongly typed settings are rejected when the file is parsed.

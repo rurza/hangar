@@ -140,12 +140,14 @@ struct JobPipeline {
 
     private static func exitCode(_ error: any Error) -> Int32? {
         switch error {
-        case ArchiveError.xcodebuildFailed(let code), ExportError.xcodebuildFailed(let code): code
+        case ArchiveError.xcodebuildFailed(let code), ArchiveError.packageResolutionFailed(let code),
+            ExportError.xcodebuildFailed(let code): code
         default: nil
         }
     }
 
     private static func cause(_ error: any Error) -> String {
+        if case ArchiveError.packageResolutionFailed = error { return String(describing: error) }
         if let code = exitCode(error) { return "xcodebuild exited with \(code)" }
         return String(describing: error)
     }
