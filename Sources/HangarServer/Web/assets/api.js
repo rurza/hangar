@@ -92,9 +92,13 @@ const RECONNECT_MAX_MS = 15_000;
 /**
  * An EventSource that reconnects with backoff after any error (the browser gives up on some on its own) and is
  * closed for good by the returned function. `listeners` maps event names to `(data) => void`, with data parsed
- * from JSON. `onReopen` runs when a connection opens after an error, so callers can reload what they missed.
- * With `onFailBeforeOpen`, a first connection that fails without ever opening (a 404, say) is not retried: the
- * stream closes and `onFailBeforeOpen()` runs instead.
+ * from JSON. `onReopen` runs when a connection opens after an error or a pause, so callers can reload what they
+ * missed. With `onFailBeforeOpen`, a first connection that fails without ever opening (a 404, say) is not retried:
+ * the stream closes and `onFailBeforeOpen()` runs instead.
+ *
+ * Over HTTP/1.1 a browser allows only six connections per host, shared by every tab, and each open EventSource
+ * holds one. So the stream is closed while the tab is hidden and opened again when it is visible, which counts as
+ * a reconnect: `onReopen` reloads what changed meanwhile.
  */
 function stream(url, listeners, { onReopen, onConnect, onFailBeforeOpen } = {}) {
   let source = null;
@@ -103,10 +107,11 @@ function stream(url, listeners, { onReopen, onConnect, onFailBeforeOpen } = {}) 
   let delay = RECONNECT_MIN_MS;
   let failed = false;
   let everOpened = false;
+  let paused = false;
 
   function open() {
     timer = null;
-    if (closed) return;
+    if (closed || paused) return;
     onConnect?.();
     source = new EventSource(url);
     source.addEventListener('open', () => {
@@ -122,7 +127,7 @@ function stream(url, listeners, { onReopen, onConnect, onFailBeforeOpen } = {}) 
       source.close();
       source = null;
       if (!everOpened && onFailBeforeOpen) {
-        closed = true;
+        teardown();
         onFailBeforeOpen();
         return;
       }
@@ -144,13 +149,44 @@ function stream(url, listeners, { onReopen, onConnect, onFailBeforeOpen } = {}) 
     }
   }
 
-  open();
-  return function close() {
+  // Hidden: drop the connection (and any pending retry). Visible again: reconnect at once and reload.
+  function onVisibilityChange() {
     if (closed) return;
+    if (document.visibilityState === 'hidden') {
+      if (paused) return;
+      paused = true;
+      failed = true;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      source?.close();
+      source = null;
+    } else if (paused) {
+      paused = false;
+      delay = RECONNECT_MIN_MS;
+      if (!source && !timer) open();
+    }
+  }
+
+  function teardown() {
     closed = true;
     if (timer) clearTimeout(timer);
+    timer = null;
     source?.close();
     source = null;
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+  }
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  if (document.visibilityState === 'hidden') {
+    // Opened in a background tab: connect once it is shown, reloading what the caller fetched meanwhile.
+    paused = true;
+    failed = true;
+  } else {
+    open();
+  }
+  return function close() {
+    if (closed) return;
+    teardown();
   };
 }
 
