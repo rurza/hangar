@@ -1,0 +1,114 @@
+import Foundation
+import Testing
+@testable import HangarCore
+
+@Suite struct CIEnvironmentTests {
+    let app = App(
+        id: UUID(), slug: "legilomobile", name: "LegiloMobile", repoURL: "https://github.com/x/y",
+        appStoreConnectAppID: "123", createdAt: Date(timeIntervalSince1970: 0))
+    let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+    let paths = CIEnvironment.Paths(
+        repository: "/w/repo", projectFile: "/w/repo/Legilo.xcodeproj", derivedData: "/w/DD",
+        archive: "/j/archive/App.xcarchive", resultBundle: "/j/result.xcresult", workspace: "/j")
+    let jobID = UUID()
+    let buildID = UUID()
+
+    func make(ref: String = "main", teamID: String? = "TEAM123") -> [String: String] {
+        CIEnvironment.make(
+            app: app, workflow: "Release", action: action, buildNumber: 311, jobID: jobID, buildID: buildID,
+            commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", ref: ref, teamID: teamID, paths: paths,
+            developerDir: "/Applications/Xcode.app/Contents/Developer", basePATH: "/usr/bin:/bin",
+            home: "/Users/hangar")
+    }
+
+    @Test func setsXcodeCloudVariablesForLegiloMobile() {
+        let env = make()
+        #expect(env["CI"] == "TRUE")
+        #expect(env["CI_HANGAR"] == "TRUE")
+        #expect(env["CI_XCODE_CLOUD"] == nil)
+        #expect(env["CI_START_CONDITION"] == "manual")
+        #expect(env["CI_XCODEBUILD_ACTION"] == "archive")
+        #expect(env["CI_PRIMARY_REPOSITORY_PATH"] == "/w/repo")
+        #expect(env["CI_WORKSPACE"] == "/j")
+        #expect(env["CI_PROJECT_FILE_PATH"] == "/w/repo/Legilo.xcodeproj")
+        #expect(env["CI_DERIVED_DATA_PATH"] == "/w/DD")
+        #expect(env["CI_ARCHIVE_PATH"] == "/j/archive/App.xcarchive")
+        #expect(env["CI_RESULT_BUNDLE_PATH"] == "/j/result.xcresult")
+        #expect(env["CI_BUILD_NUMBER"] == "311")
+        #expect(env["CI_BUILD_ID"] == jobID.uuidString)
+        #expect(env["CI_WORKFLOW"] == "Release")
+        #expect(env["CI_WORKFLOW_ID"] == "Release")
+        #expect(env["CI_PRODUCT"] == "LegiloMobile")
+        #expect(env["CI_PRODUCT_ID"] == "legilomobile")
+        #expect(env["CI_PRODUCT_PLATFORM"] == "iOS")
+        #expect(env["CI_XCODE_SCHEME"] == "LegiloMobile")
+        #expect(env["CI_COMMIT"] == "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")
+        #expect(env["CI_BRANCH"] == "main")
+        #expect(env["CI_TEAM_ID"] == "TEAM123")
+        #expect(env["DEVELOPER_DIR"] == "/Applications/Xcode.app/Contents/Developer")
+        #expect(env["PATH"] == "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin")
+        #expect(env["HOME"] == "/Users/hangar")
+        #expect(env["GIT_TERMINAL_PROMPT"] == "0")
+    }
+
+    @Test func shaRefSetsNoBranch() {
+        #expect(make(ref: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")["CI_BRANCH"] == nil)
+        #expect(make(ref: "deadbeef")["CI_BRANCH"] == "deadbeef")
+    }
+
+    @Test func teamIDAbsentWhenUnknown() {
+        #expect(make(teamID: nil)["CI_TEAM_ID"] == nil)
+    }
+
+    @Test func pathIsDeduplicatedKeepingFirstOccurrence() {
+        let env = CIEnvironment.make(
+            app: app, workflow: "Release", action: action, buildNumber: 1, jobID: jobID, buildID: buildID,
+            commit: "c", ref: "main", teamID: nil, paths: paths, developerDir: "/D",
+            basePATH: "/usr/local/bin:/usr/bin:/usr/bin:/opt/homebrew/bin", home: nil)
+        #expect(env["PATH"] == "/usr/local/bin:/usr/bin:/opt/homebrew/bin")
+        #expect(env["HOME"] == nil)
+    }
+
+    @Test func postXcodebuildAdditionsAppStore() {
+        let additions = CIEnvironment.postXcodebuildAdditions(
+            exitCode: 0, action: action, exportedAppPath: "/j/export/App.ipa")
+        #expect(additions == ["CI_XCODEBUILD_EXIT_CODE": "0", "CI_APP_STORE_SIGNED_APP_PATH": "/j/export/App.ipa"])
+    }
+
+    @Test func postXcodebuildAdditionsDeveloperID() {
+        let devID = ArchiveAction(scheme: "Mac", platform: .macOS, export: .developerID)
+        let additions = CIEnvironment.postXcodebuildAdditions(
+            exitCode: 65, action: devID, exportedAppPath: "/j/export/Mac.app")
+        #expect(additions == ["CI_XCODEBUILD_EXIT_CODE": "65", "CI_DEVELOPER_ID_SIGNED_APP_PATH": "/j/export/Mac.app"])
+        #expect(CIEnvironment.postXcodebuildAdditions(exitCode: 65, action: devID, exportedAppPath: nil)
+            == ["CI_XCODEBUILD_EXIT_CODE": "65"])
+    }
+
+    @Test func userVariablesCannotOverrideCI() {
+        let merged = CIEnvironment.merge(
+            ci: make(),
+            entries: [
+                EnvEntry(name: "CI_BUILD_NUMBER", value: "999-secret"),
+                EnvEntry(name: "CI_CUSTOM", value: "x"),
+                EnvEntry(name: "FOO", value: "bar"),
+            ],
+            secretsDirectory: "/j/secrets")
+        #expect(merged.env["CI_BUILD_NUMBER"] == "311")
+        #expect(merged.env["CI_CUSTOM"] == nil)
+        #expect(merged.env["FOO"] == "bar")
+        #expect(merged.warnings.count == 2)
+        #expect(merged.warnings[0].contains("CI_BUILD_NUMBER"))
+        #expect(!merged.warnings.joined().contains("999-secret"))
+    }
+
+    @Test func asFileEntryBecomesPath() {
+        let merged = CIEnvironment.merge(
+            ci: [:],
+            entries: [EnvEntry(name: "HANGAR_ASC_KEY_PATH", value: "-----BEGIN-----", isSecret: true, asFile: true)],
+            secretsDirectory: "/j/secrets")
+        #expect(merged.env["HANGAR_ASC_KEY_PATH"] == "/j/secrets/HANGAR_ASC_KEY_PATH")
+        #expect(merged.filesToWrite.count == 1)
+        #expect(merged.filesToWrite[0].path == "/j/secrets/HANGAR_ASC_KEY_PATH")
+        #expect(merged.filesToWrite[0].contents == "-----BEGIN-----")
+    }
+}
