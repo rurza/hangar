@@ -355,6 +355,53 @@ export function toast(message, kind = 'info') {
   return dismiss;
 }
 
+// MARK: Clipboard
+
+/**
+ * Copies `text` to the clipboard. Resolves to true when it was copied. The Clipboard API needs a secure context,
+ * which Hangar over plain HTTP on the tailnet is not, so it falls back to selecting a hidden textarea and
+ * `execCommand('copy')`. Focus returns to where it was. Callers show their own fallback (e.g. select the text)
+ * when this resolves to false.
+ */
+export async function copyText(text) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Denied permission, say: try the selection route below.
+    }
+  }
+  const previous = document.activeElement;
+  // Not readonly: iOS does not select text in a readonly field. Fixed at the top left so focusing it never scrolls.
+  const area = h('textarea', { class: 'clipboard-proxy', 'aria-hidden': 'true', tabindex: '-1' });
+  area.value = text;
+  document.body.append(area);
+  let copied = false;
+  try {
+    area.focus({ preventScroll: true });
+    area.select();
+    area.setSelectionRange(0, text.length);
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  } finally {
+    area.remove();
+    if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true });
+  }
+  return copied;
+}
+
+/** Selects the text inside `element`, so the user can copy it by hand. */
+export function selectContents(element) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 // MARK: Ring
 
 /**

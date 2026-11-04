@@ -5,133 +5,18 @@
 import { api, ApiError, seg } from '../api.js';
 import { navigate } from '../router.js';
 import {
-  button, card, confirm, emptyState, field, h, page, relativeTime, replaceChildren, section, spinner, switchField,
-  toast,
+  button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, section, selectContents,
+  switchField, toast,
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
+import {
+  blankAction, fileFromModels, modelsFromFile, problems, scratchWorkflow,
+} from '../workflow-model.js';
 
 const PLATFORMS = [
   ['ios', 'iOS'], ['macos', 'macOS'], ['visionos', 'visionOS'], ['tvos', 'tvOS'], ['watchos', 'watchOS'],
 ];
 const EXPORTS = [['app-store-connect', 'App Store Connect'], ['developer-id', 'Developer ID']];
-const DEFAULT_TIMEOUT = 60;
-
-let nextKey = 0;
-
-// MARK: Model
-//
-// A workflow in the form: plain fields the inputs write to. `fromWorkflow` and `toWorkflow` convert from and to
-// the API's JSON shape of `Workflow` (`teamID`, `postActions: [{name, settings, requiresApproval}]`).
-
-function blankAction() {
-  return { scheme: '', platform: 'ios', export: 'app-store-connect' };
-}
-
-function blankTestFlight() {
-  return {
-    waitForProcessing: true, timeout: String(DEFAULT_TIMEOUT), groups: [], whatToTest: true,
-    submitForExternalReview: false, requiresApproval: false,
-  };
-}
-
-function scratchWorkflow(name) {
-  return {
-    key: ++nextKey, name, kind: 'project', path: '', xcode: '', team: '', tools: [], actions: [blankAction()],
-    testflightOn: true, testflight: blankTestFlight(), otherPostActions: [],
-  };
-}
-
-function fromWorkflow(name, workflow) {
-  const specs = workflow.postActions ?? [];
-  const index = specs.findIndex((spec) => spec.name === 'testflight');
-  const spec = index >= 0 ? specs[index] : null;
-  const settings = spec?.settings ?? {};
-  return {
-    key: ++nextKey,
-    name,
-    kind: workflow.workspace !== undefined && workflow.workspace !== null ? 'workspace' : 'project',
-    path: workflow.workspace ?? workflow.project ?? '',
-    xcode: workflow.xcode ?? '',
-    team: workflow.teamID ?? '',
-    tools: [...(workflow.tools ?? [])],
-    actions: (workflow.actions ?? []).map((action) => ({ ...action })),
-    testflightOn: Boolean(spec),
-    testflight: spec
-      ? {
-        waitForProcessing: settings['wait-for-processing'] ?? true,
-        timeout: String(settings['processing-timeout-minutes'] ?? DEFAULT_TIMEOUT),
-        groups: [...(settings.groups ?? [])],
-        whatToTest: settings['what-to-test'] ?? true,
-        submitForExternalReview: settings['submit-for-external-review'] ?? false,
-        requiresApproval: Boolean(spec.requiresApproval),
-      }
-      : blankTestFlight(),
-    // Further post-actions (a second testflight, say) are kept as they are.
-    otherPostActions: specs.filter((_, i) => i !== index),
-  };
-}
-
-function toWorkflow(model) {
-  const workflow = { [model.kind]: model.path.trim(), xcode: model.xcode.trim() };
-  const team = model.team.trim();
-  if (team) workflow.teamID = team;
-  workflow.tools = [...model.tools];
-  workflow.actions = model.actions.map((action) => ({
-    scheme: action.scheme.trim(), platform: action.platform, export: action.export,
-  }));
-  const postActions = [];
-  if (model.testflightOn) {
-    const t = model.testflight;
-    const timeoutText = t.timeout.trim();
-    postActions.push({
-      name: 'testflight',
-      settings: {
-        'wait-for-processing': t.waitForProcessing,
-        // An entry that is not a whole number goes through as text, so the server names the problem.
-        'processing-timeout-minutes': /^\d+$/.test(timeoutText) ? Number(timeoutText) : timeoutText,
-        groups: [...t.groups],
-        'what-to-test': t.whatToTest,
-        'submit-for-external-review': t.submitForExternalReview,
-      },
-      requiresApproval: t.requiresApproval,
-    });
-  }
-  workflow.postActions = [...postActions, ...model.otherPostActions];
-  return workflow;
-}
-
-function modelsFromFile(file) {
-  const workflows = file?.workflows ?? {};
-  return Object.keys(workflows).sort().map((name) => fromWorkflow(name, workflows[name]));
-}
-
-function fileFromModels(models) {
-  const workflows = {};
-  for (const model of models) workflows[model.name.trim()] = toWorkflow(model);
-  return { version: 1, workflows };
-}
-
-/** Problems the parser would not catch (it accepts empty strings) or that the form would hide (duplicate names). */
-function problems(models) {
-  const found = [];
-  const names = new Set();
-  if (models.length === 0) found.push('Add at least one workflow.');
-  models.forEach((model, index) => {
-    const name = model.name.trim();
-    const label = name ? `Workflow “${name}”` : `Workflow ${index + 1}`;
-    if (!name) found.push(`${label} needs a name.`);
-    else if (names.has(name)) found.push(`There are two workflows named “${name}”.`);
-    names.add(name);
-    if (!model.path.trim()) found.push(`${label} needs a ${model.kind} path.`);
-    if (!model.xcode.trim()) found.push(`${label} needs an Xcode version.`);
-    if (model.actions.length === 0) found.push(`${label} needs at least one action.`);
-    if (model.actions.some((action) => !action.scheme.trim())) found.push(`${label} has an action without a scheme.`);
-    if (model.testflightOn && !/^[1-9]\d*$/.test(model.testflight.timeout.trim())) {
-      found.push(`${label}: the processing timeout must be a whole number of minutes above 0.`);
-    }
-  });
-  return found;
-}
 
 // MARK: Page
 
@@ -352,19 +237,18 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
       card({ class: 'yaml-card' },
         code,
         h('div', { class: 'card-actions' },
-          button('Copy as .hangar.yml', { onClick: () => copy(text) }))),
+          button('Copy as .hangar.yml', { onClick: () => copy(text, code) }))),
       h('p', { class: 'section-footer' },
         'Read-only. Commit it as .hangar.yml at the repository root and remove the Hangar workflow to build from the repository instead.'));
   }
 
-  async function copy(text) {
-    try {
-      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
-      else copyWithSelection(text);
+  async function copy(text, code) {
+    if (await copyText(text)) {
       toast('Copied .hangar.yml', 'success');
-    } catch {
-      toast('Could not copy. Select the text and copy it instead.', 'error');
+      return;
     }
+    selectContents(code);
+    toast('The YAML is selected. Press ⌘C to copy it.', 'info');
   }
 
   // MARK: Form
@@ -699,15 +583,4 @@ function chipsEditor({ label, items, placeholder, list, onChange }) {
       h('button', { type: 'button', class: 'button button-secondary button-small', onClick: add }, 'Add')),
     chips);
   return { element };
-}
-
-/** Copies through a temporary selection, for pages served over plain HTTP where the Clipboard API is missing. */
-function copyWithSelection(text) {
-  const area = h('textarea', { class: 'visually-hidden', readonly: true, 'aria-hidden': 'true' });
-  area.value = text;
-  document.body.append(area);
-  area.select();
-  const ok = document.execCommand('copy');
-  area.remove();
-  if (!ok) throw new Error('copy failed');
 }

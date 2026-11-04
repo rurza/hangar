@@ -150,6 +150,19 @@ img, svg { display: block; }
 
 [hidden] { display: none !important; }
 
+.clipboard-proxy {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px; /* below 16px iOS zooms in on focus */
+  pointer-events: none;
+}
+
 .visually-hidden {
   position: absolute !important;
   width: 1px; height: 1px;

@@ -30,12 +30,12 @@ function needsQuotes(text) {
     || RESERVED.test(text)
     || /^[-+.~]/.test(text) // -1, +1, .5, .inf, a list item
     || /^\s|\s$/.test(text)
-    || /[\u0000-\u001f\u007f]/.test(text);
+    || /[\u0000-\u001f\u007f\u0085\u2028\u2029]/.test(text);
 }
 
 /** `text` as a YAML double-quoted scalar. */
 function quoted(text) {
-  const escaped = String(text).replace(/[\\"\u0000-\u001f\u007f]/g, (character) => {
+  const escaped = String(text).replace(/[\\"\u0000-\u001f\u007f\u0085\u2028\u2029]/g, (character) => {
     switch (character) {
       case '\\': return '\\\\';
       case '"': return '\\"';
