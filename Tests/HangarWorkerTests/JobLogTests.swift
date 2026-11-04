@@ -104,6 +104,85 @@ import Testing
     }
 }
 
+extension JobLogTests {
+    private static func refused(_ status: Int) -> ServerConnectionError {
+        .status(status, method: "POST", path: "/api/v1/worker/jobs/x/log")
+    }
+
+    @Test func batchesHoldAtMost512KBOfLineText() async {
+        let log = makeLog()
+        let text = String(repeating: "x", count: 10 * 1024)
+        for index in 0..<100 { log.line(step: "archive", "\(index) \(text)") }
+        await log.flush()
+
+        #expect(connection.batches.count >= 2)
+        #expect(connection.batches.allSatisfy { $0.entries.reduce(0) { $0 + $1.line.utf8.count } <= JobLog.maxBatchBytes })
+        #expect(connection.logLines == (0..<100).map { "\($0) \(text)" })
+    }
+
+    @Test func longLinesAreTruncatedAfterMasking() async {
+        let secret = "hunter2-secret"
+        let log = makeLog(secrets: [secret])
+        // The secret straddles the 16 KB cut: masked first, so no part of it survives the cut.
+        let line = String(repeating: "x", count: JobLog.maxLineBytes - 5) + secret + String(repeating: "y", count: 100)
+        log.line(step: "archive", line)
+        log.line(step: "archive", "short")
+        // A multi-byte character at the cut is kept whole or not at all.
+        log.line(step: "archive", String(repeating: "x", count: JobLog.maxLineBytes - 1) + "é" + "z")
+        await log.flush()
+
+        let masked = String(repeating: "x", count: JobLog.maxLineBytes - 5) + "[masked]" + String(repeating: "y", count: 100)
+        let cut = masked.utf8.count - JobLog.maxLineBytes
+        #expect(connection.logLines.count == 3)
+        #expect(connection.logLines[0] == String(masked.prefix(JobLog.maxLineBytes)) + "… [truncated \(cut) bytes]")
+        #expect(!connection.logLines[0].contains("hunte"))
+        #expect(connection.logLines[1] == "short")
+        #expect(connection.logLines[2] == String(repeating: "x", count: JobLog.maxLineBytes - 1) + "… [truncated 3 bytes]")
+    }
+
+    @Test func aRefusedBatchIsSplitAndAPoisonLineDropped() async {
+        let refusing = FakeServerConnection(refuseLog: { batch in
+            batch.entries.contains { $0.line == "poison" } ? JobLogTests.refused(413) : nil
+        })
+        let log = makeLog(refusing)
+        for line in ["a", "b", "poison", "c", "d"] { log.line(step: "archive", line) }
+        await log.flush()
+
+        #expect(refusing.logLines == ["a", "b", "c", "d"])
+        #expect(log.pendingCount == 0)
+
+        // Later lines are not held back.
+        log.line(step: "archive", "e")
+        await log.flush()
+        #expect(refusing.logLines == ["a", "b", "c", "d", "e"])
+    }
+
+    @Test func a400IsSplitUntilTheServerTakesThePieces() async {
+        let refusing = FakeServerConnection(refuseLog: { batch in batch.entries.count > 2 ? JobLogTests.refused(400) : nil })
+        let log = makeLog(refusing)
+        for index in 0..<7 { log.line(step: "archive", "line \(index)") }
+        await log.flush()
+
+        #expect(refusing.logLines == (0..<7).map { "line \($0)" })
+        #expect(refusing.batches.allSatisfy { $0.entries.count <= 2 })
+    }
+
+    @Test func pendingLinesAreBoundedDroppingTheOldest() async {
+        let failing = FakeServerConnection(failLogCalls: .max)
+        let log = makeLog(failing)
+        for index in 0..<(JobLog.maxPending + 5) { log.line(step: "archive", "line \(index)") }
+        await log.flush()
+
+        #expect(log.pendingCount == JobLog.maxPending)
+        #expect(log.overflowCount == 5)
+        #expect(log.pendingLines.first == "line 5")
+
+        failing.setFailLogCalls(0)
+        await log.flush()
+        #expect(failing.logLines == (5..<(JobLog.maxPending + 5)).map { "line \($0)" })
+    }
+}
+
 extension Task where Success == Never, Failure == Never {
     /// Gives other tasks plenty of chances to run.
     static func yieldRepeatedly() async {

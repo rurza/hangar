@@ -6,6 +6,7 @@ import Synchronization
 
 /// Records every call a worker makes to the server, in order. `failLogCalls` makes that many `log` calls throw first;
 /// uploads named in `failUploads` always throw; `finishErrors` are thrown, in order, by the first `finish` calls.
+/// `refuseLog` may answer a log batch with an error (an HTTP 413, say) instead of taking it.
 final class FakeServerConnection: ServerConnection {
     enum Event: Equatable {
         case start
@@ -26,11 +27,18 @@ final class FakeServerConnection: ServerConnection {
 
     private let state: Mutex<State>
     private let failUploads: Set<String>
+    private let refuseLog: @Sendable (LogBatch) -> (any Error)?
 
-    init(failLogCalls: Int = 0, failUploads: Set<String> = [], finishErrors: [any Error] = []) {
+    init(
+        failLogCalls: Int = 0, failUploads: Set<String> = [], finishErrors: [any Error] = [],
+        refuseLog: @escaping @Sendable (LogBatch) -> (any Error)? = { _ in nil }
+    ) {
         state = Mutex(State(failLogCalls: failLogCalls, finishErrors: finishErrors))
         self.failUploads = failUploads
+        self.refuseLog = refuseLog
     }
+
+    func setFailLogCalls(_ count: Int) { state.withLock { $0.failLogCalls = count } }
 
     var events: [Event] { state.withLock { $0.events } }
     var finishAttempts: Int { state.withLock { $0.finishAttempts } }
@@ -75,6 +83,7 @@ final class FakeServerConnection: ServerConnection {
                 $0.failLogCalls -= 1
                 throw Unavailable()
             }
+            if let error = refuseLog(batch) { throw error }
             $0.events.append(.log(batch))
         }
     }
