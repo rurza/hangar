@@ -3,7 +3,9 @@ import HangarCore
 import Synchronization
 
 public final class LiveAppStoreConnectClient: AppStoreConnectClient {
-    private static let base = "https://api.appstoreconnect.apple.com"
+    private static let host = "api.appstoreconnect.apple.com"
+    private static let base = "https://\(host)"
+    private static let maxPages = 1000
     private static let lifetime: TimeInterval = 1200
     private static let refreshMargin: TimeInterval = 60
 
@@ -130,14 +132,20 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
     }
 
     /// Fetches every page, following the absolute `links.next` URL until it is absent.
+    /// `next` must stay on the API host over https (the JWT is sent with it), must not repeat, and is capped.
     private func pages<Page: Decodable & Paged>(_ type: Page.Type, path: String, query: [URLQueryItem]) async throws -> [Page] {
         var result: [Page] = []
+        var visited: Set<URL> = []
         var next: URL? = try url(path: path, query: query)
         while let current = next {
+            guard visited.insert(current).inserted else { throw ASCError.decoding("pagination cycle") }
+            guard visited.count <= Self.maxPages else { throw ASCError.decoding("too many pages") }
             let page = try decode(Page.self, from: try await request("GET", url: current, body: nil))
             result.append(page)
             next = try page.nextURL.map { link in
-                guard let url = URL(string: link) else { throw ASCError.decoding("invalid next link") }
+                guard let url = URL(string: link), url.scheme == "https", url.host == Self.host else {
+                    throw ASCError.decoding("unexpected pagination link")
+                }
                 return url
             }
         }

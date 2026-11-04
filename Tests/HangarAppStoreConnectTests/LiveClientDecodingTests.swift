@@ -151,6 +151,28 @@ struct LiveClientDecodingTests {
         #expect(tokens[1] != tokens[2])
     }
 
+    @Test func repeatedNextLinkThrowsInsteadOfLooping() async throws {
+        let page = "{\"data\":[],\"links\":{\"next\":\"https://api.appstoreconnect.apple.com/v1/betaGroups?cursor=A\"}}"
+        let transport = StubTransport(responses: Array(repeating: StubTransport.Response(body: page), count: 5))
+        await #expect(throws: ASCError.decoding("pagination cycle")) {
+            try await makeClient(transport).betaGroups(appID: "a")
+        }
+        #expect(transport.requests.count == 2)
+    }
+
+    @Test func foreignHostNextLinkIsNeverRequested() async throws {
+        for next in ["https://evil.example.com/v1/betaGroups?cursor=A", "http://api.appstoreconnect.apple.com/v1/betaGroups?cursor=A"] {
+            let transport = StubTransport(responses: [
+                StubTransport.Response(body: "{\"data\":[],\"links\":{\"next\":\"\(next)\"}}"),
+                StubTransport.Response(body: "{\"data\":[]}"),
+            ])
+            await #expect(throws: ASCError.decoding("unexpected pagination link")) {
+                try await makeClient(transport).betaGroups(appID: "a")
+            }
+            #expect(transport.requests.count == 1)
+        }
+    }
+
     @Test func stubTransportThrowsWhenOutOfResponses() async throws {
         await #expect(throws: StubTransport.OutOfResponses.self) {
             try await makeClient(StubTransport()).betaGroups(appID: "a")
