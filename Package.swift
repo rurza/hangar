@@ -51,7 +51,7 @@ let package = Package(
             .product(name: "Logging", package: "swift-log"),
         ]),
         .executableTarget(name: "hangar", dependencies: [
-            "HangarClient",
+            "HangarClient", "HangarCore",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ]),
         .testTarget(name: "HangarCoreTests", dependencies: ["HangarCore"]),
@@ -65,8 +65,8 @@ let package = Package(
             .product(name: "HummingbirdTesting", package: "hummingbird"),
         ]),
         .testTarget(name: "HangarWorkerTests", dependencies: ["HangarWorker"]),
-        .testTarget(name: "HangarClientTests", dependencies: ["HangarClient"]),
-        .testTarget(name: "hangarTests", dependencies: ["hangar"]),
+        .testTarget(name: "HangarClientTests", dependencies: ["HangarClient", "HangarCore"]),
+        .testTarget(name: "hangarTests", dependencies: ["hangar", "HangarClient", "HangarCore"]),
     ],
     swiftLanguageModes: [.v6]
 )
