@@ -104,3 +104,34 @@ public enum ServerEvent: Codable, Equatable, Sendable {
         }
     }
 }
+
+/// `GET /apps/{id}/workflows?ref=`: `.hangar.yml` as parsed at the commit `ref` resolves to.
+public struct WorkflowsResponse: Codable, Equatable, Sendable {
+    public var commit: String
+    public var workflows: WorkflowFile
+
+    public init(commit: String, workflows: WorkflowFile) {
+        self.commit = commit
+        self.workflows = workflows
+    }
+}
+
+public struct ArtifactInfo: Codable, Equatable, Sendable {
+    public var name: String
+    public var sizeBytes: Int
+
+    public init(name: String, sizeBytes: Int) {
+        self.name = name
+        self.sizeBytes = sizeBytes
+    }
+}
+
+public struct HealthResponse: Codable, Equatable, Sendable {
+    public var ok: Bool
+    public var version: String
+
+    public init(ok: Bool, version: String) {
+        self.ok = ok
+        self.version = version
+    }
+}

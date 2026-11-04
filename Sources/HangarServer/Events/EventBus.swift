@@ -17,6 +17,9 @@ public final class EventBus: Sendable {
         for continuation in subscribers.withLock({ Array($0.values) }) { continuation.yield(event) }
     }
 
+    /// How many streams are subscribed; tests wait on it before publishing.
+    var subscriberCount: Int { subscribers.withLock(\.count) }
+
     /// Keeps the newest 1000 events, so a slow subscriber drops old ones rather than holding up publishers.
     public func subscribe() -> AsyncStream<Event> {
         let id = UUID()

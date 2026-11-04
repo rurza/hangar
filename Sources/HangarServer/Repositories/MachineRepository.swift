@@ -16,16 +16,23 @@ public struct MachineRepository: Sendable {
         let machine = Machine(
             id: UUID(), name: name, maxConcurrentJobs: maxConcurrentJobs,
             createdAt: Date(timeIntervalSince1970: dbTime(Date())))
-        try database.write { db in
-            if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM machines WHERE name = ?)", arguments: [name]) == true {
-                throw APIError(code: "machine_exists", message: "A machine named '\(name)' already exists.")
+        let exists = APIError(code: "machine_exists", message: "A machine named '\(name)' already exists.")
+        do {
+            try database.write { db in
+                if try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM machines WHERE name = ?)", arguments: [name]) == true {
+                    throw exists
+                }
+                try db.execute(
+                    sql: """
+                        INSERT INTO machines (id, name, token_hash, max_concurrent_jobs, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                    arguments: [machine.id.uuidString, name, Self.hash(token), maxConcurrentJobs, dbTime(machine.createdAt)])
             }
-            try db.execute(
-                sql: """
-                    INSERT INTO machines (id, name, token_hash, max_concurrent_jobs, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                arguments: [machine.id.uuidString, name, Self.hash(token), maxConcurrentJobs, dbTime(machine.createdAt)])
+        } catch let error as DatabaseError where error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE {
+            // The check above runs in the same write transaction, so only a second writer outside this process
+            // could get here; it still means the name is taken.
+            throw exists
         }
         return (machine, token)
     }
