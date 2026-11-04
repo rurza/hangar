@@ -1,7 +1,7 @@
 # Hangar — a self-hosted build fleet for Apple apps
 
 Date: 2026-11-04
-Status: reviewed (4 builder checks); awaiting author approval
+Status: approved by the author 2026-11-04
 
 ## Intent
 
@@ -186,10 +186,14 @@ For each action:
 - `codesign` needs that user to be **logged in with an unlocked keychain**.
   The worker's health check reports "can sign without a prompt".
 - It is not confirmed that an API key, rather than a person signed in to
-  Xcode, can use the cloud-managed **Developer ID** certificate. The fallback
-  is a Developer ID identity installed on designated workers, and scheduling
-  sends Developer ID jobs only to those workers. The first milestone tests
-  this as a spike.
+  Xcode, can use the cloud-managed **Developer ID** certificate. The first
+  milestone tests this as a spike.
+- **Fallback, the native equivalent of fastlane `match`.** The Developer ID
+  `.p12` and its password are stored as Hangar secrets. For each job the worker
+  imports them into a **temporary keychain** that exists only for that job and
+  is deleted afterwards. Any worker can then sign Developer ID builds, and
+  nothing stays on disk. Users who already use `match` can call it from
+  `ci_post_clone.sh` instead. Hangar does not depend on fastlane or Ruby.
 - Notarization uses `notarytool` with the same API key.
 
 ### Environment variables and secrets (like Xcode Cloud)
@@ -395,6 +399,21 @@ All of these are thin clients over the `hangar` CLI:
 4. The App Store Connect API key is a **team key with the Admin role**.
    Whether it can use the cloud-managed Developer ID certificate is still
    checked as an early spike.
+
+## Phases (agreed with the author)
+
+Each phase ends with something the author can really use:
+
+1. **Worker, server core and CLI.** Build numbering and the TestFlight
+   post-action, proven on **Legilo** (two platforms, XcodeGen). This is usable
+   from a skill straight away, and it is where the Developer ID signing spike
+   runs.
+2. **Developer ID path:** export, notarization, the `script` post-action and
+   the approval gate. Herald is published end to end, with its script reading
+   from env.
+3. **Web UI**, in direction B.
+4. **Public release polish:** docs, the onboarding skill, the native `upload`
+   and `sparkle-appcast` post-actions, and the post-action module guide.
 
 ## Process
 
