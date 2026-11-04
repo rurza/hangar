@@ -78,7 +78,7 @@ public struct Checkout: Sendable {
         return outcome.output
     }
 
-    /// The complete environment of a git child: a fixed `PATH` and `HOME`, no prompts, no system gitconfig, and the
+    /// The complete environment of a git child: a fixed `PATH` and `HOME`, the user name, temp directory and locale, no prompts, no system gitconfig, and the
     /// token's `credentialEnvironment` when there is a token.
     static func environment(token: String?, extra: [String: String] = [:]) -> [String: String] {
         let base = [
@@ -86,7 +86,9 @@ public struct Checkout: Sendable {
             "HOME": NSHomeDirectory(),
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_CONFIG_NOSYSTEM": "1",
-        ]
+        ].merging(CIEnvironment.identityEnvironment(from: ProcessInfo.processInfo.environment).filter { $0.key != "HOME" }) {
+            base, _ in base
+        }
         return extra.merging(base) { _, new in new }.merging(token.map(credentialEnvironment) ?? [:]) { _, new in new }
     }
 

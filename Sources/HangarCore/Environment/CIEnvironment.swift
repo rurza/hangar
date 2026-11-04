@@ -31,11 +31,31 @@ public struct CIEnvironment: Sendable {
         public var warnings: [String]
     }
 
-    /// `home` defaults to the worker's own `HOME`; tests inject a fixed value.
+    /// Variables copied from the worker's own environment when set. LaunchAgents start with a bare one, and tools
+    /// like xcodegen, brew, swift and git fail without a user name, a temp directory or a UTF-8 locale.
+    static let passthroughNames = ["HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL", "LC_CTYPE"]
+
+    /// Locale variables an app variable may override; everything else in the job environment is fixed.
+    static let overridableNames: Set<String> = ["LANG", "LC_ALL", "LC_CTYPE"]
+
+    /// The identity and locale subset of a process environment: `passthroughNames` when set and non-empty,
+    /// `USER`/`LOGNAME` derived from `NSUserName()` when missing, and `LANG=en_US.UTF-8` when missing.
+    public static func identityEnvironment(from processEnvironment: [String: String]) -> [String: String] {
+        var env: [String: String] = [:]
+        for name in passthroughNames {
+            if let value = processEnvironment[name], !value.isEmpty { env[name] = value }
+        }
+        if env["USER"] == nil { env["USER"] = NSUserName() }
+        if env["LOGNAME"] == nil { env["LOGNAME"] = env["USER"] }
+        if env["LANG"] == nil { env["LANG"] = "en_US.UTF-8" }
+        return env
+    }
+
+    /// `processEnvironment` defaults to the worker's own; tests inject a fixed one.
     public static func make(
         app: App, workflow name: String, action: ArchiveAction, buildNumber: Int, jobID: UUID, buildID: UUID,
         commit: String, ref: String, teamID: String?, paths: Paths, developerDir: String, basePATH: String,
-        home: String? = ProcessInfo.processInfo.environment["HOME"]
+        processEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var env: [String: String] = [
             "CI": "TRUE",
@@ -63,7 +83,7 @@ public struct CIEnvironment: Sendable {
         ]
         if !isFullSHA(ref) { env["CI_BRANCH"] = ref }
         if let teamID { env["CI_TEAM_ID"] = teamID }
-        if let home { env["HOME"] = home }
+        env.merge(identityEnvironment(from: processEnvironment)) { ci, _ in ci }
         return env
     }
 
@@ -80,12 +100,12 @@ public struct CIEnvironment: Sendable {
         return additions
     }
 
-    /// User entries never override the CI set: a name in `ci`, or starting with `CI_`, is dropped with a warning.
+    /// User entries never override the CI set (only `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden): a name in `ci`, or starting with `CI_`, is dropped with a warning.
     /// As-file entries become `<secretsDirectory>/<NAME>`, which is the env value; the stored value is the file body.
     public static func merge(ci: [String: String], entries: [EnvEntry], secretsDirectory: String) -> MergedEnvironment {
         var merged = MergedEnvironment(env: ci, filesToWrite: [], warnings: [])
         for entry in entries {
-            if ci[entry.name] != nil || entry.name.hasPrefix("CI_") {
+            if (ci[entry.name] != nil && !overridableNames.contains(entry.name)) || entry.name.hasPrefix("CI_") {
                 merged.warnings.append("Ignoring variable \(entry.name): names starting with CI_ are reserved by Hangar")
                 continue
             }

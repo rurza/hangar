@@ -13,12 +13,15 @@ import Testing
     let jobID = UUID()
     let buildID = UUID()
 
-    func make(ref: String = "main", teamID: String? = "TEAM123") -> [String: String] {
+    func make(
+        ref: String = "main", teamID: String? = "TEAM123",
+        processEnvironment: [String: String] = ["HOME": "/Users/hangar"]
+    ) -> [String: String] {
         CIEnvironment.make(
             app: app, workflow: "Release", action: action, buildNumber: 311, jobID: jobID, buildID: buildID,
             commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678", ref: ref, teamID: teamID, paths: paths,
             developerDir: "/Applications/Xcode.app/Contents/Developer", basePATH: "/usr/bin:/bin",
-            home: "/Users/hangar")
+            processEnvironment: processEnvironment)
     }
 
     @Test func setsXcodeCloudVariablesForLegiloMobile() {
@@ -51,6 +54,48 @@ import Testing
         #expect(env["GIT_TERMINAL_PROMPT"] == "0")
     }
 
+    @Test func passesIdentityAndLocaleThroughFromTheProcessEnvironment() {
+        let env = make(processEnvironment: [
+            "HOME": "/Users/hangar", "USER": "hangar", "LOGNAME": "hangar-l", "TMPDIR": "/var/folders/x/T/",
+            "SHELL": "/bin/zsh", "LANG": "pl_PL.UTF-8", "LC_ALL": "pl_PL.UTF-8", "LC_CTYPE": "UTF-8", "SECRET": "no",
+        ])
+        #expect(env["USER"] == "hangar")
+        #expect(env["LOGNAME"] == "hangar-l")
+        #expect(env["TMPDIR"] == "/var/folders/x/T/")
+        #expect(env["SHELL"] == "/bin/zsh")
+        #expect(env["LANG"] == "pl_PL.UTF-8")
+        #expect(env["LC_ALL"] == "pl_PL.UTF-8")
+        #expect(env["LC_CTYPE"] == "UTF-8")
+        #expect(env["SECRET"] == nil)
+    }
+
+    @Test func derivesUserFromNSUserNameWhenMissing() {
+        let env = make(processEnvironment: [:])
+        #expect(env["USER"] == NSUserName())
+        #expect(env["LOGNAME"] == NSUserName())
+        #expect(make(processEnvironment: ["USER": "a"])["LOGNAME"] == "a")
+        #expect(env["TMPDIR"] == nil)
+    }
+
+    @Test func setsDefaultUTF8LanguageWhenMissing() {
+        #expect(make(processEnvironment: [:])["LANG"] == "en_US.UTF-8")
+        #expect(make(processEnvironment: ["LANG": ""])["LANG"] == "en_US.UTF-8")
+    }
+
+    @Test func appVariablesMayOverrideLocaleButNotIdentity() {
+        let ci = make(processEnvironment: ["USER": "hangar", "TMPDIR": "/t/"])
+        let merged = CIEnvironment.merge(
+            ci: ci,
+            entries: [
+                EnvEntry(name: "LANG", value: "C", isSecret: false, asFile: false),
+                EnvEntry(name: "USER", value: "evil", isSecret: false, asFile: false),
+                EnvEntry(name: "TMPDIR", value: "/x", isSecret: false, asFile: false),
+            ], secretsDirectory: "/s")
+        #expect(merged.env["LANG"] == "C")
+        #expect(merged.env["USER"] == "hangar")
+        #expect(merged.env["TMPDIR"] == "/t/")
+    }
+
     @Test func shaRefSetsNoBranch() {
         #expect(make(ref: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678")["CI_BRANCH"] == nil)
         #expect(make(ref: "deadbeef")["CI_BRANCH"] == "deadbeef")
@@ -64,7 +109,7 @@ import Testing
         let env = CIEnvironment.make(
             app: app, workflow: "Release", action: action, buildNumber: 1, jobID: jobID, buildID: buildID,
             commit: "c", ref: "main", teamID: nil, paths: paths, developerDir: "/D",
-            basePATH: "/usr/local/bin:/usr/bin:/usr/bin:/opt/homebrew/bin", home: nil)
+            basePATH: "/usr/local/bin:/usr/bin:/usr/bin:/opt/homebrew/bin", processEnvironment: [:])
         #expect(env["PATH"] == "/usr/local/bin:/usr/bin:/opt/homebrew/bin")
         #expect(env["HOME"] == nil)
     }

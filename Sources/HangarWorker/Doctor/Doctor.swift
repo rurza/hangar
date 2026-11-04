@@ -46,7 +46,9 @@ public struct Doctor: Sendable {
     private static let environment = [
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
         "HOME": NSHomeDirectory(),
-    ]
+    ].merging(CIEnvironment.identityEnvironment(from: ProcessInfo.processInfo.environment).filter { $0.key != "HOME" }) {
+        base, _ in base
+    }
 
     /// Trimmed output of a successful run; nil on a non-zero exit or a launch failure.
     private func output(_ executable: String, _ arguments: [String]) async -> String? {
