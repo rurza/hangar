@@ -14,6 +14,8 @@
 # When neither --token nor HANGAR_WORKER_TOKEN is set and stdin is a terminal, the script asks for it (input hidden).
 # --token works too, but then the token is visible in `ps` for as long as this script runs (the whole release
 # build) and stays in shell history.
+#   --check-bin-dir      for testing: create the --bin-dir as the install would, report whether sudo is needed
+#                        to write to it, and exit.
 set -euo pipefail
 
 usage() { echo "usage: $0 --server <url> --token <token> [--bin-dir <dir>]   (or set HANGAR_WORKER_TOKEN)" >&2; exit 2; }
@@ -21,6 +23,7 @@ usage() { echo "usage: $0 --server <url> --token <token> [--bin-dir <dir>]   (or
 SERVER=""
 INSTALL_DIR="/usr/local/bin"
 RENDER_ONLY=""
+CHECK_BIN_DIR=""
 TOKEN="${HANGAR_WORKER_TOKEN:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -28,6 +31,7 @@ while [ $# -gt 0 ]; do
         --token) [ $# -ge 2 ] || usage; TOKEN="$2"; shift 2 ;;
         --bin-dir) [ $# -ge 2 ] || usage; INSTALL_DIR="$2"; shift 2 ;;
         --render-only) [ $# -ge 2 ] || usage; RENDER_ONLY="$2"; shift 2 ;;
+        --check-bin-dir) CHECK_BIN_DIR=1; shift ;;
         *) usage ;;
     esac
 done
@@ -40,11 +44,11 @@ case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
 INSTALL_DIR="${INSTALL_DIR%/}"
 [ -n "$INSTALL_DIR" ] || INSTALL_DIR="/"
 
-if [ -z "$RENDER_ONLY" ] && [ -z "$TOKEN" ] && [ -t 0 ]; then
+if [ -z "$RENDER_ONLY$CHECK_BIN_DIR" ] && [ -z "$TOKEN" ] && [ -t 0 ]; then
     read -rs -p "Worker token: " TOKEN
     echo
 fi
-[ -n "$RENDER_ONLY" ] || { [ -n "$SERVER" ] && [ -n "$TOKEN" ] || usage; }
+[ -n "$RENDER_ONLY$CHECK_BIN_DIR" ] || { [ -n "$SERVER" ] && [ -n "$TOKEN" ] || usage; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LABEL="app.hangar.worker"
@@ -54,15 +58,30 @@ PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
 # Escapes a value for use as a sed replacement with the | delimiter.
 sed_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
+# Escapes a value for use as XML text.
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
 # Renders the plist template: render_plist <binary> <home> > file
 render_plist() {
-    sed -e "s|__BINARY__|$(sed_escape "$1")|g" -e "s|__HOME__|$(sed_escape "$2")|g" "$PLIST_TEMPLATE"
+    sed -e "s|__BINARY__|$(sed_escape "$(xml_escape "$1")")|g" -e "s|__HOME__|$(sed_escape "$(xml_escape "$2")")|g" "$PLIST_TEMPLATE"
 }
 
 # Runs a command, with sudo only when the install directory is not writable.
 as_installer() {
     if [ -w "$INSTALL_DIR" ]; then "$@"; else sudo "$@"; fi
 }
+
+# Creates the install directory: unprivileged first, so a new directory under $HOME stays user-owned; sudo only
+# when that fails.
+ensure_install_dir() {
+    [ -d "$INSTALL_DIR" ] || mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
+}
+
+if [ -n "$CHECK_BIN_DIR" ]; then
+    ensure_install_dir
+    if [ -w "$INSTALL_DIR" ]; then echo "$INSTALL_DIR: writable, no sudo needed"; else echo "$INSTALL_DIR: not writable, sudo needed"; fi
+    exit 0
+fi
 
 if [ -n "$RENDER_ONLY" ]; then
     render_plist "$INSTALL_DIR/hangar-worker" "$HOME" > "$RENDER_ONLY"
@@ -73,9 +92,7 @@ cd "$ROOT"
 swift build -c release --product hangar-worker
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
-if [ ! -d "$INSTALL_DIR" ]; then
-    as_installer mkdir -p "$INSTALL_DIR"
-fi
+ensure_install_dir
 as_installer install -m 755 "$BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
 
 # The token goes through the environment, never the argument list.

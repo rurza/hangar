@@ -7,16 +7,20 @@
 #                        is not writable, so `--bin-dir ~/.local/bin` installs without sudo.
 #   --render-only <out>  for testing: write the launchd plist for the chosen --bin-dir to <out> and exit, without
 #                        building or installing anything.
+#   --check-bin-dir      for testing: create the --bin-dir as the install would, report whether sudo is needed
+#                        to write to it, and exit.
 set -euo pipefail
 
 usage() { echo "usage: $0 [--bin-dir <dir>]" >&2; exit 2; }
 
 INSTALL_DIR="/usr/local/bin"
 RENDER_ONLY=""
+CHECK_BIN_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --bin-dir) [ $# -ge 2 ] || usage; INSTALL_DIR="$2"; shift 2 ;;
         --render-only) [ $# -ge 2 ] || usage; RENDER_ONLY="$2"; shift 2 ;;
+        --check-bin-dir) CHECK_BIN_DIR=1; shift ;;
         *) usage ;;
     esac
 done
@@ -37,15 +41,30 @@ PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
 # Escapes a value for use as a sed replacement with the | delimiter.
 sed_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
+# Escapes a value for use as XML text.
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
 # Renders the plist template: render_plist <binary> <home> > file
 render_plist() {
-    sed -e "s|__BINARY__|$(sed_escape "$1")|g" -e "s|__HOME__|$(sed_escape "$2")|g" "$PLIST_TEMPLATE"
+    sed -e "s|__BINARY__|$(sed_escape "$(xml_escape "$1")")|g" -e "s|__HOME__|$(sed_escape "$(xml_escape "$2")")|g" "$PLIST_TEMPLATE"
 }
 
 # Runs a command, with sudo only when the install directory is not writable.
 as_installer() {
     if [ -w "$INSTALL_DIR" ]; then "$@"; else sudo "$@"; fi
 }
+
+# Creates the install directory: unprivileged first, so a new directory under $HOME stays user-owned; sudo only
+# when that fails.
+ensure_install_dir() {
+    [ -d "$INSTALL_DIR" ] || mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
+}
+
+if [ -n "$CHECK_BIN_DIR" ]; then
+    ensure_install_dir
+    if [ -w "$INSTALL_DIR" ]; then echo "$INSTALL_DIR: writable, no sudo needed"; else echo "$INSTALL_DIR: not writable, sudo needed"; fi
+    exit 0
+fi
 
 if [ -n "$RENDER_ONLY" ]; then
     render_plist "$INSTALL_DIR/hangar-server" "$HOME" > "$RENDER_ONLY"
@@ -56,9 +75,7 @@ cd "$ROOT"
 swift build -c release
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
-if [ ! -d "$INSTALL_DIR" ]; then
-    as_installer mkdir -p "$INSTALL_DIR"
-fi
+ensure_install_dir
 as_installer install -m 755 "$BIN_DIR/hangar-server" "$INSTALL_DIR/hangar-server"
 # The web UI's files live in the SwiftPM resource bundle, which hangar-server looks for next to itself.
 WEB_BUNDLE="Hangar_HangarServer.bundle"
