@@ -628,3 +628,76 @@ Either way, Phase 1 ships `SigningMode`, `ASCKeyArguments`, the as-file secret m
 - **Retention:** 30 days for logs and artifacts; DB rows are kept. **Workspace cache:** one checkout and one DerivedData per app per worker, cleaned with `git clean -fdx` before and after each job.
 - **"Performance class"** for ranking is the count of performance cores (`hw.perflevel0.physicalcpu`), the simplest number that orders the author's two Macs correctly and any future one sensibly.
 - **Log format:** JSONL `{t, step, line}` per job; the CLI renders `HH:MM:SS [step] line`.
+
+## Phase 1 verification
+
+Fill-in checklist for the author. Everything here runs on the author's Macs and tailnet and touches App Store Connect, GitHub or the Legilo repo, so none of it is done by Hangar's tooling. Nothing is marked done: tick a box only after recording the outcome in its fields. Run on a Mac with `export HANGAR_SERVER=http://rurzomac-mini:8787` unless a step says otherwise.
+
+### Earlier manual steps
+
+- [ ] **Task 2, Step 2: archive for the spike** (on `rurzomac-mini`, as `hangar`).
+  - Run: clone Herald, then `CI_PRIMARY_REPOSITORY_PATH=<clone> ci_scripts/ci_post_clone.sh`, then `xcodebuild archive -scheme <Herald scheme> -destination 'generic/platform=macOS' -archivePath /tmp/spike/Herald.xcarchive -allowProvisioningUpdates -authenticationKeyPath <AuthKey.p8> -authenticationKeyID <ID> -authenticationKeyIssuerID <ID>`, then `security find-identity -v -p codesigning`.
+  - Expect: `/tmp/spike/Herald.xcarchive` exists; note whether an Apple Development identity now exists in the `hangar` login keychain.
+  - Date: ______  Identity created: ______  Result: ______
+- [ ] **Task 2, Step 3: run the spike** (Run A with no Developer ID certificate; Run B only if A fails, after opening Xcode once as `hangar` signed in).
+  - Run: `scripts/spike/developer-id-cloud-signing.sh --archive /tmp/spike/Herald.xcarchive --team <TEAMID> --key-id <ID> --issuer-id <ID> --key <AuthKey.p8> --out /tmp/spike/out`
+  - Expect: `RESULT: PASS` or `RESULT: FAIL` plus the last 40 lines of xcodebuild output.
+  - Record in `docs/spikes/2026-11-developer-id-cloud-signing.md`: date, macOS and Xcode build, exact command, RESULT, first error line (if any), keychain identities, conclusion (Outcome A or Outcome B).
+  - Run A date: ______  RESULT: ______  Run B date: ______  RESULT: ______  Outcome: ______
+- [ ] **Task 14, Step 3: server install** (on `rurzomac-mini`).
+  - Run: `scripts/server/install-server.sh`, then from `rurzobuk-max` `curl http://rurzomac-mini:8787/api/v1/health`, and from outside the tailnet `curl http://<server public address>:8787/api/v1/health`.
+  - Expect: `{"ok":true,...}` on the tailnet; unreachable from outside.
+  - Date: ______  Result: ______
+- [ ] **Task 22, Step 5: worker install** (as `hangar`, on `rurzomac-mini`, then on `rurzobuk-max`).
+  - Run: `hangar machines add <name>`; `read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN`; `scripts/worker/install-worker.sh --server http://rurzomac-mini:8787`; `hangar-worker doctor`; then `hangar machines list` on any tailnet Mac.
+  - Expect: machine online with Xcode 27.2, `canSignWithoutPrompt: true`, `tools` containing `xcodegen` and `brew`.
+  - rurzomac-mini date: ______  Result: ______  rurzobuk-max date: ______  Result: ______
+- [ ] **Task 24, Step 2: plugin** (Claude Code).
+  - Run: `claude --plugin-dir plugins/hangar`, ask "what is Hangar building?".
+  - Expect: the `hangar-status` skill fires and runs `hangar status`.
+  - Date: ______  Result: ______
+
+### Task 25: end-to-end proof on Legilo
+
+`.hangar.yml` for Legilo (from `docs/hangar-yml.md`). The author commits it in the Legilo repo, on a `hangar-smoke` branch for Step 2 (with only the macOS action) and on `main` for Step 3 (both actions). Hangar never edits app repos.
+
+```yaml
+version: 1
+workflows:
+  testflight:
+    project: Legilo.xcodeproj        # or `workspace:`; relative to the repo root
+    xcode: "27.2"                    # prefix match against installed Xcodes
+    team: YL78V8PY6H                 # optional
+    tools: [brew]                    # optional; names the worker must report
+    actions:
+      - { scheme: Legilo, platform: macos, export: app-store-connect }
+      - { scheme: LegiloMobile, platform: ios, export: app-store-connect }
+    post-actions:
+      - testflight:
+          groups: [Internal]
+```
+
+- [ ] **Step 1: Configure.**
+  - Run: `hangar settings asc-key --key-id <ID> --issuer-id <ID> --p8 AuthKey_<ID>.p8` (team key, Admin role); `hangar settings github-token` (token on stdin); `hangar apps add Legilo --repo https://github.com/rurza/Legilo --asc-app-id <id>`; `hangar numbers legilo`.
+  - Expect: `highestAppStoreConnect` and `lastXcodeCloudRun` populated, `next` greater than both, `inFlight: false`.
+  - Date: ______  highestAppStoreConnect: ______  lastXcodeCloudRun: ______  next (N+1 base): ______  Result: ______
+- [ ] **Step 2: Dry run, one platform, one machine.**
+  - Run: `hangar deploy legilo testflight --ref hangar-smoke --machine rurzomac-mini`; afterwards on the worker `codesign -dvv <exported product>` and `defaults read <app>/Contents/Info.plist CFBundleVersion`.
+  - Expect: steps in order; `ci_post_clone.sh` installs xcodegen and generates the project with `CURRENT_PROJECT_VERSION` equal to the Hangar number; stamp log shows `Legilo.app`, `LegiloShare.appex`, `LegiloWeb.appex`, `LegiloModelDownloader.appex` set and `LegiloCapture.app` untouched; export produces `Legilo.pkg`; the TestFlight action reports `VALID`; App Store Connect shows build N for macOS; `CFBundleVersion` equals the stamped number.
+  - Date: ______  Build number: ______  ASC build id (macOS): ______  CFBundleVersion: ______  Result: ______
+- [ ] **Step 3: Full workflow, both platforms.**
+  - Run: `hangar deploy legilo testflight --ref main`; `hangar numbers legilo`.
+  - Expect: two jobs with the same number N+1; with both machines online they run on different Macs (scheduler log or queue note confirms); ASC shows build N+1 for both iOS and macOS; `highestHangar == N+1`.
+  - Date: ______  Build number: ______  ASC build id (iOS): ______  ASC build id (macOS): ______  Machines used: ______  Result: ______
+- [ ] **Step 4: Numbering across both systems.**
+  - Run: raise Xcode Cloud's next build number above N+1 as `hangar numbers legilo` advises, start an Xcode Cloud run of Legilo by the usual means, then `hangar numbers legilo`, then `hangar deploy legilo testflight --ref main`.
+  - Expect: `lastXcodeCloudRun` reflects the Xcode Cloud run and `next` is above it; the new deploy's number is above the Xcode Cloud run.
+  - Date: ______  Xcode Cloud build number: ______  Hangar build number: ______  ASC build ids: ______  Result: ______
+- [ ] **Step 5: Failure path.**
+  - Run: deploy a branch with a deliberate compile error (`hangar deploy legilo testflight --ref <broken-branch>`); `hangar status <build-id>`; `hangar logs <build-id>`; `hangar numbers legilo`; on the worker `grep -c "<any secret value>" ~/Library/Logs/Hangar/worker.log` and `ls <worker data dir>/jobs/<id>/secrets`.
+  - Expect: job `failed` at `archive`; `post-xcodebuild` ran with `CI_XCODEBUILD_EXIT_CODE=65` (Legilo has no such script, so it reports `skipped`); `.xcresult.zip` present in logs/artifacts; `hangar numbers` shows the burned number; `hangar status <id>` names the failed step; the grep prints 0 and `jobs/<id>/secrets` no longer exists.
+  - Date: ______  Build number (burned): ______  Failed step: ______  grep count: ______  secrets dir gone: ______  Result: ______
+- [ ] **Step 6: Skill path.**
+  - Run: in Claude Code with `claude --plugin-dir plugins/hangar`: "build Legilo to TestFlight with Hangar".
+  - Expect: the deploy skill runs and reports the number and TestFlight state.
+  - Date: ______  Build number: ______  ASC build ids: ______  Result: ______
