@@ -42,7 +42,7 @@ public struct ExportResult: Sendable, Equatable {
     public var exportedArtifactPath: String?
 }
 
-/// Runs `xcodebuild -exportArchive`.
+/// Runs `xcodebuild -exportArchive`. `key` is nil without a team key; xcodebuild then signs with the Xcode account.
 public struct ExportStep: Sendable {
     private let runner: any ProcessRunner
 
@@ -54,7 +54,7 @@ public struct ExportStep: Sendable {
     public func run(
         archivePath: String, method: ExportMethod, destination: String, exportPath: String, jobDirectory: String,
         teamID: String?,
-        developerDir: String, key: ASCKeyArguments, signing: SigningMode, environment: [String: String],
+        developerDir: String, key: ASCKeyArguments?, signing: SigningMode, environment: [String: String],
         log: @escaping @Sendable (String) -> Void
     ) async throws -> ExportResult {
         guard case .cloudManaged = signing else { throw ExportError.unsupportedSigningMode }
@@ -74,7 +74,7 @@ public struct ExportStep: Sendable {
             arguments: [
                 "-exportArchive", "-archivePath", archivePath, "-exportOptionsPlist", plistPath,
                 "-exportPath", exportPath, "-allowProvisioningUpdates",
-            ] + key.xcodebuildArguments,
+            ] + (key?.xcodebuildArguments ?? []),
             environment: environment)
         let outcome = try await runner.run(command, onLine: log)
         guard outcome.exitCode == 0 else { throw ExportError.xcodebuildFailed(exitCode: outcome.exitCode) }

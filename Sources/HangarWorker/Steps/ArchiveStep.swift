@@ -1,7 +1,9 @@
 import Foundation
 import HangarCore
 
-/// The App Store Connect API key as `xcodebuild` authentication arguments, built from the job's reserved variables.
+/// A team App Store Connect API key as `xcodebuild` authentication arguments, built from the job's reserved variables.
+/// xcodebuild only accepts team keys; with an individual key (no issuer ID) there are no such arguments and
+/// `-allowProvisioningUpdates` uses the developer account signed in to Xcode on the Mac.
 public struct ASCKeyArguments: Sendable {
     public let keyPath: String
     public let keyID: String
@@ -13,7 +15,8 @@ public struct ASCKeyArguments: Sendable {
         self.issuerID = issuerID
     }
 
-    /// Nil unless `HANGAR_ASC_KEY_PATH`, `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_ISSUER_ID` are all set and non-empty.
+    /// Nil unless `HANGAR_ASC_KEY_PATH`, `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_ISSUER_ID` are all set and non-empty,
+    /// so nil for an individual key.
     public init?(environment: [String: String]) {
         guard let keyPath = environment["HANGAR_ASC_KEY_PATH"], !keyPath.isEmpty,
             let keyID = environment["HANGAR_ASC_KEY_ID"], !keyID.isEmpty,
@@ -77,7 +80,7 @@ public struct ArchiveStep: Sendable {
 
     public static func command(
         workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
-        key: ASCKeyArguments, environment: [String: String]
+        key: ASCKeyArguments?, environment: [String: String]
     ) -> ProcessCommand {
         let arguments =
             ["archive"] + container(workflow, repository: repository) + [
@@ -89,7 +92,7 @@ public struct ArchiveStep: Sendable {
                 "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
                 "-skipMacroValidation", "-skipPackagePluginValidation",
                 "-disableAutomaticPackageResolution",
-            ] + key.xcodebuildArguments
+            ] + (key?.xcodebuildArguments ?? [])
         var environment = environment
         environment["DEVELOPER_DIR"] = developerDir
         return ProcessCommand(executable: "/usr/bin/xcodebuild", arguments: arguments, environment: environment)
@@ -98,7 +101,7 @@ public struct ArchiveStep: Sendable {
     /// xcodebuild refuses to overwrite an existing result bundle and archive, so both are removed first.
     public func run(
         workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
-        key: ASCKeyArguments, environment: [String: String], gitHubToken: String?,
+        key: ASCKeyArguments?, environment: [String: String], gitHubToken: String?,
         log: @escaping @Sendable (String) -> Void
     ) async throws {
         // The scheme comes from the repository's `.hangar.yml` and ends up in a path that is deleted below.

@@ -163,7 +163,7 @@ public struct HealthResponse: Codable, Equatable, Sendable {
 /// What the Settings page shows: which credentials exist, never their secret values.
 public struct SettingsStatus: Codable, Equatable, Sendable {
     public var version: String
-    /// Nil unless the key ID, issuer ID and key are all set.
+    /// Nil unless the key ID and the key are set; the issuer ID is optional (none means an individual key).
     public var appStoreConnect: ASCKeyStatus?
     public var githubTokenSet: Bool
 
@@ -176,12 +176,23 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
 
 /// The identifiers of the configured App Store Connect key; the key itself is never returned.
 public struct ASCKeyStatus: Codable, Equatable, Sendable {
-    public var keyID: String
-    public var issuerID: String
+    public enum Kind: String, Codable, Sendable {
+        /// Has an issuer ID; xcodebuild can sign with it.
+        case team
+        /// No issuer ID; xcodebuild signs with the Xcode account on the worker instead.
+        case individual
+    }
 
-    public init(keyID: String, issuerID: String) {
+    public var keyID: String
+    /// Nil for an individual key.
+    public var issuerID: String?
+    public var kind: Kind
+
+    /// `kind` follows from the issuer ID.
+    public init(keyID: String, issuerID: String?) {
         self.keyID = keyID
         self.issuerID = issuerID
+        self.kind = issuerID == nil ? .individual : .team
     }
 }
 

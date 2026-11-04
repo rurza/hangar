@@ -283,7 +283,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
     @Test func numbersUseAppStoreConnectGlobalsReadPerRequest() async throws {
         let seen = Mutex<[String]>([])
         let fixture = try APIFixture(sources: nil) { credentials in
-            seen.withLock { $0.append(credentials.keyID + "/" + credentials.issuerID + "/" + credentials.privateKeyPEM) }
+            seen.withLock { $0.append(credentials.keyID + "/" + (credentials.issuerID ?? "-") + "/" + credentials.privateKeyPEM) }
             return RecordingASC(credentials: credentials)
         }
         try fixture.createApp()
@@ -304,6 +304,25 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
             }
         }
         #expect(seen.withLock { $0 } == ["KEY/ISSUER/PEM"])
+    }
+
+    @Test func numbersWorkWithIndividualKey() async throws {
+        let issuers = Mutex<[String?]>([])
+        let fixture = try APIFixture(sources: nil) { credentials in
+            issuers.withLock { $0.append(credentials.issuerID) }
+            return RecordingASC(credentials: credentials)
+        }
+        try fixture.createApp()
+        for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
+            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
+        }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/numbers", method: .get) { response throws in
+                #expect(response.status == .ok)
+                #expect(try decode(NumbersReport.self, response).next == 311)
+            }
+        }
+        #expect(issuers.withLock { $0 } == [nil])
     }
 
     @Test func machinesNeverListTokens() async throws {

@@ -19,10 +19,12 @@ import Testing
         "-skipPackagePluginValidation", "-disableAutomaticPackageResolution",
     ]
 
-    private func command(_ workflow: Workflow, _ action: ArchiveAction) -> ProcessCommand {
+    private func command(
+        _ workflow: Workflow, _ action: ArchiveAction, key: ASCKeyArguments? = ArchiveStepTests.key
+    ) -> ProcessCommand {
         ArchiveStep.command(
             workflow: workflow, action: action, repository: Self.layout.repository, layout: Self.layout,
-            developerDir: "/Applications/Xcode-27.2.app/Contents/Developer", key: Self.key,
+            developerDir: "/Applications/Xcode-27.2.app/Contents/Developer", key: key,
             environment: ["PATH": "/usr/bin:/bin"])
     }
 
@@ -42,6 +44,14 @@ import Testing
                 ] + Self.tail + Self.keyArguments)
         #expect(command.environment["DEVELOPER_DIR"] == "/Applications/Xcode-27.2.app/Contents/Developer")
         #expect(command.environment["PATH"] == "/usr/bin:/bin")
+    }
+
+    @Test func commandWithoutKeyArgumentsWhenNoTeamKey() {
+        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
+        let command = command(workflow, action, key: nil)
+        #expect(Array(command.arguments.suffix(Self.tail.count)) == Self.tail)
+        #expect(!command.arguments.contains { $0.hasPrefix("-authenticationKey") })
     }
 
     @Test func resolveCommandUsesSystemGitWithTheTokenOnly() {

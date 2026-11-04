@@ -50,7 +50,8 @@ public struct JobRunner: Sendable {
         /// result bundle, which is uploaded.
         var xcodebuildEnvironment: [String: String]
         var developerDir: String
-        var key: ASCKeyArguments
+        /// Nil for an individual key: xcodebuild then signs with the Xcode account on this Mac.
+        var key: ASCKeyArguments?
     }
 
     public func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
@@ -144,7 +145,8 @@ public struct JobRunner: Sendable {
         }
     }
 
-    /// Picks Xcode, assembles the environment, writes as-file variables and checks the App Store Connect key.
+    /// Picks Xcode, assembles the environment, writes as-file variables and checks the App Store Connect key: the key
+    /// ID and key are required, the issuer ID only for a team key, which is the only kind xcodebuild accepts.
     private func prepare(
         _ assignment: JobAssignment, layout: WorkspaceLayout, materializer: SecretsMaterializer,
         log: @escaping @Sendable (String) -> Void
@@ -167,7 +169,10 @@ public struct JobRunner: Sendable {
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
         merged.warnings.forEach(log)
         try materializer.write(merged.filesToWrite)
-        guard let key = ASCKeyArguments(environment: merged.env) else { throw PreparationError.appStoreConnectKeyMissing }
+        guard Self.nonEmpty(merged.env["HANGAR_ASC_KEY_ID"]) != nil, Self.nonEmpty(merged.env["HANGAR_ASC_KEY_PATH"]) != nil
+        else { throw PreparationError.appStoreConnectKeyMissing }
+        let key = ASCKeyArguments(environment: merged.env)
+        if key == nil { log("No team API key; xcodebuild signs with the Xcode account on this Mac.") }
         let secretNames = Set(assignment.environment.filter(\.isSecret).map(\.name))
         return Prepared(
             environment: merged.env, xcodebuildEnvironment: merged.env.filter { !secretNames.contains($0.key) },
@@ -240,13 +245,18 @@ public struct JobRunner: Sendable {
     }
 
     /// Credentials from the reserved variables; the private key is read from the file `HANGAR_ASC_KEY_PATH` names,
-    /// which `prepare` wrote. Nil when any piece is missing.
+    /// which `prepare` wrote. No issuer ID means an individual key. Nil when the key ID or the key is missing.
     private func appStoreConnectClient(_ environment: [String: String]) -> (any AppStoreConnectClient)? {
-        guard let keyID = environment["HANGAR_ASC_KEY_ID"], let issuerID = environment["HANGAR_ASC_ISSUER_ID"],
-            let keyPath = environment["HANGAR_ASC_KEY_PATH"],
+        guard let keyID = Self.nonEmpty(environment["HANGAR_ASC_KEY_ID"]),
+            let keyPath = Self.nonEmpty(environment["HANGAR_ASC_KEY_PATH"]),
             let pem = try? String(contentsOfFile: keyPath, encoding: .utf8)
         else { return nil }
-        return appStoreConnectFactory(ASCCredentials(keyID: keyID, issuerID: issuerID, privateKeyPEM: pem))
+        return appStoreConnectFactory(
+            ASCCredentials(keyID: keyID, issuerID: Self.nonEmpty(environment["HANGAR_ASC_ISSUER_ID"]), privateKeyPEM: pem))
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        value.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Wipes the secrets, cleans the repository and removes the job directory. Every problem is logged and the rest

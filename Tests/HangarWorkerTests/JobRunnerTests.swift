@@ -278,19 +278,70 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.logLines.contains("Xcode 27.2 not installed"))
     }
 
-    @Test func missingASCKeyFailsBeforeCheckout() async throws {
+    @Test(arguments: ["HANGAR_ASC_KEY_PATH", "HANGAR_ASC_KEY_ID"])
+    func missingASCKeyFailsBeforeCheckout(missing: String) async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        fixture.assignment.environment.removeAll { $0.name == "HANGAR_ASC_KEY_PATH" }
+        fixture.assignment.environment.removeAll { $0.name == missing }
 
         let result = await fixture.run()
 
         #expect(result == JobResult(
-            status: .failed, failureReason: "App Store Connect key not configured; run hangar settings asc-key"))
+            status: .failed, failureReason: "App Store Connect key not configured; set it in Settings"))
         #expect(fixture.runner.commands.isEmpty)
         #expect(fixture.connection.status(of: "checkout") == .failed)
         #expect(fixture.connection.status(of: "cleanup") == .succeeded)
         #expect(!FileManager.default.fileExists(atPath: fixture.layout.jobDirectory))
+    }
+
+    @Test func individualKeyBuildsWithoutKeyArgumentsAndLogsIt() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.assignment.environment.removeAll { $0.name == "HANGAR_ASC_ISSUER_ID" }
+
+        let result = await fixture.run()
+
+        #expect(result == JobResult(
+            status: .succeeded,
+            outputs: ["testflight.buildID": "asc-build", "testflight.processingState": "VALID"]))
+        let xcodebuilds = fixture.runner.commands.filter { $0.executable == "/usr/bin/xcodebuild" }
+        // Archive, export and TestFlight's upload export, besides package resolution.
+        #expect(xcodebuilds.filter { $0.arguments.contains("-allowProvisioningUpdates") }.count == 3)
+        for command in xcodebuilds {
+            #expect(!command.arguments.contains { $0.hasPrefix("-authenticationKey") })
+            #expect(!command.arguments.contains(fixture.layout.secrets + "/HANGAR_ASC_KEY_PATH"))
+            #expect(command.environment["HANGAR_ASC_KEY_PATH"] == nil)
+            #expect(!command.environment.values.contains { $0.contains(Self.pemBody) })
+        }
+        let notice = "No team API key; xcodebuild signs with the Xcode account on this Mac."
+        #expect(fixture.connection.logLines.filter { $0 == notice }.count == 1)
+        // The App Store Connect client still gets the individual key.
+        #expect(fixture.credentials.get().map(\.keyID) == ["KEY123"])
+        #expect(fixture.credentials.get().map(\.issuerID) == [nil])
+        #expect(fixture.credentials.get().map(\.privateKeyPEM) == [Self.pem])
+    }
+
+    @Test func emptyIssuerIsAnIndividualKey() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.assignment.environment.removeAll { $0.name == "HANGAR_ASC_ISSUER_ID" }
+        fixture.assignment.environment.append(EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: ""))
+
+        let result = await fixture.run()
+
+        #expect(result.status == .succeeded)
+        #expect(!fixture.runner.commands.contains { $0.arguments.contains("-authenticationKeyIssuerID") })
+        #expect(fixture.credentials.get().map(\.issuerID) == [nil])
+    }
+
+    @Test func teamKeyLogsNoXcodeAccountNotice() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+
+        _ = await fixture.run()
+
+        #expect(!fixture.connection.logLines.contains { $0.contains("Xcode account") })
+        #expect(fixture.credentials.get().map(\.issuerID) == ["issuer-1"])
     }
 
     @Test func cancellationBetweenStepsYieldsCancelled() async throws {

@@ -5,7 +5,8 @@ import Hummingbird
 extension HangarServerApp {
     func addSettingsRoutes(to api: APIGroup) {
         api.get("settings") { _, _ in
-            // Only the key ID and issuer ID leave the server; the key contents and the token stay in the store.
+            // Only the key ID, the issuer ID (if any) and the key's kind leave the server; the key contents and the
+            // token stay in the store.
             let credentials = try Self.appStoreConnectCredentials(variables: variables)
             return try Response.json(
                 SettingsStatus(

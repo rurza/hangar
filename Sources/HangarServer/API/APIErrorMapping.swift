@@ -67,7 +67,7 @@ enum APIErrorMapping {
         case .appStoreConnectNotConfigured:
             (.badGateway, APIError(
                 code: "app_store_connect_not_configured",
-                message: "Set the global variables HANGAR_ASC_KEY_ID, HANGAR_ASC_ISSUER_ID and HANGAR_ASC_KEY_PATH."))
+                message: "Set the App Store Connect key in Settings (HANGAR_ASC_KEY_ID and HANGAR_ASC_KEY_PATH; HANGAR_ASC_ISSUER_ID for a team key)."))
         case .sourceUnavailable(let source, let reason):
             (.badGateway, APIError(
                 code: "build_number_source_unavailable", message: "Build number source '\(source)' failed: \(reason)"))

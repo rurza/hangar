@@ -41,6 +41,34 @@ struct ASCJWTTests {
         #expect(ASCJWT.expiry(now: now, lifetime: 1200) == Date(timeIntervalSince1970: 1_800_000_000 + 1140))
     }
 
+    @Test func individualKeyHasSubUserAndNoIss() throws {
+        let key = P256.Signing.PrivateKey()
+        let credentials = ASCCredentials(keyID: "INDIVIDUAL1", issuerID: nil, privateKeyPEM: key.pemRepresentation)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let token = try ASCJWT.token(credentials, now: now)
+
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        #expect(parts.count == 3)
+        let ecdsa = try P256.Signing.ECDSASignature(rawRepresentation: decodeSegment(parts[2]))
+        #expect(key.publicKey.isValidSignature(ecdsa, for: Data("\(parts[0]).\(parts[1])".utf8)))
+        let header = try #require(try JSONSerialization.jsonObject(with: decodeSegment(parts[0])) as? [String: Any])
+        #expect(header as NSDictionary == ["alg": "ES256", "kid": "INDIVIDUAL1", "typ": "JWT"] as NSDictionary)
+        let claims = try #require(try JSONSerialization.jsonObject(with: decodeSegment(parts[1])) as? [String: Any])
+        #expect(claims as NSDictionary == [
+            "sub": "user", "iat": 1_800_000_000 - 60, "exp": 1_800_000_000 + 1140, "aud": "appstoreconnect-v1",
+        ] as NSDictionary)
+        #expect(claims["iss"] == nil)
+    }
+
+    @Test func teamKeyHasNoSub() throws {
+        let credentials = ASCCredentials(
+            keyID: "K", issuerID: "issuer-uuid", privateKeyPEM: P256.Signing.PrivateKey().pemRepresentation)
+        let parts = try ASCJWT.token(credentials, now: Date()).split(separator: ".")
+        let claims = try #require(try JSONSerialization.jsonObject(with: decodeSegment(parts[1])) as? [String: Any])
+        #expect(Set(claims.keys) == ["iss", "iat", "exp", "aud"])
+    }
+
     @Test func invalidKeyThrowsWithoutEchoingIt() {
         let secret = "-----BEGIN PRIVATE KEY-----\nTOPSECRETMATERIAL\n-----END PRIVATE KEY-----"
         let credentials = ASCCredentials(keyID: "K", issuerID: "I", privateKeyPEM: secret)

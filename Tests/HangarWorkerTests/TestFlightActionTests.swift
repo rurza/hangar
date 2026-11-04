@@ -263,13 +263,28 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
         #expect(fixture.log.all.contains("not waiting for processing; skipping groups, What to Test and beta review"))
     }
 
-    @Test func missingKeyOrClientThrowsNotConfigured() async throws {
+    @Test func uploadsWithoutKeyArgumentsForIndividualKey() async throws {
         let fixture = try Fixture()
-        let noKey = await fixture.run(
-            TestFlightSettings(), fixture.context(client: FakeAppStoreConnect(polls: []), key: nil))
-        #expect(throws: TestFlightError.appStoreConnectNotConfigured) { try noKey.get() }
-        #expect(fixture.runner.commands.isEmpty)
+        let client = FakeAppStoreConnect(polls: [[build("b1", "VALID")]])
+        let output = try await fixture.run(TestFlightSettings(), fixture.context(client: client, key: nil)).get()
+        #expect(output.outputs["testflight.processingState"] == "VALID")
+        let upload = try #require(fixture.runner.commands.first)
+        #expect(upload.arguments.contains("-exportArchive"))
+        #expect(upload.arguments.last == "-allowProvisioningUpdates")
+        #expect(!upload.arguments.contains { $0.hasPrefix("-authenticationKey") })
+    }
 
+    @Test func missingKeyAndClientThrowsNotConfigured() async throws {
+        let fixture = try Fixture()
+        var settings = TestFlightSettings()
+        settings.waitForProcessing = false
+        let neither = await fixture.run(settings, fixture.context(client: nil, key: nil))
+        #expect(throws: TestFlightError.appStoreConnectNotConfigured) { try neither.get() }
+        #expect(fixture.runner.commands.isEmpty)
+    }
+
+    @Test func missingClientThrowsNotConfigured() async throws {
+        let fixture = try Fixture()
         let noClient = await fixture.run(TestFlightSettings(), fixture.context(client: nil))
         #expect(throws: TestFlightError.appStoreConnectNotConfigured) { try noClient.get() }
         // Fails before the irreversible upload.

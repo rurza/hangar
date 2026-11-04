@@ -33,7 +33,8 @@ public struct TestFlightAction: PostActionModule {
     }
 
     public func run(_ context: PostActionContext) async throws -> PostActionOutput {
-        guard let key = context.key else { throw TestFlightError.appStoreConnectNotConfigured }
+        // Without a team key the upload uses the Xcode account, but there must be some App Store Connect key.
+        guard context.key != nil || context.appStoreConnect != nil else { throw TestFlightError.appStoreConnectNotConfigured }
         let platform = context.action.platform
         let label = "Build \(context.buildNumber) (\(platform.ciName))"
 
@@ -44,7 +45,7 @@ public struct TestFlightAction: PostActionModule {
         _ = try await ExportStep(runner: context.runner).run(
             archivePath: context.archivePath, method: .appStoreConnect, destination: "upload",
             exportPath: context.layout.upload, jobDirectory: context.layout.jobDirectory, teamID: context.teamID,
-            developerDir: context.developerDir, key: key, signing: .cloudManaged, environment: context.xcodebuildEnvironment,
+            developerDir: context.developerDir, key: context.key, signing: .cloudManaged, environment: context.xcodebuildEnvironment,
             log: context.log)
 
         guard settings.waitForProcessing else {

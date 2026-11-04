@@ -3,7 +3,8 @@ import HangarAppStoreConnect
 import HangarCore
 
 /// Everything a post-action may use: what was built, where it lives, and the seams for processes, App Store Connect,
-/// time and logging. `appStoreConnect` and `key` are nil when the app has no credentials configured.
+/// time and logging. `appStoreConnect` is nil when no App Store Connect key is configured; `key` is nil unless it is a
+/// team key (xcodebuild then signs and uploads with the Xcode account on the Mac).
 public struct PostActionContext: Sendable {
     public var app: App
     public var action: ArchiveAction
@@ -22,6 +23,7 @@ public struct PostActionContext: Sendable {
     public var developerDir: String
     /// The workflow's `team:`; passed to the upload's export options.
     public var teamID: String?
+    /// xcodebuild's authentication arguments; nil for an individual key.
     public var key: ASCKeyArguments?
     public var appStoreConnect: (any AppStoreConnectClient)?
     public var runner: any ProcessRunner

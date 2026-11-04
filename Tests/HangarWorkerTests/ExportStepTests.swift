@@ -54,12 +54,13 @@ private final class ExportingRunner: ProcessRunner {
 
     private func run(
         _ runner: any ProcessRunner, exportPath: String, method: ExportMethod = .developerID,
-        destination: String = "export", signing: SigningMode = .cloudManaged, jobDirectory: String? = nil
+        destination: String = "export", signing: SigningMode = .cloudManaged, jobDirectory: String? = nil,
+        key: ASCKeyArguments? = ExportStepTests.key
     ) async throws -> ExportResult {
         try await ExportStep(runner: runner).run(
             archivePath: "/jobs/1/archive/Legilo.xcarchive", method: method, destination: destination,
             exportPath: exportPath,
-            jobDirectory: jobDirectory ?? (exportPath as NSString).deletingLastPathComponent, teamID: "TEAM123456", developerDir: "/dev", key: Self.key, signing: signing,
+            jobDirectory: jobDirectory ?? (exportPath as NSString).deletingLastPathComponent, teamID: "TEAM123456", developerDir: "/dev", key: key, signing: signing,
             environment: ["PATH": "/usr/bin"], log: { _ in })
     }
 
@@ -105,6 +106,19 @@ private final class ExportingRunner: ProcessRunner {
         let written = try plist(Data(contentsOf: URL(fileURLWithPath: exportPath + "/ExportOptions.plist")))
         #expect(written["method"] as? String == "developer-id")
         #expect(written["teamID"] as? String == "TEAM123456")
+    }
+
+    @Test func commandWithoutKeyArgumentsWhenNoTeamKey() async throws {
+        let exportPath = tempDirectory() + "/export"
+        defer { try? FileManager.default.removeItem(atPath: (exportPath as NSString).deletingLastPathComponent) }
+        let runner = ExportingRunner(exportPath: exportPath, produce: "Legilo.pkg")
+        _ = try await run(runner, exportPath: exportPath, key: nil)
+        let command = try #require(runner.recording.commands.first)
+        #expect(command.arguments == [
+            "-exportArchive", "-archivePath", "/jobs/1/archive/Legilo.xcarchive",
+            "-exportOptionsPlist", exportPath + "/ExportOptions.plist", "-exportPath", exportPath,
+            "-allowProvisioningUpdates",
+        ])
     }
 
     @Test func uploadDestinationHasNoArtifact() async throws {

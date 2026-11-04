@@ -56,6 +56,8 @@ Requires macOS 15+, Xcode and [Tailscale](https://tailscale.com) on every Mac. D
    hangar settings github-token      # reads the token from stdin
    ```
 
+   For an individual API key (it has no issuer ID), leave out `--issuer-id`. xcodebuild only accepts team keys, so builds then sign and upload with the Apple account signed in to Xcode on each build Mac (see the [worker setup](docs/worker-setup.md)); Hangar still uses the individual key for build numbers and TestFlight.
+
 5. **Add an app:**
 
    ```sh

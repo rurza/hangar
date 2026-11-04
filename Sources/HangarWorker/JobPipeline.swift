@@ -25,7 +25,7 @@ enum PreparationError: Error, Equatable, CustomStringConvertible {
     var description: String {
         switch self {
         case .xcodeNotInstalled(let version): "Xcode \(version) not installed"
-        case .appStoreConnectKeyMissing: "App Store Connect key not configured; run hangar settings asc-key"
+        case .appStoreConnectKeyMissing: "App Store Connect key not configured; set it in Settings"
         }
     }
 }

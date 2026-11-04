@@ -1,11 +1,13 @@
 import Foundation
 
+/// An App Store Connect API key. A team key has an issuer ID; an individual key (tied to one user) has none.
 public struct ASCCredentials: Sendable {
     public var keyID: String
-    public var issuerID: String
+    /// Nil for an individual key.
+    public var issuerID: String?
     public var privateKeyPEM: String
 
-    public init(keyID: String, issuerID: String, privateKeyPEM: String) {
+    public init(keyID: String, issuerID: String?, privateKeyPEM: String) {
         self.keyID = keyID
         self.issuerID = issuerID
         self.privateKeyPEM = privateKeyPEM

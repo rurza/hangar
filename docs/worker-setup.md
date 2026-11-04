@@ -18,6 +18,7 @@ Do these steps on every build Mac.
    sudo xcodebuild -license accept
    xcodebuild -downloadPlatform iOS
    ```
+   If the App Store Connect key is an individual key (no issuer ID), also sign in to your Apple account in Xcode > Settings > Accounts as `hangar`: without a team key, xcodebuild signs and uploads with that account.
 5. **Install Homebrew**, then from a checkout of this repository:
    ```sh
    brew bundle --file scripts/worker/Brewfile
@@ -48,7 +49,11 @@ Do these steps on every build Mac.
 
 ## The Apple Development identity
 
-You do not create the signing identity by hand. The first archive with the App Store Connect API key creates the Apple Development identity and its private key in the `hangar` user's login keychain. So `canSignWithoutPrompt` is `false` on a brand-new machine until that first archive has run; after it, run the doctor again and, if needed, do the Access Control step above.
+You do not create the signing identity by hand. The first archive with the App Store Connect team API key (or, with an individual key, the Apple account signed in to Xcode) creates the Apple Development identity and its private key in the `hangar` user's login keychain. So `canSignWithoutPrompt` is `false` on a brand-new machine until that first archive has run; after it, run the doctor again and, if needed, do the Access Control step above.
+
+## Team and individual API keys
+
+With a team key (`HANGAR_ASC_ISSUER_ID` set), archive, export and the TestFlight upload pass `-authenticationKeyPath`, `-authenticationKeyID` and `-authenticationKeyIssuerID` to xcodebuild. xcodebuild does not accept individual keys, so with an individual key those flags are left out and `-allowProvisioningUpdates` uses the Apple account signed in to Xcode on the Mac; the job log says "No team API key; xcodebuild signs with the Xcode account on this Mac." Build numbers and TestFlight processing, groups and review still go through the App Store Connect API with the individual key. A job fails before checkout only when `HANGAR_ASC_KEY_ID` or `HANGAR_ASC_KEY_PATH` is missing.
 
 ## Secrets and xcodebuild
 

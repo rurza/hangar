@@ -13,7 +13,8 @@ public enum ASCJWT {
 
     private static func issuedAt(_ now: Date) -> Int { Int(now.timeIntervalSince1970 - backdate) }
 
-    /// ES256 token for the App Store Connect API (signature in raw r||s form, base64url without padding).
+    /// ES256 token for the App Store Connect API (signature in raw r||s form, base64url without padding). Claims are
+    /// `iss` for a team key or `sub: "user"` for an individual key, plus `iat`, `exp` and `aud`.
     /// `iat` is `now` minus `backdate`; `exp` is `iat` plus `lifetime`.
     public static func token(_ c: ASCCredentials, now: Date, lifetime: TimeInterval = 1200) throws -> String {
         let key: P256.Signing.PrivateKey
@@ -26,14 +27,18 @@ public enum ASCJWT {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let header = try encoder.encode(["alg": "ES256", "kid": c.keyID, "typ": "JWT"])
+        // A team key names its issuer; an individual key has none and says `sub: user` instead.
         struct Claims: Encodable {
-            var iss: String
+            var iss: String?
+            var sub: String?
             var iat: Int
             var exp: Int
             var aud: String
         }
         let claims = try encoder.encode(
-            Claims(iss: c.issuerID, iat: issuedAt, exp: issuedAt + Int(lifetime), aud: "appstoreconnect-v1"))
+            Claims(
+                iss: c.issuerID, sub: c.issuerID == nil ? "user" : nil, iat: issuedAt, exp: issuedAt + Int(lifetime),
+                aud: "appstoreconnect-v1"))
         let signingInput = base64URL(header) + "." + base64URL(claims)
         let signature = try key.signature(for: Data(signingInput.utf8))
         return signingInput + "." + base64URL(signature.rawRepresentation)

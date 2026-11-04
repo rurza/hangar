@@ -3,6 +3,7 @@ import HangarAppStoreConnect
 import HangarCore
 import Hummingbird
 import HummingbirdTesting
+import Synchronization
 import Testing
 
 @testable import HangarServer
@@ -54,12 +55,32 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
                 #expect(!raw.contains(gitHubToken))
                 let status = try decode(SettingsStatus.self, response)
                 #expect(status.appStoreConnect == ASCKeyStatus(keyID: "KEY123", issuerID: "issuer-uuid"))
+                #expect(status.appStoreConnect?.kind == .team)
+                #expect(raw.contains(#""kind":"team""#))
                 #expect(status.githubTokenSet)
             }
         }
     }
 
-    @Test func settingsNeedsAllThreeASCVariables() async throws {
+    @Test func individualKeyIsConfigured() async throws {
+        let fixture = try APIFixture()
+        for (name, value) in [("HANGAR_ASC_KEY_ID", "INDIVIDUAL1"), ("HANGAR_ASC_KEY_PATH", privateKey)] {
+            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
+        }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/settings", method: .get) { response throws in
+                let raw = String(buffer: response.body)
+                #expect(raw.contains(#""kind":"individual""#))
+                #expect(!raw.contains("PRIVATE KEY"))
+                let status = try #require(try decode(SettingsStatus.self, response).appStoreConnect)
+                #expect(status.keyID == "INDIVIDUAL1")
+                #expect(status.issuerID == nil)
+                #expect(status.kind == .individual)
+            }
+        }
+    }
+
+    @Test func settingsNeedsKeyIDAndKey() async throws {
         let fixture = try APIFixture()
         try fixture.server.variables.set(
             scope: .global, name: "HANGAR_ASC_KEY_ID", input: VariableInput(value: "KEY123", isSecret: false))
@@ -87,6 +108,24 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
                 ])
             }
         }
+    }
+
+    @Test func ascAppsWorkWithIndividualKey() async throws {
+        let issuers = Mutex<[String?]>([])
+        let fixture = try APIFixture(appStoreConnectFactory: { credentials in
+            issuers.withLock { $0.append(credentials.issuerID) }
+            return AppsASC(apps: [ASCApp(id: "7", name: "Atlas", bundleID: "com.acme.atlas")])
+        })
+        for (name, value) in [("HANGAR_ASC_KEY_ID", "INDIVIDUAL1"), ("HANGAR_ASC_ISSUER_ID", ""), ("HANGAR_ASC_KEY_PATH", privateKey)] {
+            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
+        }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/asc/apps", method: .get) { response throws in
+                #expect(response.status == .ok)
+                #expect(try decode([ASCAppSummary].self, response).map(\.id) == ["7"])
+            }
+        }
+        #expect(issuers.withLock { $0 } == [nil])
     }
 
     @Test func ascAppsWithoutKeyIs409() async throws {

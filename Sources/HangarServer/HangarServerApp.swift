@@ -70,16 +70,16 @@ public struct HangarServerApp: Sendable {
             configuration: .init(address: .hostname(configuration.host, port: configuration.port), serverName: "hangar"))
     }
 
-    /// The App Store Connect credentials from the `HANGAR_ASC_*` globals, nil unless all three are set. The key-path
-    /// variable holds the `.p8` contents; the worker writes them to a file for xcodebuild.
+    /// The App Store Connect credentials from the `HANGAR_ASC_*` globals, nil unless the key ID and the key are set.
+    /// The key-path variable holds the `.p8` contents; the worker writes them to a file for xcodebuild. A missing or
+    /// empty `HANGAR_ASC_ISSUER_ID` means an individual key.
     static func appStoreConnectCredentials(variables: VariableRepository) throws -> ASCCredentials? {
         func global(_ name: String) throws -> String? {
             try variables.value(global: name).flatMap { $0.isEmpty ? nil : $0 }
         }
-        guard let keyID = try global("HANGAR_ASC_KEY_ID"), let issuerID = try global("HANGAR_ASC_ISSUER_ID"),
-            let privateKey = try global("HANGAR_ASC_KEY_PATH")
+        guard let keyID = try global("HANGAR_ASC_KEY_ID"), let privateKey = try global("HANGAR_ASC_KEY_PATH")
         else { return nil }
-        return ASCCredentials(keyID: keyID, issuerID: issuerID, privateKeyPEM: privateKey)
+        return ASCCredentials(keyID: keyID, issuerID: try global("HANGAR_ASC_ISSUER_ID"), privateKeyPEM: privateKey)
     }
 
     /// A client for the configured key, nil when it is not configured. Reads the globals on every call.
