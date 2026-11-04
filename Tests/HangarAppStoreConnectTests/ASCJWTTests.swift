@@ -35,8 +35,10 @@ struct ASCJWTTests {
         #expect(claims["iss"] as? String == "issuer-uuid")
         let iat = try #require(claims["iat"] as? Int)
         let exp = try #require(claims["exp"] as? Int)
-        #expect(iat == 1_800_000_000)
-        #expect(exp - iat == 1200)
+        // Backdated 60 s against clock skew; exp is iat plus the 1200 s lifetime, so now + 1140.
+        #expect(iat == 1_800_000_000 - 60)
+        #expect(exp == 1_800_000_000 + 1140)
+        #expect(ASCJWT.expiry(now: now, lifetime: 1200) == Date(timeIntervalSince1970: 1_800_000_000 + 1140))
     }
 
     @Test func invalidKeyThrowsWithoutEchoingIt() {

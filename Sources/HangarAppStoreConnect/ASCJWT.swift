@@ -2,7 +2,19 @@ import CryptoKit
 import Foundation
 
 public enum ASCJWT {
+    /// `iat` is set this far in the past, so a server clock slightly behind ours does not reject the token as issued
+    /// in the future.
+    public static let backdate: TimeInterval = 60
+
+    /// The `exp` of a token issued at `now`: `iat` (`now` minus `backdate`) plus `lifetime`.
+    public static func expiry(now: Date, lifetime: TimeInterval) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(issuedAt(now) + Int(lifetime)))
+    }
+
+    private static func issuedAt(_ now: Date) -> Int { Int(now.timeIntervalSince1970 - backdate) }
+
     /// ES256 token for the App Store Connect API (signature in raw r||s form, base64url without padding).
+    /// `iat` is `now` minus `backdate`; `exp` is `iat` plus `lifetime`.
     public static func token(_ c: ASCCredentials, now: Date, lifetime: TimeInterval = 1200) throws -> String {
         let key: P256.Signing.PrivateKey
         do {
@@ -10,7 +22,7 @@ public enum ASCJWT {
         } catch {
             throw ASCError.invalidPrivateKey
         }
-        let issuedAt = Int(now.timeIntervalSince1970)
+        let issuedAt = issuedAt(now)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let header = try encoder.encode(["alg": "ES256", "kid": c.keyID, "typ": "JWT"])

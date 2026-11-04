@@ -141,9 +141,10 @@ struct LiveClientDecodingTests {
         let client = makeClient(transport) { clock.withLock { $0 } }
 
         _ = try await client.betaGroups(appID: "a")
-        clock.withLock { $0 = $0.addingTimeInterval(1100) }  // 100 s left: still cached
+        // The token expires 1140 s after it was made (iat is backdated 60 s, lifetime 1200 s).
+        clock.withLock { $0 = $0.addingTimeInterval(1060) }  // 80 s left: still cached
         _ = try await client.betaGroups(appID: "a")
-        clock.withLock { $0 = $0.addingTimeInterval(50) }  // 50 s left: refresh
+        clock.withLock { $0 = $0.addingTimeInterval(30) }  // 50 s left: refresh
         _ = try await client.betaGroups(appID: "a")
 
         let tokens = transport.requests.compactMap { $0.value(forHTTPHeaderField: "Authorization") }

@@ -180,7 +180,7 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         return try cache.withLock { cached in
             if let cached, cached.expiresAt.timeIntervalSince(current) > Self.refreshMargin { return cached.token }
             let token = try ASCJWT.token(credentials, now: current, lifetime: Self.lifetime)
-            cached = CachedToken(token: token, expiresAt: current.addingTimeInterval(Self.lifetime))
+            cached = CachedToken(token: token, expiresAt: ASCJWT.expiry(now: current, lifetime: Self.lifetime))
             return token
         }
     }
