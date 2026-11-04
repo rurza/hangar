@@ -13,12 +13,14 @@ const REFRESH_MS = 60_000;
 export async function historyPage(params, context) {
   const { signal } = context;
   let apps = await api.get('/apps', { signal });
+  if (signal.aborted) return null;
   apps.sort((a, b) => a.name.localeCompare(b.name));
   let appsByID = new Map(apps.map((app) => [app.id, app]));
   let filter = context.query.get('app') ?? '';
   let builds = null;
   let generation = 0;
-  let whenCells = []; // [element, build] of the rendered rows
+  const rows = new Map(); // build id → row of the rendered list
+  let appsRequest = null; // the reloadApps call in flight
 
   const select = h('select', {
     class: 'input select history-filter', id: 'history-app', onChange: () => {
@@ -65,8 +67,13 @@ export async function historyPage(params, context) {
     }
   }
 
+  /**
+   * Rebuilds the list (first load, a new filter, renamed apps). Live events go through `upsert`, which changes rows
+   * in place so a focused row keeps its focus.
+   */
   function render() {
     if (!builds) return;
+    rows.clear();
     if (builds.length === 0) {
       const app = filteredApp();
       replaceChildren(list, h('div', { class: 'list' }, emptyState({
@@ -76,59 +83,84 @@ export async function historyPage(params, context) {
       })));
       return;
     }
-    const now = new Date();
-    whenCells = [];
-    replaceChildren(list, h('ul', { class: 'list history-list' }, builds.map((build) => {
-      const app = appsByID.get(build.appID);
-      const appName = app?.name ?? 'Unknown app';
-      return h('li', null,
-        h('a', { href: `/builds/${seg(build.id)}`, 'data-link': true, class: 'row history-row' },
-          app ? appIcon(app, 'small') : h('span', { class: 'app-icon app-icon-small monogram monogram-0', 'aria-hidden': 'true' }, '?'),
-          h('span', { class: 'row-main history-main' },
-            h('span', { class: 'row-title history-title' },
-              h('span', { class: 'history-app' }, appName),
-              h('span', { class: 'history-number' }, `Build ${build.buildNumber}`)),
-            h('span', { class: 'row-detail build-ref' },
-              `${build.workflow} · ${build.ref} · ${String(build.commit ?? '').slice(0, 7)}`)),
-          h('span', { class: 'build-trailing' },
-            statusBadge(build.status),
-            when(h('span', { class: 'row-detail history-when' }), build, now))));
-    })));
+    const ul = h('ul', { class: 'list history-list' }, builds.map((build) => rowFor(build).element));
+    replaceChildren(list, ul);
   }
 
-  function when(element, build, now) {
-    element.textContent = `${relativeTime(build.createdAt, now)} · ${buildDuration(build)}`;
-    whenCells.push([element, build]);
-    return element;
+  /** A row for `build`, registered in `rows`; `update(build)` refreshes its contents without replacing the link. */
+  function rowFor(build) {
+    const link = h('a', { href: `/builds/${seg(build.id)}`, 'data-link': true, class: 'row history-row' });
+    const when = h('span', { class: 'row-detail history-when' });
+    const row = { element: h('li', null, link), build, when, update };
+    function update(next) {
+      row.build = next;
+      const app = appsByID.get(next.appID);
+      replaceChildren(link,
+        app ? appIcon(app, 'small') : h('span', { class: 'app-icon app-icon-small monogram monogram-0', 'aria-hidden': 'true' }, '?'),
+        h('span', { class: 'row-main history-main' },
+          h('span', { class: 'row-title history-title' },
+            h('span', { class: 'history-app' }, app?.name ?? 'Unknown app'),
+            h('span', { class: 'history-number' }, `Build ${next.buildNumber}`)),
+          h('span', { class: 'row-detail build-ref' },
+            `${next.workflow} · ${next.ref} · ${String(next.commit ?? '').slice(0, 7)}`)),
+        h('span', { class: 'build-trailing' }, statusBadge(next.status), when));
+      setWhen(row);
+    }
+    update(build);
+    rows.set(build.id, row);
+    return row;
   }
 
-  /** Moves relative times and running durations on without rebuilding the rows (and losing focus). */
+  function setWhen(row, now = new Date()) {
+    row.when.textContent = `${relativeTime(row.build.createdAt, now)} · ${buildDuration(row.build)}`;
+  }
+
+  /** Moves relative times and running durations on without rebuilding the rows. */
   function refreshTimes() {
     const now = new Date();
-    for (const [element, build] of whenCells) {
-      element.textContent = `${relativeTime(build.createdAt, now)} · ${buildDuration(build)}`;
-    }
+    for (const row of rows.values()) setWhen(row, now);
   }
 
   function upsert(build) {
     if (!builds) return;
     const app = filteredApp();
     if (filter && (!app || build.appID !== app.id)) return;
-    builds = [build, ...builds.filter((existing) => existing.id !== build.id)]
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-      .slice(0, LIMIT);
-    render();
+    const index = builds.findIndex((existing) => existing.id === build.id);
+    if (index >= 0) {
+      // A build's createdAt never changes, so its place in the list stays the same.
+      builds[index] = build;
+      rows.get(build.id)?.update(build);
+      return;
+    }
+    const at = builds.findIndex((existing) => new Date(existing.createdAt) < new Date(build.createdAt));
+    if (at === -1 && builds.length >= LIMIT) return; // Older than everything shown.
+    const position = at === -1 ? builds.length : at;
+    builds.splice(position, 0, build);
+    const ul = list.querySelector('.history-list');
+    if (!ul) {
+      render(); // The list was empty.
+      return;
+    }
+    ul.insertBefore(rowFor(build).element, ul.children[position] ?? null);
+    while (builds.length > LIMIT) {
+      const dropped = builds.pop();
+      rows.get(dropped.id)?.element.remove();
+      rows.delete(dropped.id);
+    }
   }
 
-  async function reloadApps() {
-    try {
-      apps = (await api.get('/apps', { signal })).sort((a, b) => a.name.localeCompare(b.name));
+  /** Reloads the apps once at a time, e.g. when a build of an app this page does not know arrives. */
+  function reloadApps() {
+    appsRequest ??= api.get('/apps', { signal }).then((fresh) => {
+      if (signal.aborted) return;
+      apps = fresh.sort((a, b) => a.name.localeCompare(b.name));
       appsByID = new Map(apps.map((app) => [app.id, app]));
       renderFilter();
-      render();
-    } catch {
+      for (const row of rows.values()) row.update(row.build);
+    }, () => {
       // Keep the list as it is; rows of an unknown app say so.
-    }
+    }).finally(() => { appsRequest = null; });
+    return appsRequest;
   }
 
   context.onCleanup(events((event) => {

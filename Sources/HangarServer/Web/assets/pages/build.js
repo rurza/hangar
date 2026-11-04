@@ -123,10 +123,13 @@ export async function buildPage(params, context) {
     }
     throw error;
   }
+  // The page may have been left while the request ran: start no timers or streams for it.
+  if (signal.aborted) return null;
   const [appResult, machinesResult] = await Promise.allSettled([
     api.get(`/apps/${seg(build.appID)}`, { signal }),
     api.get('/machines', { signal }),
   ]);
+  if (signal.aborted) return null;
   const app = appResult.status === 'fulfilled' ? appResult.value : null;
   const machines = new Map(machinesResult.status === 'fulfilled' ? machinesResult.value.map((m) => [m.id, m]) : []);
   const appName = app?.name ?? 'Unknown app';
@@ -449,6 +452,8 @@ function logPanel(initialJobs, context) {
   function restart() {
     stop?.();
     stop = null;
+    // Never open a stream for a page that is gone (its cleanups have already run).
+    if (context.signal.aborted) return;
     lines.replaceChildren();
     lineCount = 0;
     pinned = true;

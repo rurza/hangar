@@ -91,6 +91,8 @@ export function openDeploySheet(app) {
     actions: [{ label: 'Cancel', kind: 'cancel' }, deployAction],
     onClose: () => {
       clearTimeout(debounce);
+      // Only the latest workflows request is ever in flight; older ones were aborted when the ref changed.
+      workflowsRequest?.abort();
       lifetime.abort();
     },
   });
@@ -103,6 +105,8 @@ export function openDeploySheet(app) {
     clearTimeout(debounce);
     workflowsRequest?.abort();
     workflowsRequest = null;
+    // Whatever was listed belonged to the previous ref.
+    workflows = null;
     setRefError(null);
     workflowsLoading = refInput.value.trim() !== '';
     renderWorkflows();
@@ -115,7 +119,6 @@ export function openDeploySheet(app) {
     if (!ref) return;
     const controller = new AbortController();
     workflowsRequest = controller;
-    lifetime.signal.addEventListener('abort', () => controller.abort(), { once: true });
     workflowsLoading = true;
     renderWorkflows();
     update();
@@ -279,8 +282,8 @@ export function openDeploySheet(app) {
     const why = blocker();
     deployAction.disabled = Boolean(why);
     if (deployButton) deployButton.disabled = deployAction.disabled;
+    // The live region stays in the DOM so screen readers announce each new reason.
     reason.textContent = why ?? '';
-    reason.hidden = !why;
   }
 
   async function deploy() {
