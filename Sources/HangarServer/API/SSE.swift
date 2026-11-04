@@ -74,6 +74,8 @@ extension HangarServerApp {
             try await sendNewEntries()
             guard let job = try builds.job(id: jobID) else { return }
             if job.status.isTerminal {
+                // The job may have finished after the read above, with its last lines appended in between.
+                try await sendNewEntries()
                 output.yield(try SSE.frame(event: "end", data: job))
                 return
             }

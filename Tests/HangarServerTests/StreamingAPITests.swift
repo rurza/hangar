@@ -81,6 +81,27 @@ import Testing
         }
     }
 
+    @Test func logFollowSendsEveryEntryOfAJobFinishedBeforeConnect() async throws {
+        let fixture = try APIFixture()
+        let job = try await deploy(fixture).jobs[0]
+        let first = [entry("checkout", "cloning", 0)]
+        let last = [entry("archive", "building", 1), entry("export", "exported", 2)]
+        try await fixture.server.logStore.append(jobID: job.id, first)
+        try await fixture.server.logStore.append(jobID: job.id, last)
+        fixture.server.events.publish(.log(jobID: job.id, last))
+        try fixture.server.builds.setJobStatus(id: job.id, status: .succeeded, at: Self.t0)
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/jobs/\(job.id.uuidString)/log?follow=1", method: .get) { response throws in
+                let frames = frames(response)
+                let logged = try frames.dropLast().flatMap {
+                    try JSONCoding.decoder.decode([LogEntry].self, from: Data($0.data.utf8))
+                }
+                #expect(logged == first + last)
+                #expect(frames.last?.event == "end")
+            }
+        }
+    }
+
     @Test func eventsForwardsServerEventsWithKeepAlive() async throws {
         let clock = TestClock()
         let fixture = try APIFixture(clock: clock)
@@ -95,8 +116,11 @@ import Testing
         fixture.server.events.publish(.log(jobID: UUID(), []))
         fixture.server.events.publish(.server(.machine(machine)))
         try await writer.waitUntil { $0.contains("event: machine\n") }
-        await clock.advance(by: .seconds(15))
-        try await writer.waitUntil { $0.contains(": keep-alive\n\n") }
+        // The keep-alive task may start sleeping after any one advance; keep advancing until it fires.
+        while !writer.text.contains(": keep-alive\n\n") {
+            await clock.advance(by: .seconds(15))
+            try await Task.sleep(for: .milliseconds(5))
+        }
 
         let text = writer.text
         #expect(!text.contains("event: log"))
