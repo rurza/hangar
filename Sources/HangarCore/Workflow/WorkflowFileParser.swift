@@ -32,6 +32,9 @@ public enum WorkflowFileParser {
 
     private static func workflow(named name: String, from value: JSONValue) throws(WorkflowFileError) -> Workflow {
         guard case .object(let map) = value else { throw .invalidYAML("workflow '\(name)' must be a map") }
+        try rejectUnknownKeys(
+            map, allowed: ["project", "workspace", "xcode", "team", "tools", "actions", "post-actions"],
+            context: "workflow '\(name)'")
 
         let project = try optionalString(map["project"], key: "project", workflow: name)
         let workspace = try optionalString(map["workspace"], key: "workspace", workflow: name)
@@ -66,6 +69,7 @@ public enum WorkflowFileParser {
 
     private static func archiveAction(_ value: JSONValue, workflow: String) throws(WorkflowFileError) -> ArchiveAction {
         guard case .object(let map) = value else { throw .invalidYAML("workflow '\(workflow)': each action must be a map") }
+        try rejectUnknownKeys(map, allowed: ["scheme", "platform", "export"], context: "an action in workflow '\(workflow)'")
         func required(_ key: String) throws(WorkflowFileError) -> String {
             guard let text = try optionalString(map[key], key: key, workflow: workflow) else {
                 throw .invalidYAML("workflow '\(workflow)': action is missing '\(key)'")
@@ -107,13 +111,21 @@ public enum WorkflowFileParser {
         }
     }
 
+    private static func rejectUnknownKeys(
+        _ map: [String: JSONValue], allowed: Set<String>, context: String
+    ) throws(WorkflowFileError) {
+        if let unknown = map.keys.filter({ !allowed.contains($0) }).sorted().first {
+            throw .invalidYAML("\(context) has unknown key '\(unknown)'")
+        }
+    }
+
     private static func optionalString(_ value: JSONValue?, key: String, workflow: String) throws(WorkflowFileError) -> String? {
         guard let value else { return nil }
         switch value {
         case .string(let text): return text
-        // An unquoted `xcode: 27` or `xcode: 27.2` loads as a number; keep it usable as a prefix.
-        case .int(let number): return String(number)
-        case .double(let number): return String(number)
+        // Numbers are rejected: YAML would change `27.10` to 27.1 and drop leading zeros.
+        case .int, .double:
+            throw .invalidYAML("workflow '\(workflow)': '\(key)' must be a quoted string, e.g. \(key): \"...\"")
         default: throw .invalidYAML("workflow '\(workflow)': '\(key)' must be a string")
         }
     }

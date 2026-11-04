@@ -32,8 +32,8 @@ workflows:
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `project` / `workspace` | exactly one | Path relative to the repository root. Its directory is where `ci_scripts/` lives. |
-| `xcode` | yes | Prefix matched against the Xcode versions installed on the worker. |
-| `team` | no | Apple developer team ID. |
+| `xcode` | yes | Quoted string, prefix-matched against installed Xcodes (`"27.2"`; unquoted `27.10` would become 27.1, so numbers are rejected). |
+| `team` | no | Apple developer team ID (quote it; numeric values are rejected). |
 | `tools` | no | Tool names the worker must report (for example `brew`). Default: none. |
 | `actions` | yes | One or more archive actions. |
 | `post-actions` | no | Steps run after all actions succeed, in order. Default: none. |

@@ -188,4 +188,35 @@ private func yaml(project: String = "project: A.xcodeproj", actions: String = "-
         let data = try JSONEncoder().encode(workflow)
         #expect(try JSONDecoder().decode(Workflow.self, from: data) == workflow)
     }
+
+    private func invalidYAMLMessage(_ text: String) -> String? {
+        do { _ = try WorkflowFileParser.parse(text); return nil }
+        catch { if case .invalidYAML(let message) = error { return message } else { return nil } }
+    }
+
+    @Test func rejectsUnknownWorkflowKey() {
+        let text = yaml().replacingOccurrences(of: "post-actions:", with: "post-action:")
+        let message = invalidYAMLMessage(text)
+        #expect(message?.contains("post-action") == true)
+        #expect(message?.contains("testflight") == true)
+    }
+
+    @Test func rejectsUnknownActionKey() {
+        let message = invalidYAMLMessage(yaml(actions: "- { scheme: A, platform: ios, export: app-store-connect, target: X }"))
+        #expect(message?.contains("target") == true)
+        #expect(message?.contains("testflight") == true)
+    }
+
+    @Test func rejectsUnquotedXcodeVersion() {
+        let text = yaml().replacingOccurrences(of: "xcode: \"27.10\"", with: "xcode: 27.10")
+            .replacingOccurrences(of: "xcode: \"27.2\"", with: "xcode: 27.10")
+        let message = invalidYAMLMessage(text)
+        #expect(message?.contains("quoted") == true)
+        #expect(message?.contains("xcode") == true)
+    }
+
+    @Test func rejectsUnquotedTeam() {
+        let text = yaml().replacingOccurrences(of: "    xcode:", with: "    team: 0123456789\n    xcode:")
+        #expect(invalidYAMLMessage(text)?.contains("team") == true)
+    }
 }
