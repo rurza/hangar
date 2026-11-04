@@ -396,4 +396,30 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.logLines.contains("git clone https://github.com/acme/demo.git \(fixture.layout.repository)"))
         #expect(fixture.connection.events.last == .finish(result))
     }
+
+    @Test func aDroppedFinishIsRetried() async throws {
+        let fixture = try Fixture(connection: FakeServerConnection(finishErrors: [FakeServerConnection.Unavailable()]))
+        defer { fixture.removeAll() }
+
+        let result = await fixture.runTicking(cancelled: { false })
+
+        #expect(result.status == .succeeded)
+        #expect(fixture.connection.finishAttempts == 2)
+        #expect(fixture.connection.events.last == .finish(result))
+    }
+
+    @Test func finishGivesUpAfterFiveAttemptsAndTreatsAConflictAsDone() async throws {
+        let down = try Fixture(connection: FakeServerConnection(finishErrors: Array(repeating: FakeServerConnection.Unavailable(), count: 9)))
+        defer { down.removeAll() }
+        _ = await down.runTicking(cancelled: { false })
+        #expect(down.connection.finishAttempts == 5)
+        #expect(down.connection.result == nil)
+
+        // 409: the job is already terminal on the server (e.g. failed as lost); nothing to retry.
+        let conflict = ServerConnectionError.status(409, method: "POST", path: "/api/v1/worker/jobs/x/finish")
+        let terminal = try Fixture(connection: FakeServerConnection(finishErrors: [conflict, conflict]))
+        defer { terminal.removeAll() }
+        _ = await terminal.runTicking(cancelled: { false })
+        #expect(terminal.connection.finishAttempts == 1)
+    }
 }

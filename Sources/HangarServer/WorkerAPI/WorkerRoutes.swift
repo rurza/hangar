@@ -16,13 +16,20 @@ extension HangarServerApp {
         worker.post("heartbeat") { request, context in
             let machine = try context.requireMachine()
             let input = try await request.decode(as: HeartbeatRequest.self, context: context)
-            try machines.updateReport(id: machine.id, report: input.report, seenAt: now())
+            let now = now()
+            try machines.updateReport(id: machine.id, report: input.report, seenAt: now)
             if let updated = try machines.find(nameOrID: machine.id.uuidString) {
                 events.publish(.server(.machine(updated)))
             }
-            // The worker's own list covers a job it still runs after the server stopped counting it as the machine's.
-            let onMachine = try builds.jobs(status: [.assigned, .running]).filter { $0.machineID == machine.id }.map(\.id)
-            let cancel = cancelRequests.pending(for: Array(Set(onMachine + input.report.runningJobIDs)))
+            let onMachine = try builds.jobs(status: [.assigned, .running]).filter { $0.machineID == machine.id }
+            try failUntrackedJobs(onMachine, machine: machine, reported: Set(input.report.runningJobIDs), now: now)
+            // The worker's own list covers a job it still runs after the server stopped counting it as the machine's:
+            // one that ended on the server (e.g. failed as lost) or went to another machine is to stop as well.
+            var cancel = Set(cancelRequests.pending(for: Array(Set(onMachine.map(\.id) + input.report.runningJobIDs))))
+            for id in Set(input.report.runningJobIDs) where !onMachine.contains(where: { $0.id == id }) {
+                let job = try builds.job(id: id)
+                if job == nil || job?.status.isTerminal == true || job?.machineID != machine.id { cancel.insert(id) }
+            }
             scheduler.poke()
             return try Response.json(HeartbeatResponse(cancelJobIDs: cancel.sorted { $0.uuidString < $1.uuidString }))
         }
@@ -96,6 +103,21 @@ extension HangarServerApp {
             let finished = try publishChange(of: job)
             scheduler.poke()
             return try Response.json(finished)
+        }
+    }
+
+    /// Fails the machine's running jobs its heartbeat no longer lists once they have run longer than the grace: the
+    /// worker restarted mid-job, or the job's finish never arrived. Without this they would stay running, and keep
+    /// the machine's slot and the app's in-flight build, for as long as the machine keeps reporting.
+    private func failUntrackedJobs(_ jobs: [Job], machine: Machine, reported: Set<UUID>, now: Date) throws {
+        for job in jobs where job.status == .running && !reported.contains(job.id) {
+            guard let startedAt = job.startedAt, now.timeIntervalSince(startedAt) > configuration.untrackedJobGrace,
+                try builds.transitionJob(
+                    id: job.id, from: [.running], to: .failed, at: now, failureReason: "worker lost track of the job",
+                    machineID: machine.id)
+            else { continue }
+            cancelRequests.clear(job.id)
+            _ = try publishChange(of: job)
         }
     }
 

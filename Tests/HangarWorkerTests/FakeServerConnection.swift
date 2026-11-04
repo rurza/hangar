@@ -5,7 +5,7 @@ import Synchronization
 @testable import HangarWorker
 
 /// Records every call a worker makes to the server, in order. `failLogCalls` makes that many `log` calls throw first;
-/// uploads named in `failUploads` always throw.
+/// uploads named in `failUploads` always throw; `finishErrors` are thrown, in order, by the first `finish` calls.
 final class FakeServerConnection: ServerConnection {
     enum Event: Equatable {
         case start
@@ -20,17 +20,20 @@ final class FakeServerConnection: ServerConnection {
     private struct State {
         var events: [Event] = []
         var failLogCalls = 0
+        var finishErrors: [any Error] = []
+        var finishAttempts = 0
     }
 
     private let state: Mutex<State>
     private let failUploads: Set<String>
 
-    init(failLogCalls: Int = 0, failUploads: Set<String> = []) {
-        state = Mutex(State(failLogCalls: failLogCalls))
+    init(failLogCalls: Int = 0, failUploads: Set<String> = [], finishErrors: [any Error] = []) {
+        state = Mutex(State(failLogCalls: failLogCalls, finishErrors: finishErrors))
         self.failUploads = failUploads
     }
 
     var events: [Event] { state.withLock { $0.events } }
+    var finishAttempts: Int { state.withLock { $0.finishAttempts } }
 
     var steps: [(name: String, status: StepStatus)] {
         events.compactMap { if case .step(let name, let status) = $0 { (name, status) } else { nil } }
@@ -82,6 +85,10 @@ final class FakeServerConnection: ServerConnection {
     }
 
     func finish(jobID: UUID, _ result: JobResult) async throws {
-        state.withLock { $0.events.append(.finish(result)) }
+        try state.withLock {
+            $0.finishAttempts += 1
+            if !$0.finishErrors.isEmpty { throw $0.finishErrors.removeFirst() }
+            $0.events.append(.finish(result))
+        }
     }
 }

@@ -65,7 +65,7 @@ public struct JobRunner: Sendable {
         } catch {
             logger.error("could not start job: \(error)", metadata: ["job": "\(jobID)"])
             let result = JobResult(status: .failed, failureReason: masker.mask("start: \(error)"))
-            try? await connection.finish(jobID: jobID, result)
+            await reportFinish(jobID: jobID, result)
             return result
         }
 
@@ -114,12 +114,34 @@ public struct JobRunner: Sendable {
         let result = JobResult(
             status: pipeline.status, failureReason: pipeline.failureReason.map(masker.mask),
             outputs: outputs.mapValues(masker.mask))
-        do {
-            try await connection.finish(jobID: jobID, result)
-        } catch {
-            logger.error("could not report the job's result: \(error)", metadata: ["job": "\(jobID)"])
-        }
+        await reportFinish(jobID: jobID, result)
         return result
+    }
+
+    /// Delays between attempts to report a job's result; five attempts in all.
+    static let finishRetryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
+
+    /// Reports the result, retrying on the injected clock: a lost finish would leave the job running on the server
+    /// until the heartbeat stops listing it. A 409 means the job is already terminal there, which counts as done.
+    private func reportFinish(jobID: UUID, _ result: JobResult) async {
+        var delays = Self.finishRetryDelays[...]
+        while true {
+            do {
+                try await connection.finish(jobID: jobID, result)
+                return
+            } catch ServerConnectionError.status(409, _, _) {
+                logger.info("the server already has the job finished", metadata: ["job": "\(jobID)"])
+                return
+            } catch {
+                guard let delay = delays.popFirst() else {
+                    logger.error("could not report the job's result: \(error)", metadata: ["job": "\(jobID)"])
+                    return
+                }
+                logger.warning("could not report the job's result: \(error); retrying in \(delay)", metadata: ["job": "\(jobID)"])
+                // A cancelled sleep (the worker shutting down) still gets the remaining attempts, without waiting.
+                try? await clock.sleep(for: delay)
+            }
+        }
     }
 
     /// Picks Xcode, assembles the environment, writes as-file variables and checks the App Store Connect key.

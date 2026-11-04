@@ -3,9 +3,18 @@ import Foundation
 import HangarCore
 import Hummingbird
 import HummingbirdTesting
+import Synchronization
 import Testing
 
 @testable import HangarServer
+
+/// A wall clock the test moves by hand.
+final class ManualNow: Sendable {
+    private let date: Mutex<Date>
+    init(_ date: Date) { self.date = Mutex(date) }
+    func callAsFunction() -> Date { date.withLock { $0 } }
+    func advance(by seconds: TimeInterval) { date.withLock { $0 += seconds } }
+}
 
 /// The routes worker machines call, under `/api/v1/worker`.
 @Suite(.timeLimit(.minutes(1))) struct WorkerAPITests {
@@ -27,8 +36,11 @@ import Testing
         let token: String
         let build: Build
 
-        init(clock: any Clock<Duration> = ContinuousClock(), assign: Bool = true) async throws {
-            fixture = try APIFixture(clock: clock, now: { WorkerAPITests.t0 })
+        init(
+            clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = { WorkerAPITests.t0 },
+            assign: Bool = true
+        ) async throws {
+            fixture = try APIFixture(clock: clock, now: now)
             try fixture.createApp()
             (machine, token) = try fixture.server.machines.create(name: "studio")
             build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: "testflight", ref: "main"))
@@ -314,12 +326,95 @@ import Testing
             #expect(Set(try await heartbeat(setup.auth, running: [running.id])) == [running.id, assigned.id])
             #expect(try await heartbeat(Self.auth(otherToken), running: []) == [])
 
-            // Once the worker reports the job cancelled, it is no longer handed out, even while the worker still lists it.
+            // Once the worker reports the job cancelled, its cancel request is cleared; a worker that still lists the
+            // finished job is told to stop it because it is terminal on the server.
             try await client.execute(
                 uri: "/api/v1/worker/jobs/\(running.id.uuidString)/finish", method: .post, headers: setup.auth,
                 body: try body(JobResult(status: .cancelled))
             ) { response in #expect(response.status == .ok) }
-            #expect(try await heartbeat(setup.auth, running: [running.id]) == [assigned.id])
+            #expect(try await heartbeat(setup.auth, running: []) == [assigned.id])
+            #expect(Set(try await heartbeat(setup.auth, running: [running.id])) == [running.id, assigned.id])
+        }
+    }
+
+    func heartbeat(_ client: some TestClientProtocol, _ headers: HTTPFields, running: [UUID]) async throws -> [UUID] {
+        try await client.execute(
+            uri: "/api/v1/worker/heartbeat", method: .post, headers: headers,
+            body: try body(HeartbeatRequest(report: Self.report(running: running)))
+        ) {
+            #expect($0.status == .ok)
+            return try decode(HeartbeatResponse.self, $0).cancelJobIDs
+        }
+    }
+
+    @Test func workerRestartedMidJobFailsTheJobAndFreesTheSlot() async throws {
+        let now = ManualNow(Self.t0)
+        let setup = try await Setup(now: { now() }, assign: false)
+        let server = setup.fixture.server
+        let (first, second) = (setup.build.jobs[0], setup.build.jobs[1])
+        #expect(try server.builds.assign(jobID: first.id, to: setup.machine.id, at: Self.t0))
+        try await setup.fixture.test { client in
+            try await client.execute(uri: "/api/v1/worker/jobs/\(first.id.uuidString)/start", method: .post, headers: setup.auth) {
+                response in
+                #expect(response.status == .ok)
+            }
+            // The worker restarts: its next heartbeats no longer list the job. Within the grace nothing happens,
+            // since a heartbeat may have been taken just before the job started.
+            now.advance(by: 30)
+            #expect(try await heartbeat(client, setup.auth, running: []) == [])
+            #expect(try server.builds.job(id: first.id)?.status == .running)
+            try await server.scheduler.tick()
+            #expect(try server.builds.job(id: second.id)?.status == .queued)
+
+            now.advance(by: 31)
+            #expect(try await heartbeat(client, setup.auth, running: []) == [])
+            let failed = try #require(try server.builds.job(id: first.id))
+            #expect(failed.status == .failed)
+            #expect(failed.failureReason == "worker lost track of the job")
+            #expect(failed.finishedAt == now())
+            #expect(try server.builds.build(id: setup.build.id)?.jobs.first { $0.id == first.id }?.status == .failed)
+
+            // The machine's only slot is free again: the next job is assigned to it.
+            try await server.scheduler.tick()
+            let next = try #require(try server.builds.job(id: second.id))
+            #expect(next.status == .assigned)
+            #expect(next.machineID == setup.machine.id)
+
+            // A job the heartbeat still lists keeps running however long it takes.
+            try await client.execute(uri: "/api/v1/worker/jobs/\(second.id.uuidString)/start", method: .post, headers: setup.auth) {
+                response in
+                #expect(response.status == .ok)
+            }
+            now.advance(by: 3600)
+            #expect(try await heartbeat(client, setup.auth, running: [second.id]) == [])
+            #expect(try server.builds.job(id: second.id)?.status == .running)
+        }
+    }
+
+    @Test func heartbeatAsksToStopJobsTheServerNoLongerRunsOnTheMachine() async throws {
+        let setup = try await Setup()
+        let server = setup.fixture.server
+        let (finished, other) = (setup.build.jobs[0], setup.build.jobs[1])
+        try await setup.fixture.test { client in
+            for job in [finished, other] {
+                try await client.execute(uri: "/api/v1/worker/jobs/\(job.id.uuidString)/start", method: .post, headers: setup.auth) {
+                    response in
+                    #expect(response.status == .ok)
+                }
+            }
+            // Failed on the server (e.g. as lost) while the worker still runs it.
+            #expect(try server.builds.transitionJob(id: finished.id, from: [.running], to: .failed, at: Self.t0))
+            // A job the server has on another machine, and one it does not know.
+            let (laptop, _) = try server.machines.create(name: "laptop")
+            try server.builds.inTransaction { db in
+                try db.execute(sql: "UPDATE jobs SET machine_id = ? WHERE id = ?", arguments: [laptop.id.uuidString, other.id.uuidString])
+            }
+            let unknown = UUID()
+            let cancel = try await heartbeat(client, setup.auth, running: [finished.id, other.id, unknown])
+            #expect(Set(cancel) == [finished.id, other.id, unknown])
+            // The job stays failed, the other machine's job untouched.
+            #expect(try server.builds.job(id: finished.id)?.status == .failed)
+            #expect(try server.builds.job(id: other.id)?.status == .running)
         }
     }
 }
