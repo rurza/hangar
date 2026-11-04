@@ -322,8 +322,11 @@ final class ManualNow: Sendable {
             #expect(machine.report == Self.report(running: [running.id]))
 
             _ = try await server.buildService.cancel(buildID: setup.build.id)
-            // The running job (reported and in the DB) and the assigned one (in the DB only) are both to stop.
-            #expect(Set(try await heartbeat(setup.auth, running: [running.id])) == [running.id, assigned.id])
+            // The running job is to stop; the assigned one, not started yet, was cancelled outright.
+            #expect(try server.builds.job(id: assigned.id)?.status == .cancelled)
+            #expect(try await heartbeat(setup.auth, running: [running.id]) == [running.id])
+            // A worker that had already picked up the assigned job is told to drop it.
+            #expect(Set(try await heartbeat(setup.auth, running: [running.id, assigned.id])) == [running.id, assigned.id])
             #expect(try await heartbeat(Self.auth(otherToken), running: []) == [])
 
             // Once the worker reports the job cancelled, its cancel request is cleared; a worker that still lists the
@@ -332,8 +335,8 @@ final class ManualNow: Sendable {
                 uri: "/api/v1/worker/jobs/\(running.id.uuidString)/finish", method: .post, headers: setup.auth,
                 body: try body(JobResult(status: .cancelled))
             ) { response in #expect(response.status == .ok) }
-            #expect(try await heartbeat(setup.auth, running: []) == [assigned.id])
-            #expect(Set(try await heartbeat(setup.auth, running: [running.id])) == [running.id, assigned.id])
+            #expect(try await heartbeat(setup.auth, running: []) == [])
+            #expect(try await heartbeat(setup.auth, running: [running.id]) == [running.id])
         }
     }
 

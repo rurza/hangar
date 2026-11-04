@@ -77,22 +77,28 @@ public struct BuildService: Sendable {
         return build
     }
 
-    /// Queued jobs are cancelled right away; assigned and running ones are asked to stop via the worker heartbeat.
+    /// Queued and assigned-but-not-started jobs are cancelled right away (an assigned job's machine is refused when it
+    /// tries to start it); running ones are asked to stop via the worker heartbeat.
     public func cancel(buildID: UUID) async throws -> Build {
         guard let build = try builds.build(id: buildID) else { throw DeployError.buildNotFound(buildID) }
         guard !build.jobs.allSatisfy({ $0.status.isTerminal }) else { return build }
         let now = Date()
         var toStop: [UUID] = []
+        var cancelled = false
         for job in build.jobs where !job.status.isTerminal {
-            if job.status == .queued, try builds.transitionJob(id: job.id, from: [.queued], to: .cancelled, at: now) { continue }
-            // Assigned or running, or assigned between our read and the guarded update.
-            if let current = try builds.job(id: job.id), current.status == .assigned || current.status == .running {
-                toStop.append(job.id)
+            // Guarded and machine-agnostic: a job that started meanwhile is left to the worker.
+            if try builds.transitionJob(id: job.id, from: [.queued, .assigned], to: .cancelled, at: now) {
+                if let updated = try builds.job(id: job.id) { events.publish(.server(.job(updated))) }
+                cancelled = true
+                continue
             }
+            if let current = try builds.job(id: job.id), current.status == .running { toStop.append(job.id) }
         }
         cancelRequests.request(toStop)
         let refreshed = try builds.refreshBuildStatus(buildID: buildID)
         events.publish(.server(.build(refreshed)))
+        // A cancelled assignment frees its machine's slot.
+        if cancelled { scheduler.poke() }
         return refreshed
     }
 

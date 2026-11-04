@@ -249,6 +249,32 @@ final class FakeSourceHost: SourceHost {
         #expect(cancelRequests.pending(for: build.jobs.map(\.id)) == [running.id])
     }
 
+    @Test func cancelEndsAnAssignedJobThatHasNotStarted() async throws {
+        let (machine, _) = try machines.create(name: "studio")
+        let build = try await service.deploy(request())
+        let (assigned, running) = (build.jobs[0], build.jobs[1])
+        #expect(try builds.assign(jobID: assigned.id, to: machine.id, at: Date()))
+        #expect(try builds.assign(jobID: running.id, to: machine.id, at: Date()))
+        try builds.setJobStatus(id: running.id, status: .running, at: Date())
+        let updates = events.subscribe()
+
+        let result = try await service.cancel(buildID: build.id)
+
+        let job = try #require(result.jobs.first { $0.id == assigned.id })
+        #expect(job.status == .cancelled)
+        #expect(job.finishedAt != nil)
+        // Only the running job goes through the heartbeat.
+        #expect(cancelRequests.pending(for: build.jobs.map(\.id)) == [running.id])
+        // The machine can no longer start it.
+        #expect(!(try builds.transitionJob(id: assigned.id, from: [.assigned], to: .running, at: Date(), machineID: machine.id)))
+        var published = false
+        for await event in updates {
+            if case .server(.job(let job)) = event, job.id == assigned.id, job.status == .cancelled { published = true }
+            if case .server(.build) = event { break }
+        }
+        #expect(published)
+    }
+
     @Test func cancellingATerminalBuildIsANoOp() async throws {
         let build = try await service.deploy(request())
         let first = try await service.cancel(buildID: build.id)
