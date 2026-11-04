@@ -41,6 +41,10 @@ private struct FakeASC: AppStoreConnectClient {
         return (BuildNumberService(repository: repository, sources: { sources }), repository, app)
     }
 
+    static let workflow = Workflow(
+        project: "App.xcodeproj", xcode: "27.2",
+        actions: [ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
+
     static let standard: [any KnownNumberSource] = [
         FakeSource("app-store-connect", 300), FakeSource("xcode-cloud", 305), FakeSource("appcast", nil),
     ]
@@ -86,7 +90,8 @@ private struct FakeASC: AppStoreConnectClient {
                         id: jobID, buildID: buildID,
                         action: ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect),
                         status: .queued, createdAt: now)
-                ]))
+                ]),
+            workflow: Self.workflow)
         try repository.setJobStatus(id: jobID, status: .failed, at: now, failureReason: "boom")
         try repository.refreshBuildStatus(buildID: buildID)
         #expect(try repository.build(id: buildID)?.status == .failed)
@@ -165,7 +170,8 @@ private struct FakeASC: AppStoreConnectClient {
         try repository.insert(
             Build(
                 id: id, appID: app.id, workflow: "release", ref: "main", commit: "abc", buildNumber: 306,
-                status: .queued, createdAt: now, jobs: []))
+                status: .queued, createdAt: now, jobs: []),
+            workflow: Self.workflow)
         #expect(try await service.preview(app: app).inFlight)
     }
 

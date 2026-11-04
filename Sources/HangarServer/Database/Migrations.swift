@@ -84,6 +84,10 @@ enum Migrations {
                 );
                 """)
         }
+        // The workflow a build runs, as resolved at deploy time: the scheduler needs its Xcode and tools.
+        migrator.registerMigration("v2") { db in
+            try db.execute(sql: "ALTER TABLE builds ADD COLUMN workflow_json TEXT")
+        }
         return migrator
     }
 }

@@ -18,6 +18,10 @@ import Testing
             CreateAppRequest(name: "Demo", repoURL: "https://example.com/r.git", appStoreConnectAppID: "1"))
     }
 
+    let workflow = Workflow(
+        project: "App.xcodeproj", xcode: "27.2", tools: ["xcodegen"],
+        actions: [ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
+
     func makeBuild(number: Int = 1, jobCount: Int = 1) -> Build {
         let id = UUID()
         let now = Date(timeIntervalSince1970: 1_800_000_000.5)
@@ -33,7 +37,7 @@ import Testing
 
     @Test func insertRoundTrips() throws {
         let build = makeBuild(jobCount: 2)
-        try builds.insert(build)
+        try builds.insert(build, workflow: workflow)
         #expect(try builds.build(id: build.id) == build)
         #expect(try builds.builds(appID: app.id, limit: 10) == [build])
         #expect(try builds.builds(appID: nil, limit: 10) == [build])
@@ -43,7 +47,7 @@ import Testing
 
     @Test func assignIsAtomic() throws {
         let build = makeBuild()
-        try builds.insert(build)
+        try builds.insert(build, workflow: workflow)
         let job = build.jobs[0].id
         let first = try builds.assign(jobID: job, to: UUID(), at: Date())
         let second = try builds.assign(jobID: job, to: UUID(), at: Date())
@@ -56,7 +60,7 @@ import Testing
 
     @Test func refreshBuildStatusDerives() throws {
         let build = makeBuild()
-        try builds.insert(build)
+        try builds.insert(build, workflow: workflow)
         let job = build.jobs[0].id
         let start = Date(timeIntervalSince1970: 1_800_000_100)
         try builds.setJobStatus(id: job, status: .running, at: start)
@@ -75,7 +79,7 @@ import Testing
 
     @Test func upsertStepKeepsOrderAndStampsTimes() throws {
         let build = makeBuild()
-        try builds.insert(build)
+        try builds.insert(build, workflow: workflow)
         let job = build.jobs[0].id
         let t1 = Date(timeIntervalSince1970: 1_800_000_001)
         let t2 = Date(timeIntervalSince1970: 1_800_000_002)
@@ -91,6 +95,32 @@ import Testing
         let loaded = try #require(try builds.job(id: job))
         #expect(loaded.outputs == ["ipa": "/x.ipa"])
         #expect(loaded.queueNote == "waiting")
+    }
+
+    @Test func workflowRoundTrips() throws {
+        let build = makeBuild()
+        try builds.insert(build, workflow: workflow)
+        #expect(try builds.workflow(buildID: build.id) == workflow)
+        #expect(try builds.workflow(buildID: UUID()) == nil)
+    }
+
+    @Test func conditionalTransitionLeavesFinishedJobAlone() throws {
+        let build = makeBuild()
+        try builds.insert(build, workflow: workflow)
+        let job = build.jobs[0].id
+        let t1 = Date(timeIntervalSince1970: 1_800_000_001)
+        let t2 = Date(timeIntervalSince1970: 1_800_000_002)
+        try builds.setJobStatus(id: job, status: .succeeded, at: t1)
+        let moved = try builds.transitionJob(
+            id: job, from: [.assigned, .running], to: .failed, at: t2, failureReason: "worker lost")
+        #expect(!moved)
+        let loaded = try #require(try builds.job(id: job))
+        #expect(loaded.status == .succeeded)
+        #expect(loaded.finishedAt == t1)
+        #expect(loaded.failureReason == nil)
+        // Unassigning only applies to an assigned job.
+        #expect(!(try builds.unassign(jobID: job)))
+        #expect(try builds.job(id: job)?.status == .succeeded)
     }
 
     @Test func duplicateReservedNumberThrows() throws {

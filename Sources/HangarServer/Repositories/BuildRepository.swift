@@ -11,18 +11,19 @@ public struct BuildRepository: Sendable {
 
     // MARK: Builds
 
-    public func insert(_ build: Build) throws {
+    /// Stores the build, its jobs and the workflow it runs (as resolved from `.hangar.yml` at deploy time).
+    public func insert(_ build: Build, workflow: Workflow) throws {
         try database.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO builds (id, app_id, workflow, ref, "commit", build_number, status,
-                                        pinned_machine_id, created_at, finished_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        pinned_machine_id, created_at, finished_at, workflow_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     build.id.uuidString, build.appID.uuidString, build.workflow, build.ref, build.commit,
                     build.buildNumber, build.status.rawValue, build.pinnedMachineID?.uuidString,
-                    dbTime(build.createdAt), build.finishedAt.map(dbTime),
+                    dbTime(build.createdAt), build.finishedAt.map(dbTime), try Self.json(workflow),
                 ])
             for job in build.jobs {
                 try db.execute(
@@ -43,6 +44,16 @@ public struct BuildRepository: Sendable {
 
     public func build(id: UUID) throws -> Build? {
         try database.read { db in try Self.build(db, id: id) }
+    }
+
+    /// Nil when the build does not exist (or predates stored workflows).
+    public func workflow(buildID: UUID) throws -> Workflow? {
+        try database.read { db in
+            guard let json = try String.fetchOne(
+                db, sql: "SELECT workflow_json FROM builds WHERE id = ?", arguments: [buildID.uuidString])
+            else { return nil }
+            return try Self.decode(Workflow.self, json)
+        }
     }
 
     /// Newest first; `appID` nil lists every app.
@@ -118,27 +129,59 @@ public struct BuildRepository: Sendable {
         }
     }
 
-    public func unassign(jobID: UUID) throws {
+    /// Puts an assigned job back in the queue; false when it is no longer assigned (e.g. it started meanwhile).
+    @discardableResult
+    public func unassign(jobID: UUID) throws -> Bool {
         try database.write { db in
             try db.execute(
-                sql: "UPDATE jobs SET status = 'queued', machine_id = NULL, assigned_at = NULL WHERE id = ?",
+                sql: """
+                    UPDATE jobs SET status = 'queued', machine_id = NULL, assigned_at = NULL
+                    WHERE id = ? AND status = 'assigned'
+                    """,
                 arguments: [jobID.uuidString])
+            return db.changesCount == 1
         }
     }
 
     /// `running` sets `startedAt`, a terminal status sets `finishedAt`.
     public func setJobStatus(id: UUID, status: JobStatus, at date: Date, failureReason: String? = nil) throws {
         try database.write { db in
-            try db.execute(
-                sql: """
-                    UPDATE jobs SET status = ?1,
-                        started_at = CASE WHEN ?1 = 'running' THEN ?2 ELSE started_at END,
-                        finished_at = CASE WHEN ?1 IN ('succeeded', 'failed', 'cancelled') THEN ?2 ELSE finished_at END,
-                        failure_reason = COALESCE(?3, failure_reason)
-                    WHERE id = ?4
-                    """,
-                arguments: [status.rawValue, dbTime(date), failureReason, id.uuidString])
+            try Self.setJobStatus(db, id: id, from: nil, to: status, at: date, failureReason: failureReason)
         }
+    }
+
+    /// Like `setJobStatus`, but only when the job is currently in one of `from`; true when it moved.
+    @discardableResult
+    public func transitionJob(
+        id: UUID, from: Set<JobStatus>, to status: JobStatus, at date: Date, failureReason: String? = nil
+    ) throws -> Bool {
+        guard !from.isEmpty else { return false }
+        return try database.write { db in
+            try Self.setJobStatus(db, id: id, from: from, to: status, at: date, failureReason: failureReason)
+            return db.changesCount == 1
+        }
+    }
+
+    private static func setJobStatus(
+        _ db: GRDB.Database, id: UUID, from: Set<JobStatus>?, to status: JobStatus, at date: Date,
+        failureReason: String?
+    ) throws {
+        var arguments: StatementArguments = [status.rawValue, dbTime(date), failureReason, id.uuidString]
+        var condition = ""
+        if let from {
+            // Bare `?` after `?4` are numbered ?5, ?6, …
+            condition = " AND status IN (\(Array(repeating: "?", count: from.count).joined(separator: ", ")))"
+            arguments += StatementArguments(from.map(\.rawValue))
+        }
+        try db.execute(
+            sql: """
+                UPDATE jobs SET status = ?1,
+                    started_at = CASE WHEN ?1 = 'running' THEN ?2 ELSE started_at END,
+                    finished_at = CASE WHEN ?1 IN ('succeeded', 'failed', 'cancelled') THEN ?2 ELSE finished_at END,
+                    failure_reason = COALESCE(?3, failure_reason)
+                WHERE id = ?4\(condition)
+                """,
+            arguments: arguments)
     }
 
     public func setQueueNote(jobID: UUID, note: String?) throws {
