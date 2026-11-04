@@ -111,4 +111,25 @@ import Testing
                 developerDir: "/dev", key: Self.key, environment: [:], log: { _ in })
         }
     }
+
+    @Test func unsafeSchemeThrowsBeforeAnyRemoval() async throws {
+        let root = NSTemporaryDirectory() + "hangar-archive-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let layout = WorkspaceLayout(dataDirectory: root, appSlug: "legilo", jobID: Self.jobID)
+        // With scheme `../../x` the archive path would resolve to `<root>/x.xcarchive`, outside the job directory.
+        try FileManager.default.createDirectory(atPath: root + "/x.xcarchive", withIntermediateDirectories: true)
+        for scheme in ["../../x", "a/b", "..", "a..b", ""] {
+            let action = ArchiveAction(scheme: scheme, platform: .iOS, export: .appStoreConnect)
+            let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
+            let runner = RecordingProcessRunner()
+            await #expect(throws: ArchiveError.invalidScheme(scheme)) {
+                try await ArchiveStep(runner: runner).run(
+                    workflow: workflow, action: action, repository: layout.repository, layout: layout,
+                    developerDir: "/dev", key: Self.key, environment: [:], log: { _ in })
+            }
+            #expect(runner.commands.isEmpty)
+        }
+        #expect(FileManager.default.fileExists(atPath: root + "/x.xcarchive"))
+        #expect(!FileManager.default.fileExists(atPath: layout.jobDirectory))
+    }
 }

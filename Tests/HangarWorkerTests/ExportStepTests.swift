@@ -54,11 +54,12 @@ private final class ExportingRunner: ProcessRunner {
 
     private func run(
         _ runner: any ProcessRunner, exportPath: String, method: ExportMethod = .developerID,
-        destination: String = "export", signing: SigningMode = .cloudManaged
+        destination: String = "export", signing: SigningMode = .cloudManaged, jobDirectory: String? = nil
     ) async throws -> ExportResult {
         try await ExportStep(runner: runner).run(
             archivePath: "/jobs/1/archive/Legilo.xcarchive", method: method, destination: destination,
-            exportPath: exportPath, teamID: "TEAM123456", developerDir: "/dev", key: Self.key, signing: signing,
+            exportPath: exportPath,
+            jobDirectory: jobDirectory ?? (exportPath as NSString).deletingLastPathComponent, teamID: "TEAM123456", developerDir: "/dev", key: Self.key, signing: signing,
             environment: ["PATH": "/usr/bin"], log: { _ in })
     }
 
@@ -152,5 +153,24 @@ private final class ExportingRunner: ProcessRunner {
         }
         #expect(runner.commands.isEmpty)
         #expect(!FileManager.default.fileExists(atPath: exportPath))
+    }
+
+    @Test func refusesToClearPathsOutsideTheJobDirectory() async throws {
+        let root = tempDirectory()
+        let job = root + "/jobs/1"
+        let sentinel = root + "/sentinel.txt"
+        try FileManager.default.createDirectory(atPath: job, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: sentinel, contents: Data())
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        for bad in ["/", "", job, root, root + "/other", job + "/../..", job + "/../sentinel.txt", "relative/export"] {
+            let runner = RecordingProcessRunner()
+            await #expect(throws: SafeRemovalError.self) {
+                _ = try await run(runner, exportPath: bad, jobDirectory: job)
+            }
+            #expect(runner.commands.isEmpty)
+        }
+        #expect(FileManager.default.fileExists(atPath: sentinel))
+        #expect(FileManager.default.fileExists(atPath: job))
     }
 }

@@ -50,8 +50,10 @@ public struct ExportStep: Sendable {
         self.runner = runner
     }
 
+    /// `jobDirectory` (`layout.jobDirectory`) is the only place `exportPath` may be cleared in.
     public func run(
-        archivePath: String, method: ExportMethod, destination: String, exportPath: String, teamID: String?,
+        archivePath: String, method: ExportMethod, destination: String, exportPath: String, jobDirectory: String,
+        teamID: String?,
         developerDir: String, key: ASCKeyArguments, signing: SigningMode, environment: [String: String],
         log: @Sendable (String) -> Void
     ) async throws -> ExportResult {
@@ -59,7 +61,7 @@ public struct ExportStep: Sendable {
 
         // Start from an empty directory so an old artifact is never mistaken for this export's output.
         let fileManager = FileManager.default
-        try? fileManager.removeItem(atPath: exportPath)
+        try SafeRemoval.removeItem(atPath: exportPath, within: jobDirectory)
         try fileManager.createDirectory(atPath: exportPath, withIntermediateDirectories: true)
         let plistPath = exportPath + "/ExportOptions.plist"
         try ExportOptions.plist(method: method, destination: destination, teamID: teamID)

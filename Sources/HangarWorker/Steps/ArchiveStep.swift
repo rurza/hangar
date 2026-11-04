@@ -29,9 +29,11 @@ public struct ASCKeyArguments: Sendable {
 
 public enum ArchiveError: Error, Equatable, CustomStringConvertible {
     case xcodebuildFailed(exitCode: Int32)
+    case invalidScheme(String)
 
     public var description: String {
         switch self {
+        case .invalidScheme(let scheme): "invalid scheme name '\(scheme)'"
         case .xcodebuildFailed(let exitCode): "xcodebuild archive exited with status \(exitCode)"
         }
     }
@@ -72,10 +74,14 @@ public struct ArchiveStep: Sendable {
         workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
         key: ASCKeyArguments, environment: [String: String], log: @Sendable (String) -> Void
     ) async throws {
+        // The scheme comes from the repository's `.hangar.yml` and ends up in a path that is deleted below.
+        guard !action.scheme.isEmpty, !action.scheme.contains("/"), !action.scheme.contains("..") else {
+            throw ArchiveError.invalidScheme(action.scheme)
+        }
         let fileManager = FileManager.default
         let archivePath = layout.archive(scheme: action.scheme)
         for path in [archivePath, layout.resultBundle] {
-            try? fileManager.removeItem(atPath: path)
+            try SafeRemoval.removeItem(atPath: path, within: layout.jobDirectory)
             try fileManager.createDirectory(
                 atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         }
