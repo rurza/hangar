@@ -17,7 +17,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | --- | --- | --- |
 | `GET /health` | | `200` `{"ok": true, "version": "0.1.0"}` |
 | `GET /apps` | | `200` `[App]`; apps without `iconURL` get one resolved in the background (at most one attempt per app per hour), shown on a later request |
-| `POST /apps` | `CreateAppRequest` | `201` `App`; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
+| `POST /apps` | `CreateAppRequest` | `201` `App`; `400` `invalid_input` when `iconURL` is not an https URL with a host; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
 | `GET /apps/{id}` | | `200` `App` |
 | `DELETE /apps/{id}` | | `204`; deletes its builds, jobs, numbers and variables |
 | `GET /apps/{id}/variables` | | `200` `[VariableSummary]` |
@@ -45,7 +45,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `POST /machines` | `CreateMachineRequest` | `201` `CreateMachineResponse` `{machine, token}` |
 | `DELETE /machines/{id}` | | `204` |
 | `GET /settings` | | `200` `SettingsStatus` `{version, appStoreConnect: {keyID, issuerID?, kind}?, githubTokenSet}`; `appStoreConnect` is absent unless `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` are set; `kind` is `"team"` when `HANGAR_ASC_ISSUER_ID` is set (non-empty) and `"individual"` otherwise, when `issuerID` is absent; the key and the token are never returned |
-| `GET /asc/apps` | | `200` `[ASCAppSummary]` `{id, name, bundleID, registered, iconURL?}` sorted by name, the team's apps from App Store Connect; `registered` is true when a Hangar app already uses that ID; `iconURL` (https, 512 px) is absent when no icon was found within 5 s; `409` `asc_not_configured` without the key |
+| `GET /asc/apps` | | `200` `[ASCAppSummary]` `{id, name, bundleID, registered, iconURL?}` sorted by name, the team's apps from App Store Connect; `registered` is true when a Hangar app already uses that ID; `iconURL` (https, 512 px) is absent when no icon was found (each source is given up after 5 s); `409` `asc_not_configured` without the key |
 | `GET /events` | | SSE stream, see below |
 
 Numbers and deploys ask App Store Connect and Xcode Cloud for the highest known build number. They need the global variables `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` (the `.p8` contents), plus `HANGAR_ASC_ISSUER_ID` for a team key; without an issuer ID the key is used as an individual key (JWT `sub: "user"`, no `iss`). The server reads them on every request.

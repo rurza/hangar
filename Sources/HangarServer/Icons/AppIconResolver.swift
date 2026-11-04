@@ -6,12 +6,14 @@ import Synchronization
 
 /// Finds an app's icon: the newest App Store Connect build's icon, else the public iTunes lookup's artwork (released
 /// apps only). Only https URLs are returned. Never throws: a failure is logged at debug and reads as no icon.
-/// Results are cached in memory, an icon for an hour and a miss for ten minutes.
+/// Each source (App Store Connect, each iTunes lookup) is given up after `sourceTimeout`. Results are cached in memory:
+/// an icon for an hour, a miss for ten minutes, and a miss with a timed-out source for a minute.
 public final class AppIconResolver: Sendable {
     public typealias ClientProvider = @Sendable () throws -> (any AppStoreConnectClient)?
 
     static let hitLifetime: TimeInterval = 3600
     static let missLifetime: TimeInterval = 600
+    static let timeoutMissLifetime: TimeInterval = 60
 
     private struct Entry {
         var url: String?
@@ -21,19 +23,21 @@ public final class AppIconResolver: Sendable {
     private let client: ClientProvider
     private let transport: any HTTPTransport
     private let clock: any Clock<Duration>
+    private let sourceTimeout: Duration
     private let now: @Sendable () -> Date
     private let cache = Mutex<[String: Entry]>([:])
     private let logger = Logger(label: "app.hangar.server.icons")
 
     /// `client` is asked on every lookup, so a key configured later takes effect; nil skips App Store Connect.
-    /// `transport` carries the iTunes lookup; `clock` times out `iconURLs`.
+    /// `transport` carries the iTunes lookup; `clock` times each source out after `sourceTimeout`.
     public init(
         client: @escaping ClientProvider, transport: any HTTPTransport, clock: any Clock<Duration> = ContinuousClock(),
-        now: @escaping @Sendable () -> Date = Date.init
+        sourceTimeout: Duration = .seconds(5), now: @escaping @Sendable () -> Date = Date.init
     ) {
         self.client = client
         self.transport = transport
         self.clock = clock
+        self.sourceTimeout = sourceTimeout
         self.now = now
     }
 
@@ -55,25 +59,25 @@ public final class AppIconResolver: Sendable {
 
     private func iconURL(ascAppID: String, client: (any AppStoreConnectClient)?) async -> String? {
         if let cached = cached(ascAppID) { return cached.url }
-        let url = await resolve(ascAppID, client: client)
-        // An attempt cut short (a timeout) says nothing about the app, so a miss from it is not remembered.
+        let (url, timedOut) = await resolve(ascAppID, client: client)
+        // An attempt the caller cancelled says nothing about the app, so a miss from it is not remembered.
         if url == nil && Task.isCancelled { return nil }
-        let lifetime = url == nil ? Self.missLifetime : Self.hitLifetime
+        let lifetime = url != nil ? Self.hitLifetime : timedOut ? Self.timeoutMissLifetime : Self.missLifetime
         cache.withLock { $0[ascAppID] = Entry(url: url, expiresAt: now().addingTimeInterval(lifetime)) }
         return url
     }
 
     /// Icons of several apps by App Store Connect ID, asking `client` (nil: the iTunes lookup only), at most
-    /// `maxConcurrent` lookups at a time, each given up after `timeout`. Apps without an icon are absent.
+    /// `maxConcurrent` lookups at a time. Apps without an icon are absent.
     public func iconURLs(
-        ascAppIDs: [String], client: (any AppStoreConnectClient)?, maxConcurrent: Int = 6, timeout: Duration = .seconds(5)
+        ascAppIDs: [String], client: (any AppStoreConnectClient)?, maxConcurrent: Int = 6
     ) async -> [String: String] {
         await withTaskGroup(of: (String, String?).self) { group in
             var pending = ascAppIDs[...]
             var result: [String: String] = [:]
             func startNext() {
                 guard let id = pending.popFirst() else { return }
-                group.addTask { (id, await self.iconURL(ascAppID: id, client: client, timeout: timeout)) }
+                group.addTask { (id, await self.iconURL(ascAppID: id, client: client)) }
             }
             for _ in 0..<max(1, maxConcurrent) { startNext() }
             while let (id, url) = await group.next() {
@@ -84,35 +88,49 @@ public final class AppIconResolver: Sendable {
         }
     }
 
-    private func iconURL(ascAppID: String, client: (any AppStoreConnectClient)?, timeout: Duration) async -> String? {
-        await withTaskGroup(of: String?.self) { group in
-            group.addTask { await self.iconURL(ascAppID: ascAppID, client: client) }
-            group.addTask { [clock] in
-                try? await clock.sleep(for: timeout)
-                return nil
+    private enum Outcome: Sendable {
+        case value(String?)
+        case failed(any Error)
+        case timedOut
+    }
+
+    /// Runs one source, given up after `sourceTimeout`.
+    private func bounded(_ source: @escaping @Sendable () async throws -> String?) async -> Outcome {
+        await withTaskGroup(of: Outcome.self) { group in
+            group.addTask {
+                do { return .value(try await source()) } catch { return .failed(error) }
             }
-            let first = await group.next() ?? nil
+            group.addTask { [clock, sourceTimeout] in
+                try? await clock.sleep(for: sourceTimeout)
+                return .timedOut
+            }
+            let first = await group.next() ?? .timedOut
             group.cancelAll()
             return first
         }
     }
 
-    private func resolve(_ ascAppID: String, client: (any AppStoreConnectClient)?) async -> String? {
-        do {
-            if let client, let url = try await client.appIconURL(appID: ascAppID).flatMap(Self.https) {
-                return url
-            }
-        } catch {
-            logger.debug("App Store Connect icon of app \(ascAppID) failed: \(error)")
+    /// The icon, and whether a source timed out on the way.
+    private func resolve(_ ascAppID: String, client: (any AppStoreConnectClient)?) async -> (String?, timedOut: Bool) {
+        var sources: [(String, @Sendable () async throws -> String?)] = []
+        if let client {
+            sources.append(("App Store Connect", { try await client.appIconURL(appID: ascAppID).flatMap(Self.https) }))
         }
         for entity in [nil, "macSoftware"] {
-            do {
-                if let url = try await lookupArtwork(ascAppID, entity: entity) { return url }
-            } catch {
-                logger.debug("iTunes lookup of app \(ascAppID) (\(entity ?? "default")) failed: \(error)")
+            sources.append(("iTunes lookup (\(entity ?? "default"))", { try await self.lookupArtwork(ascAppID, entity: entity) }))
+        }
+        var timedOut = false
+        for (name, source) in sources {
+            switch await bounded(source) {
+            case .value(let url?): return (url, timedOut)
+            case .value(nil): break
+            case .failed(let error): logger.debug("\(name) icon of app \(ascAppID) failed: \(error)")
+            case .timedOut:
+                timedOut = true
+                logger.debug("\(name) icon of app \(ascAppID) timed out")
             }
         }
-        return nil
+        return (nil, timedOut)
     }
 
     private struct LookupFailed: Error, CustomStringConvertible {

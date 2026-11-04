@@ -147,6 +147,23 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         }
     }
 
+    @Test func iconURLMustBeHTTPS() async throws {
+        let fixture = try APIFixture()
+        try await fixture.test { client in
+            for icon in ["http://example.com/icon.png", "javascript:alert(1)", "https://", "/icon.png"] {
+                let request = CreateAppRequest(
+                    name: "Legilo", repoURL: "https://github.com/acme/legilo.git", appStoreConnectAppID: "42", iconURL: icon)
+                try await client.execute(uri: "/api/v1/apps", method: .post, headers: jsonHeaders, body: try body(request)) { response throws in
+                    #expect(response.status == .badRequest)
+                    #expect(try decode(APIError.self, response).code == "invalid_input")
+                }
+            }
+            try await client.execute(uri: "/api/v1/apps", method: .get) { response throws in
+                #expect(try decode([App].self, response).isEmpty)
+            }
+        }
+    }
+
     @Test func givenIconIsKeptAndListingBackfillsMissingOnes() async throws {
         let fixture = try APIFixture()
         for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {

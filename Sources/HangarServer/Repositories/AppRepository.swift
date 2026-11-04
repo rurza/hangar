@@ -16,6 +16,9 @@ public struct AppRepository: Sendable {
         guard !slug.isEmpty else {
             throw APIError(code: "invalid_name", message: "The app name needs at least one letter or digit.")
         }
+        if let iconURL = request.iconURL, AppIconResolver.https(iconURL) == nil {
+            throw APIError(code: "invalid_input", message: "The icon URL must be an https URL with a host.")
+        }
         let app = App(
             id: UUID(), slug: slug, name: request.name, repoURL: request.repoURL,
             appStoreConnectAppID: request.appStoreConnectAppID, iconURL: request.iconURL,

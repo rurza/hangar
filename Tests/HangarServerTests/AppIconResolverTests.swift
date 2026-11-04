@@ -1,3 +1,4 @@
+import Clocks
 import Foundation
 import HangarAppStoreConnect
 import HangarCore
@@ -24,6 +25,38 @@ private final class IconASC: AppStoreConnectClient {
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {}
     func submitForBetaReview(buildID: String) async throws {}
+}
+
+/// Never answers until cancelled: a source slower than any timeout.
+private final class Hang: Sendable {
+    private let stream: AsyncStream<Never>
+    private let continuation: AsyncStream<Never>.Continuation  // kept so the stream stays open
+    private let calls = Mutex(0)
+    init() { (stream, continuation) = AsyncStream.makeStream() }
+    var callCount: Int { calls.withLock { $0 } }
+
+    func wait() async throws -> Never {
+        calls.withLock { $0 += 1 }
+        for await _ in stream {}
+        throw CancellationError()
+    }
+}
+
+private struct HangingASC: AppStoreConnectClient {
+    let hang: Hang
+    func appIconURL(appID: String) async throws -> String? { try await hang.wait() }
+    func builds(appID: String, version: String?) async throws -> [ASCBuild] { [] }
+    func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
+    func apps() async throws -> [ASCApp] { [] }
+    func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
+    func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
+    func setWhatToTest(buildID: String, locale: String, text: String) async throws {}
+    func submitForBetaReview(buildID: String) async throws {}
+}
+
+private struct HangingTransport: HTTPTransport {
+    let hang: Hang
+    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) { try await hang.wait() }
 }
 
 /// A settable wall clock.
@@ -104,6 +137,23 @@ private func lookup(_ artworkURL: String?) -> StubTransport.Response {
         now.advance(minutes: 2)
         transport.enqueue(lookup(artwork))
         #expect(await resolver.iconURL(ascAppID: "42") == artwork)
+    }
+
+    @Test func timedOutSourcesAreGivenUpAndTheMissCachedForAMinute() async throws {
+        let now = Now()
+        let hang = Hang()
+        // The immediate clock times every source out at once; the hanging sources never answer first.
+        let resolver = AppIconResolver(
+            client: { HangingASC(hang: hang) }, transport: HangingTransport(hang: hang), clock: ImmediateClock(),
+            now: { now.date })
+        #expect(await resolver.iconURL(ascAppID: "42") == nil)
+        #expect(hang.callCount == 3)  // App Store Connect and both lookups, each given up
+        now.advance(minutes: 59.0 / 60)
+        #expect(await resolver.iconURL(ascAppID: "42") == nil)
+        #expect(hang.callCount == 3)
+        now.advance(minutes: 2.0 / 60)
+        #expect(await resolver.iconURL(ascAppID: "42") == nil)
+        #expect(hang.callCount == 6)
     }
 
     @Test func iconURLsResolvesEveryApp() async throws {

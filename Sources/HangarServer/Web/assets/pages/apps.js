@@ -210,10 +210,14 @@ export function openAddAppSheet({ onAdded } = {}) {
     ],
   });
 
+  let autoIcon = ''; // the icon URL the last pick filled in; a URL typed over it is the user's and stays
   loadPicker(picker, (app) => {
     name.value = app.name;
     ascID.value = app.id;
-    if (isHTTPS(app.iconURL)) icon.value = app.iconURL;
+    if (icon.value.trim() === '' || icon.value === autoIcon) {
+      autoIcon = isHTTPS(app.iconURL) ? app.iconURL : '';
+      icon.value = autoIcon;
+    }
     name.removeAttribute('aria-invalid');
     ascID.removeAttribute('aria-invalid');
     icon.removeAttribute('aria-invalid');
