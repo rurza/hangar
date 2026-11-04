@@ -34,7 +34,10 @@ let package = Package(
             .product(name: "GRDB", package: "GRDB.swift"),
             .product(name: "Logging", package: "swift-log"),
         ]),
-        .target(name: "HangarWorker", dependencies: ["HangarCore", "HangarAppStoreConnect"]),
+        .target(name: "HangarWorker", dependencies: [
+            "HangarCore", "HangarAppStoreConnect",
+            .product(name: "Logging", package: "swift-log"),
+        ]),
         .target(name: "HangarClient", dependencies: ["HangarCore"]),
         .executableTarget(name: "hangar-server", dependencies: [
             "HangarServer", "HangarCore", "HangarAppStoreConnect",
