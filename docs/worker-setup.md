@@ -19,17 +19,40 @@ Do these steps on every build Mac.
    xcodebuild -downloadPlatform iOS
    ```
    If the App Store Connect key is an individual key (no issuer ID), also sign in to your Apple account in Xcode > Settings > Accounts as `hangar`: without a team key, xcodebuild signs and uploads with that account.
-5. **Install Homebrew**, then from a checkout of this repository:
+5. **Install Homebrew**, then:
    ```sh
-   brew bundle --file scripts/worker/Brewfile
+   brew install xcodegen rclone
    ```
-   This installs `xcodegen` and `rclone`.
-6. **Create the machine on the server.** On any Mac on the tailnet:
+   (From a checkout of this repository, `brew bundle --file scripts/worker/Brewfile` does the same.)
+6. **Install the worker with one command.** In Hangar, open Machines and click **Add Mac**. The sheet shows a command and a pairing code. On the build Mac, as `hangar`, open Terminal and run the command:
+   ```sh
+   curl -fsSL http://<tailnet-host>:8787/install | sh
+   ```
+   and type the code when asked. The sheet shows the Mac as connected once its worker sends its first heartbeat.
+
+   The script downloads `hangar-worker` from the server into `~/.local/bin` (no `sudo`), enrolls the Mac with the code, which gives it its machine token, runs `hangar-worker setup` (the configuration goes to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600), writes `~/Library/LaunchAgents/app.hangar.worker.plist`, loads it with `launchctl bootstrap gui/$(id -u)` and runs the doctor. The token travels from the server's answer to `hangar-worker setup` in the environment: it is never in a command line, on screen or in a log.
+
+   A code is good for one Mac and 15 minutes; **Get a New Code** in the sheet makes another. After 10 wrong codes within 10 minutes the server refuses every code for the rest of those 10 minutes.
+
+   Options go in the environment of `sh`, after the pipe, e.g. `curl -fsSL http://<tailnet-host>:8787/install | HANGAR_MACHINE_NAME=mini-2 sh`:
+
+   | Variable | Default | |
+   | --- | --- | --- |
+   | `HANGAR_MACHINE_NAME` | the Mac's local host name (`scutil --get LocalHostName`) | How the Mac appears in Hangar. If the name is taken, the script stops and says so; the code stays valid |
+   | `HANGAR_PAIRING_CODE` | asked for on the terminal | For unattended installs |
+   | `HANGAR_BIN_DIR` | `~/.local/bin` | Must be writable by you; the plist points at the binary there |
+   | `HANGAR_MAX_JOBS` | `1` | Builds this Mac runs at once |
+   | `HANGAR_WORKER_CONFIG` | `hangar-worker`'s default | Another configuration file; the agent is then started with `--config` |
+   | `HANGAR_NO_LAUNCHD=1` | | For testing: download, enroll and write the configuration only; no launchd agent, no doctor |
+
+   The server must have `hangar-worker` next to `hangar-server` (install-server.sh puts it there); otherwise the sheet says so and the script stops with "the server has no hangar-worker to hand out". The command needs the server's tailnet address: if you opened Hangar on `localhost`, replace that in the command.
+
+   To upgrade a worker later, remove the machine in Hangar and run the command again, or install from source (below).
+7. **Install from source instead** (the old way, which also works without the server handing out a binary). Create the machine on the server, on any Mac on the tailnet (or with **Add Manually…** in the Add Mac sheet):
    ```sh
    hangar machines add <name>
    ```
-   It prints the machine's token once.
-7. **Install the worker**, as `hangar`, from a checkout of this repository. Enter the token without echo, so it reaches neither shell history nor the process list:
+   It prints the machine's token once. Then, as `hangar`, from a checkout of this repository, enter the token without echo, so it reaches neither shell history nor the process list:
    ```sh
    read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
    scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
@@ -37,7 +60,7 @@ Do these steps on every build Mac.
    (If the variable is unset and you are at a terminal, the script prompts for the token itself.) `--token <token>` also works, but the token is then visible in `ps` for the whole release build and stays in your shell history.
    The script builds in release mode, installs `hangar-worker` into `/usr/local/bin` (using `sudo` only if needed), runs `hangar-worker setup` (the configuration is written to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600; the token is never printed), renders `~/Library/LaunchAgents/app.hangar.worker.plist` and loads it with `launchctl bootstrap gui/$(id -u)`. Run it again to upgrade. Logs go to `~/Library/Logs/Hangar/worker.log`.
    To install without `sudo`, add `--bin-dir ~/.local/bin` (any directory you own; it is created if missing and the launchd plist points at the binary there). `--render-only <file>` just writes the plist, for testing. The `INSTALL_DIR` environment variable is no longer read; use `--bin-dir`.
-8. **Run the doctor** as `hangar`:
+8. **Run the doctor** as `hangar` (the one-command install already printed a summary of it; its binary is in `~/.local/bin`):
    ```sh
    hangar-worker doctor
    ```

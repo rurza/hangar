@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds Hangar in release mode, installs hangar-server with its web UI bundle (and hangar, when it was built)
-# into a bin directory, and (re)loads the app.hangar.server launchd agent for the current user.
+# Builds Hangar in release mode, installs hangar-server with its web UI bundle, hangar-worker (which the server hands
+# out to `curl <server>/install | sh` on new build Macs) and hangar, when it was built, into a bin directory, and
+# (re)loads the app.hangar.server launchd agent for the current user.
 #
 # Usage: install-server.sh [--bin-dir <dir>]
 #   --bin-dir <dir>      where to install (default /usr/local/bin). Created if missing; sudo is used only when it
@@ -85,6 +86,13 @@ if [ ! -d "$BIN_DIR/$WEB_BUNDLE" ]; then
 fi
 as_installer rm -rf "${INSTALL_DIR:?}/$WEB_BUNDLE"
 as_installer cp -R "$BIN_DIR/$WEB_BUNDLE" "$INSTALL_DIR/$WEB_BUNDLE"
+# The server serves the hangar-worker next to it at /install/hangar-worker. -S replaces it by renaming, so a worker
+# already running from this directory keeps its old copy until launchd restarts it.
+if [ ! -x "$BIN_DIR/hangar-worker" ]; then
+    echo "error: $BIN_DIR/hangar-worker is missing from the build output" >&2
+    exit 1
+fi
+as_installer install -S -m 755 "$BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
 if [ -x "$BIN_DIR/hangar" ]; then
     as_installer install -m 755 "$BIN_DIR/hangar" "$INSTALL_DIR/hangar"
 else

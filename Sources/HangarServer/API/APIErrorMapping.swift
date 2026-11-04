@@ -17,6 +17,7 @@ enum APIErrorMapping {
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {
         switch error {
         case let error as APIError: return (status(code: error.code), error)
+        case let error as PairingError: return map(error)
         case let error as DeployError: return map(error)
         case let error as BuildNumberError: return map(error)
         case let error as SourceHostError: return map(error)
@@ -33,7 +34,9 @@ enum APIErrorMapping {
 
     static func status(code: String) -> HTTPResponse.Status {
         if code == "unauthorized" { return .unauthorized }
-        if code == "cross_site_request" { return .forbidden }
+        if code == "cross_site_request" || code == "invalid_pairing_code" { return .forbidden }
+        if code == "too_many_attempts" { return .tooManyRequests }
+        if code == "worker_binary_missing" { return .serviceUnavailable }
         if code == "host_not_allowed" { return .misdirectedRequest }
         if code == "unsupported_media_type" { return .unsupportedMediaType }
         if notFoundCodes.contains(code) { return .notFound }
@@ -43,6 +46,17 @@ enum APIErrorMapping {
 
     private static func error(_ code: String, _ message: String) -> (HTTPResponse.Status, APIError) {
         (status(code: code), APIError(code: code, message: message))
+    }
+
+    private static func map(_ error: PairingError) -> (HTTPResponse.Status, APIError) {
+        switch error {
+        case .invalidCode:
+            self.error(
+                "invalid_pairing_code",
+                "That pairing code is not valid: it may be mistyped, used or expired. Get a new one in Hangar under Machines > Add Mac.")
+        case .tooManyAttempts:
+            self.error("too_many_attempts", "Too many wrong pairing codes. Wait 10 minutes, then try again.")
+        }
     }
 
     private static func map(_ error: DeployError) -> (HTTPResponse.Status, APIError) {

@@ -48,6 +48,31 @@ public struct CreateMachineResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// A one-time code that enrolls a new machine (`POST /machines/pairings`): `XXXX-XXXX`, valid until `expiresAt`.
+public struct Pairing: Codable, Equatable, Sendable {
+    public var code: String
+    public var expiresAt: Date
+
+    public init(code: String, expiresAt: Date) {
+        self.code = code
+        self.expiresAt = expiresAt
+    }
+}
+
+/// `POST /enroll`: creates the machine like `POST /machines`, authorized by a pairing code instead of the UI.
+public struct EnrollRequest: Codable, Equatable, Sendable {
+    public var code: String
+    public var name: String
+    /// Default 1.
+    public var maxConcurrentJobs: Int?
+
+    public init(code: String, name: String, maxConcurrentJobs: Int? = nil) {
+        self.code = code
+        self.name = name
+        self.maxConcurrentJobs = maxConcurrentJobs
+    }
+}
+
 public struct BumpNumberRequest: Codable, Equatable, Sendable {
     public var next: Int
 
@@ -166,11 +191,26 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
     /// Nil unless the key ID and the key are set; the issuer ID is optional (none means an individual key).
     public var appStoreConnect: ASCKeyStatus?
     public var githubTokenSet: Bool
+    /// True when the server has a `hangar-worker` binary to hand out at `GET /install/hangar-worker`, so the
+    /// one-command install (`curl …/install | sh`) works.
+    public var workerInstallAvailable: Bool
 
-    public init(version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool) {
+    public init(version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool, workerInstallAvailable: Bool = false) {
         self.version = version
         self.appStoreConnect = appStoreConnect
         self.githubTokenSet = githubTokenSet
+        self.workerInstallAvailable = workerInstallAvailable
+    }
+
+    private enum CodingKeys: String, CodingKey { case version, appStoreConnect, githubTokenSet, workerInstallAvailable }
+
+    /// An older server sends no `workerInstallAvailable`: read as false.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(String.self, forKey: .version)
+        appStoreConnect = try container.decodeIfPresent(ASCKeyStatus.self, forKey: .appStoreConnect)
+        githubTokenSet = try container.decode(Bool.self, forKey: .githubTokenSet)
+        workerInstallAvailable = try container.decodeIfPresent(Bool.self, forKey: .workerInstallAvailable) ?? false
     }
 }
 

@@ -36,6 +36,8 @@ extension HangarServerApp {
         addMachineRoutes(to: api)
         addWorkerRoutes(to: api)
         api.get("events") { _, _ in eventsResponse() }
+        // The worker install script and binary: outside /api/v1, GETs only, so no cross-site guard; Host-checked.
+        InstallRoutes(workerBinaryPath: configuration.workerBinaryPath).addRoutes(to: router)
         WebUI(root: webRoot).addRoutes(to: router)
         return router
     }

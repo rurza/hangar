@@ -1,11 +1,12 @@
-// The Machines page: a widget per build Mac with its latest heartbeat report, the Add Machine sheet (which shows
-// the new machine's token once, with the install commands) and Remove.
+// The Machines page: a widget per build Mac with its latest heartbeat report, the Add Mac sheet (the one-line
+// install command and a pairing code; it waits for the new Mac to connect), the manual Add Machine sheet (which
+// shows the new machine's token once, with the install commands) and Remove.
 
 import { api, events, seg } from '../api.js';
 import { addLeaveGuard } from '../router.js';
 import {
   button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring, selectContents,
-  sheet, toast,
+  sheet, spinner, toast,
 } from '../ui.js';
 import { isOnline } from './build.js';
 
@@ -19,8 +20,10 @@ export async function machinesPage(params, context) {
   const content = h('div');
   const widgets = new Map(); // machine id → widget
   let machines = await api.get('/machines', { signal: context.signal });
+  // Called with every machine event, for the Add Mac sheet that waits for its Mac.
+  const machineListeners = new Set();
   // The page's own Add button; the empty state has its own.
-  const addButton = button('Add Machine', { kind: 'primary', onClick: () => addMachine() });
+  const addButton = button('Add Mac', { kind: 'primary', onClick: () => addMac() });
 
   function render() {
     machines.sort((a, b) => a.name.localeCompare(b.name));
@@ -30,8 +33,8 @@ export async function machinesPage(params, context) {
       replaceChildren(content, emptyState({
         icon: h('span', { class: 'empty-plus' }, '+'),
         title: 'No Machines Yet',
-        message: 'Add a Mac that runs your builds. You get a token and the commands to install the worker on it.',
-        action: button('Add Machine', { kind: 'primary', onClick: addMachine }),
+        message: 'Add a Mac that runs your builds: run one command in its Terminal and type a short code.',
+        action: button('Add Mac', { kind: 'primary', onClick: addMac }),
       }));
       return;
     }
@@ -67,8 +70,15 @@ export async function machinesPage(params, context) {
     }
   }
 
-  function addMachine() {
-    openAddMachineSheet({ onAdded: upsert });
+  function addMac() {
+    openAddMacSheet({
+      knownIDs: new Set(machines.map((machine) => machine.id)),
+      listen: (listener) => {
+        machineListeners.add(listener);
+        return () => machineListeners.delete(listener);
+      },
+      onManual: () => openAddMachineSheet({ onAdded: upsert }),
+    });
   }
 
   async function remove(machine) {
@@ -96,10 +106,12 @@ export async function machinesPage(params, context) {
   const timer = setInterval(() => widgets.forEach((widget) => widget.tick()), TICK_MS);
   context.onCleanup(() => clearInterval(timer));
   context.onCleanup(events((event) => {
-    // Heartbeats only update machines; one that was removed meanwhile is not brought back.
-    if (event.type === 'machine' && event.machine && machines.some((m) => m.id === event.machine.id)) {
-      upsert(event.machine);
-    }
+    if (event.type !== 'machine' || !event.machine) return;
+    machineListeners.forEach((listener) => listener(event.machine));
+    // A known machine is updated in place. An unknown one was just enrolled (or was removed meanwhile, and must
+    // not come back), so the list is fetched again instead.
+    if (machines.some((m) => m.id === event.machine.id)) upsert(event.machine);
+    else reload();
   }, { onReconnect: reload }));
 
   return page({
@@ -149,7 +161,7 @@ function machineWidget(initial, { onRemove }) {
 
 function waitingView() {
   return h('p', { class: 'card-detail' },
-    'Waiting for the first heartbeat. Install the worker on this Mac with the token you got when you added it.');
+    'Waiting for the first heartbeat. The worker sends one as soon as it is installed and running on this Mac.');
 }
 
 function reportView(machine) {
@@ -203,6 +215,164 @@ function chipGroup(label, items, emptyText) {
 function formatGB(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '–';
   return value >= 100 ? String(Math.round(value)) : value.toFixed(1);
+}
+
+// MARK: Add Mac
+
+/** "14:32" for a number of seconds. */
+function minutesAndSeconds(seconds) {
+  const whole = Math.max(0, Math.ceil(seconds));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+/**
+ * The one-command install: the `curl … | sh` line and a pairing code with its countdown. Waits for a machine that
+ * was not in `knownIDs` to enroll and then to send its first heartbeat. `listen(fn)` delivers machine events and
+ * returns the function that stops them; `onManual` opens the token flow instead.
+ */
+function openAddMacSheet({ knownIDs, listen, onManual }) {
+  const command = `curl -fsSL ${location.origin}/install | sh`;
+  const commandBlock = h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'Install command' },
+    h('code', null, command));
+  const codeText = h('span', { class: 'pairing-code', 'aria-label': 'Pairing code' }, '····-····');
+  const expiry = h('span', { class: 'pairing-expiry' }, 'Getting a code…');
+  const newCodeButton = button('Get a New Code', {
+    kind: 'plain', class: 'button button-plain button-small', hidden: true, onClick: () => newCode(),
+  });
+  const copyCodeButton = button('Copy Code', {
+    kind: 'plain', class: 'button button-plain button-small', disabled: true,
+    onClick: () => copy(pairing?.code ?? '', codeText, 'code'),
+  });
+  const notices = h('div', { class: 'pairing-notices' });
+  const status = h('div', { class: 'pairing-status', role: 'status', 'aria-live': 'polite' });
+  const doneButton = button('Close', { kind: 'secondary', onClick: () => handle.close() });
+  const manualButton = button('Add Manually…', {
+    kind: 'plain', class: 'button button-plain button-small',
+    onClick: () => {
+      handle.close();
+      // Opened after this sheet has closed, so focus returns to the page when it is dismissed.
+      setTimeout(onManual);
+    },
+  });
+
+  let pairing = null;
+  let enrolled = null; // the new machine, once it has enrolled
+  let timer = null;
+
+  async function copy(text, block, what) {
+    if (text && await copyText(text)) {
+      toast(`Copied the ${what}`, 'success');
+      return;
+    }
+    selectContents(block);
+    toast(`The ${what} is selected. Press ⌘C to copy it.`, 'info');
+  }
+
+  function tick() {
+    if (enrolled) {
+      expiry.textContent = 'Code used.';
+      newCodeButton.hidden = true;
+      return;
+    }
+    if (!pairing) return;
+    const seconds = (Date.parse(pairing.expiresAt) - Date.now()) / 1000;
+    const expired = seconds <= 0;
+    // A clock that runs behind the server's never shows more than the 15 minutes a code lasts.
+    expiry.textContent = expired ? 'This code has expired.' : `Expires in ${minutesAndSeconds(Math.min(seconds, 15 * 60))}`;
+    codeText.classList.toggle('pairing-code-expired', expired);
+    copyCodeButton.disabled = expired;
+    newCodeButton.hidden = !expired;
+  }
+
+  async function newCode() {
+    newCodeButton.disabled = true;
+    handle?.setError(null);
+    try {
+      pairing = await api.post('/machines/pairings');
+      codeText.textContent = pairing.code;
+      copyCodeButton.disabled = false;
+      tick();
+    } catch (error) {
+      expiry.textContent = 'No code.';
+      newCodeButton.hidden = false;
+      handle?.setError(error.message);
+    } finally {
+      newCodeButton.disabled = false;
+    }
+  }
+
+  function showStatus() {
+    if (!enrolled) {
+      replaceChildren(status, spinner('Waiting'), h('span', null, 'Waiting for the Mac…'));
+    } else if (!enrolled.lastSeenAt) {
+      replaceChildren(status, spinner('Starting'),
+        h('span', null, `${enrolled.name} is enrolled. Waiting for the worker to start…`));
+    } else {
+      replaceChildren(status,
+        h('span', { class: 'pairing-connected-icon', 'aria-hidden': 'true' }, '✓'),
+        h('span', { class: 'pairing-connected' }, `${enrolled.name} is connected`));
+      doneButton.textContent = 'Done';
+      doneButton.className = 'button button-primary';
+      doneButton.focus();
+    }
+  }
+
+  const stopListening = listen((machine) => {
+    if (knownIDs.has(machine.id) || (enrolled && enrolled.id !== machine.id)) return;
+    enrolled = machine;
+    tick();
+    showStatus();
+  });
+
+  if (LOCAL_HOSTS.has(location.hostname)) {
+    notices.append(h('p', { class: 'token-warning', role: 'note' },
+      `This page is open on ${location.host}, which other Macs cannot reach. In the command, use the server’s `
+      + 'tailnet address instead, e.g. http://hangar-server:8787/install.'));
+  }
+  api.get('/settings').then((settings) => {
+    if (settings && settings.workerInstallAvailable === false) {
+      notices.append(h('p', { class: 'token-warning', role: 'note' },
+        'This server has no hangar-worker to hand out, so the command cannot install it. Reinstall the server '
+        + 'with the latest install-server.sh to enable one-command install, or add the Mac manually.'));
+    }
+  }, () => {});
+
+  const handle = sheet({
+    title: 'Add Mac',
+    onClose: () => {
+      clearInterval(timer);
+      stopListening();
+    },
+    body: h('div', { class: 'form pairing-sheet' },
+      notices,
+      h('ol', { class: 'pairing-steps' },
+        h('li', null, 'On the new Mac, open Terminal and run the command.'),
+        h('li', null, 'Type the code when asked.')),
+      h('div', { class: 'code-field' },
+        h('div', { class: 'field-label-row' },
+          h('span', { class: 'field-label' }, 'Command'),
+          button('Copy Command', {
+            kind: 'plain', class: 'button button-plain button-small',
+            onClick: () => copy(command, commandBlock, 'command'),
+          })),
+        commandBlock,
+        h('p', { class: 'field-hint' },
+          'Run it as the user that builds. It installs hangar-worker into ~/.local/bin and starts it at login; '
+          + 'no sudo, no checkout.')),
+      h('div', { class: 'code-field' },
+        h('div', { class: 'field-label-row' },
+          h('span', { class: 'field-label' }, 'Pairing code'),
+          copyCodeButton),
+        h('div', { class: 'pairing-code-box' }, codeText),
+        h('div', { class: 'pairing-expiry-row' }, expiry, newCodeButton)),
+      status,
+      h('div', { class: 'pairing-footer' }, manualButton, doneButton)),
+    actions: [],
+  });
+
+  showStatus();
+  timer = setInterval(tick, 1000);
+  newCode();
 }
 
 // MARK: Add Machine

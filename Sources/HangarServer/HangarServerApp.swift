@@ -26,6 +26,8 @@ public struct HangarServerApp: Sendable {
     public let sweeper: RetentionSweeper
     public let appIcons: AppIconResolver
     public let appIconBackfill: AppIconBackfill
+    /// The one-time codes new Macs enroll with; in memory, so a restart forgets them.
+    public let pairings: PairingCodes
     let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
@@ -70,6 +72,7 @@ public struct HangarServerApp: Sendable {
             client: { try Self.appStoreConnectClient(variables: variables, factory: appStoreConnectFactory) },
             transport: iconTransport, clock: clock, now: now)
         appIconBackfill = AppIconBackfill(resolver: appIcons, apps: apps, now: now)
+        pairings = PairingCodes(now: now)
     }
 
     /// Starts resolving icons for every app without one (at start-up); returns at once.

@@ -2,7 +2,7 @@
 
 The `hangar` CLI and the web UI talk to the server only through this API. Every route lives under `/api/v1` on the server's address (port 8787 by default). Bodies are JSON with camelCase keys; dates are ISO 8601 with milliseconds (`2026-11-04T09:30:00.123Z`). The types named below are the `HangarCore` models.
 
-**No public endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine; afterwards only its hash is stored. Error messages name variables but never contain their values.
+**No public endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine (`POST /machines` or `POST /enroll`); afterwards only its hash is stored. Error messages name variables but never contain their values.
 
 ## Request rules
 
@@ -43,12 +43,23 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /jobs/{id}/artifacts/{name}` | | `200` the file, `application/octet-stream`, `Content-Disposition: attachment` |
 | `GET /machines` | | `200` `[Machine]` with their latest reports; never tokens |
 | `POST /machines` | `CreateMachineRequest` | `201` `CreateMachineResponse` `{machine, token}` |
+| `POST /machines/pairings` | | `201` `Pairing` `{code, expiresAt}`: a one-time code (`XXXX-XXXX`, from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`) valid for 15 minutes; at most 5 are live, a sixth drops the oldest; kept in memory, so a restart forgets them |
+| `POST /enroll` | `EnrollRequest` `{code, name, maxConcurrentJobs?}` | `201` `CreateMachineResponse` `{machine, token}`, like `POST /machines` (`maxConcurrentJobs` defaults to 1) and a `machine` event; `403` `invalid_pairing_code` for an unknown, used or expired code; `409` `machine_exists` and `400` `invalid_name` leave the code usable; after 10 failed codes within 10 minutes every call is `429` `too_many_attempts` until the oldest failure is 10 minutes old. The code is case-insensitive and its dash optional. This is the install script's call: curl sends JSON without `Origin`, so the cross-site rules let it through |
 | `DELETE /machines/{id}` | | `204` |
-| `GET /settings` | | `200` `SettingsStatus` `{version, appStoreConnect: {keyID, issuerID?, kind}?, githubTokenSet}`; `appStoreConnect` is absent unless `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` are set; `kind` is `"team"` when `HANGAR_ASC_ISSUER_ID` is set (non-empty) and `"individual"` otherwise, when `issuerID` is absent; the key and the token are never returned |
+| `GET /settings` | | `200` `SettingsStatus` `{version, appStoreConnect: {keyID, issuerID?, kind}?, githubTokenSet}`; `appStoreConnect` is absent unless `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` are set; `kind` is `"team"` when `HANGAR_ASC_ISSUER_ID` is set (non-empty) and `"individual"` otherwise, when `issuerID` is absent; the key and the token are never returned; `workerInstallAvailable` is true when the server has a `hangar-worker` to hand out at `GET /install/hangar-worker` |
 | `GET /asc/apps` | | `200` `[ASCAppSummary]` `{id, name, bundleID, registered, iconURL?}` sorted by name, the team's apps from App Store Connect; `registered` is true when a Hangar app already uses that ID; `iconURL` (https, 512 px) is absent when no icon was found (each source is given up after 5 s); `409` `asc_not_configured` without the key |
 | `GET /events` | | SSE stream, see below |
 
 Numbers and deploys ask App Store Connect and Xcode Cloud for the highest known build number. They need the global variables `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` (the `.p8` contents), plus `HANGAR_ASC_ISSUER_ID` for a team key; without an issuer ID the key is used as an individual key (JWT `sub: "user"`, no `iss`). The server reads them on every request.
+
+## Install routes
+
+These live outside `/api/v1`. They are `GET`s, so the cross-site rules do not apply, but the `Host` check does.
+
+| Method and path | Response |
+| --- | --- |
+| `GET /install` | `200` `text/plain; charset=utf-8`: the worker install script, run as `curl -fsSL http://<server>:8787/install \| sh`. The server's address in it is `http://<Host>`, taken from the request's (already allowed) `Host`; a `Host` that is not a plain DNS name or IP address with a valid port gets `400` `invalid_request`. See [worker setup](worker-setup.md) |
+| `GET /install/hangar-worker` | `200` the `hangar-worker` binary next to `hangar-server` (symlinks resolved), `application/octet-stream` with `Content-Length` and `X-Hangar-Version`; `503` `worker_binary_missing` when there is none (install-server.sh installs it) |
 
 ## Worker routes
 
@@ -74,13 +85,15 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | --- | --- |
 | `400` | `invalid_request` (malformed body or query), `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
 | `401` | `unauthorized` (worker routes) |
-| `403` | `cross_site_request` |
+| `403` | `cross_site_request`, `invalid_pairing_code` |
 | `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found` |
 | `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured` |
 | `415` | `unsupported_media_type` |
 | `421` | `host_not_allowed` |
+| `429` | `too_many_attempts` (`POST /enroll`) |
 | `502` | `app_store_connect_not_configured`, `build_number_source_unavailable` (the message names the source), `build_number_not_integer`, `source_host_error`, `upstream_unavailable` |
 | `500` | `internal_error` |
+| `503` | `worker_binary_missing` (`GET /install/hangar-worker`) |
 
 A deploy that fails with any of these reserves no build number.
 

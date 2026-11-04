@@ -66,7 +66,8 @@ struct HangarServerCommand: AsyncParsableCommand {
             let localNames = await HostPolicy.detectLocalNames(runner: LiveProcessRunner())
             let configuration = ServerConfiguration(
                 host: resolvedHost!, port: resolvedPort, dataDirectory: resolvedDirectory,
-                retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb, allowedHosts: localNames + extraHosts)
+                retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb, allowedHosts: localNames + extraHosts,
+                workerBinaryPath: WorkerBinary.locate())
             let server = try HangarServerApp(
                 configuration: configuration, database: database,
                 appStoreConnectFactory: { LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport()) })
@@ -75,6 +76,12 @@ struct HangarServerCommand: AsyncParsableCommand {
 
             logger.info("data directory \(resolvedDirectory)")
             logger.info("allowed host names: \(configuration.hostPolicy.description)")
+            if let worker = configuration.workerBinaryPath {
+                logger.info("one-command worker install: serving \(worker) at /install")
+            } else {
+                logger.warning(
+                    "one-command worker install unavailable: no hangar-worker next to hangar-server; reinstall with scripts/server/install-server.sh")
+            }
             logger.info("Hangar is running at \(Self.webURL(host: configuration.host, port: configuration.port))")
             // runService() returns after SIGTERM/SIGINT; cancelling the group then stops the scheduler and sweeper.
             try await withThrowingTaskGroup(of: Void.self) { group in

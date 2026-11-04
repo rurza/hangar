@@ -16,10 +16,13 @@ public struct ServerConfiguration: Sendable {
     /// Host names the server answers to besides the bound host, its loopback names and `*.ts.net` (see `HostPolicy`):
     /// this Mac's names found at start-up and `--allowed-host` / `HANGAR_ALLOWED_HOSTS`.
     public var allowedHosts: [String]
+    /// The `hangar-worker` binary `GET /install/hangar-worker` hands out; nil when there is none (the one-command
+    /// worker install then reports `worker_binary_missing`). The executable sets it from `WorkerBinary.locate()`.
+    public var workerBinaryPath: String?
 
     public init(
         host: String, port: Int = 8787, dataDirectory: String, retentionDays: Int = 30, minFreeDiskGB: Double = 20,
-        untrackedJobGrace: TimeInterval = 60, allowedHosts: [String] = []
+        untrackedJobGrace: TimeInterval = 60, allowedHosts: [String] = [], workerBinaryPath: String? = nil
     ) {
         self.host = host
         self.port = port
@@ -28,6 +31,7 @@ public struct ServerConfiguration: Sendable {
         self.minFreeDiskGB = minFreeDiskGB
         self.untrackedJobGrace = untrackedJobGrace
         self.allowedHosts = allowedHosts
+        self.workerBinaryPath = workerBinaryPath
     }
 
     /// The Host values the server answers.
