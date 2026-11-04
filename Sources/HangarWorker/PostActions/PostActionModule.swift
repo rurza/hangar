@@ -17,6 +17,8 @@ public struct PostActionContext: Sendable {
     public var environment: [String: String]
     public var layout: WorkspaceLayout
     public var developerDir: String
+    /// The workflow's `team:`; passed to the upload's export options.
+    public var teamID: String?
     public var key: ASCKeyArguments?
     public var appStoreConnect: (any AppStoreConnectClient)?
     public var runner: any ProcessRunner
@@ -26,7 +28,7 @@ public struct PostActionContext: Sendable {
     public init(
         app: App, action: ArchiveAction, buildNumber: Int, archivePath: String, exportedArtifactPath: String?,
         repository: String, projectDirectory: String, environment: [String: String], layout: WorkspaceLayout,
-        developerDir: String, key: ASCKeyArguments?, appStoreConnect: (any AppStoreConnectClient)?,
+        developerDir: String, teamID: String?, key: ASCKeyArguments?, appStoreConnect: (any AppStoreConnectClient)?,
         runner: any ProcessRunner, clock: any Clock<Duration>, log: @escaping @Sendable (String) -> Void
     ) {
         self.app = app
@@ -39,6 +41,7 @@ public struct PostActionContext: Sendable {
         self.environment = environment
         self.layout = layout
         self.developerDir = developerDir
+        self.teamID = teamID
         self.key = key
         self.appStoreConnect = appStoreConnect
         self.runner = runner

@@ -37,10 +37,13 @@ public struct TestFlightAction: PostActionModule {
         let platform = context.action.platform
         let label = "Build \(context.buildNumber) (\(platform.ciName))"
 
+        // Fail before the irreversible upload when the later steps could not run.
+        if settings.waitForProcessing, context.appStoreConnect == nil { throw TestFlightError.appStoreConnectNotConfigured }
+
         context.log("uploading \(label) to App Store Connect")
         _ = try await ExportStep(runner: context.runner).run(
             archivePath: context.archivePath, method: .appStoreConnect, destination: "upload",
-            exportPath: context.layout.upload, jobDirectory: context.layout.jobDirectory, teamID: nil,
+            exportPath: context.layout.upload, jobDirectory: context.layout.jobDirectory, teamID: context.teamID,
             developerDir: context.developerDir, key: key, signing: .cloudManaged, environment: context.environment,
             log: context.log)
 

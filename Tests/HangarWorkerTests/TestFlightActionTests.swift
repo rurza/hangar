@@ -81,7 +81,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
         func context(
             client: (any AppStoreConnectClient)?, key: ASCKeyArguments? = TestFlightActionTests.key,
-            platform: Platform = .iOS, projectDirectory: String = "."
+            platform: Platform = .iOS, projectDirectory: String = ".", teamID: String? = nil
         ) -> PostActionContext {
             PostActionContext(
                 app: App(
@@ -90,7 +90,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
                 action: ArchiveAction(scheme: "Demo", platform: platform, export: .appStoreConnect),
                 buildNumber: 311, archivePath: layout.archive(scheme: "Demo"), exportedArtifactPath: nil,
                 repository: directory + "/repo", projectDirectory: projectDirectory, environment: [:],
-                layout: layout, developerDir: "/Xcode", key: key, appStoreConnect: client, runner: runner,
+                layout: layout, developerDir: "/Xcode", teamID: teamID, key: key, appStoreConnect: client, runner: runner,
                 clock: clock, log: log.append)
         }
 
@@ -270,6 +270,22 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
         let noClient = await fixture.run(TestFlightSettings(), fixture.context(client: nil))
         #expect(throws: TestFlightError.appStoreConnectNotConfigured) { try noClient.get() }
+        // Fails before the irreversible upload.
+        #expect(fixture.runner.commands.isEmpty)
+    }
+
+    @Test func uploadPlistCarriesTheTeamOnlyWhenSet() async throws {
+        func team(_ teamID: String?) async throws -> String? {
+            let fixture = try Fixture()
+            var settings = TestFlightSettings()
+            settings.waitForProcessing = false
+            _ = try await fixture.run(settings, fixture.context(client: nil, teamID: teamID)).get()
+            let plist = try PropertyListSerialization.propertyList(
+                from: Data(contentsOf: URL(fileURLWithPath: fixture.layout.upload + "/ExportOptions.plist")), format: nil)
+            return (plist as? [String: Any])?["teamID"] as? String
+        }
+        #expect(try await team("ABCDE12345") == "ABCDE12345")
+        #expect(try await team(nil) == nil)
     }
 
     @Test func registryBuildsTestFlightFromSpec() async throws {
