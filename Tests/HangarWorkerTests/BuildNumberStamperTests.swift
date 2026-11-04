@@ -239,4 +239,19 @@ private struct ArchiveFixture {
             try BuildNumberStamper().stamp(archivePath: archive.root, buildNumber: 311, log: { _ in })
         }
     }
+
+    @Test func unlistableNestedDirectoryThrowsInsteadOfSkippingIt() throws {
+        let archive = try ArchiveFixture()
+        defer { archive.cleanUp() }
+        try archive.bundle("Legilo.app", version: "1")
+        try archive.bundle("Legilo.app/Contents/PlugIns/Share.appex", version: "1")
+        let plugIns = archive.applications + "/Legilo.app/Contents/PlugIns"
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: plugIns)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: plugIns) }
+
+        #expect(throws: (any Error).self) {
+            try BuildNumberStamper().stamp(archivePath: archive.root, buildNumber: 311, log: { _ in })
+        }
+        #expect(try archive.version("Legilo.app") == "1")
+    }
 }

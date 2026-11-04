@@ -65,8 +65,7 @@ public struct BuildNumberStamper {
     public func stamp(archivePath: String, buildNumber: Int, log: @Sendable (String) -> Void) throws -> [StampedBundle] {
         let version = "\(buildNumber)"
         let applications = archivePath + "/Products/Applications"
-        let apps = ((try? fileManager.contentsOfDirectory(atPath: applications)) ?? [])
-            .filter { $0.hasSuffix(".app") }.sorted()
+        let apps = try entries(of: applications).filter { $0.hasSuffix(".app") }.sorted()
         guard let app = apps.first else { throw StampError.noApplication(archivePath: archivePath) }
         guard apps.count == 1 else { throw StampError.multipleApplications(archivePath: archivePath, names: apps) }
 
@@ -107,12 +106,20 @@ public struct BuildNumberStamper {
 
         var children: [String] = []
         for location in Self.nestedLocations {
-            let names = (try? fileManager.contentsOfDirectory(atPath: bundle + "/" + location.directory)) ?? []
+            let names = try entries(of: bundle + "/" + location.directory)
             children += names.filter { $0.hasSuffix("." + location.pathExtension) }.map { relativePath + "/" + location.directory + "/" + $0 }
         }
         for child in children.sorted() {
             try collect(relativePath: child, root: root, version: version, into: &pending)
         }
+    }
+
+    /// The directory's entries; none when there is no directory at `path`. Any other failure (no permission, say) is
+    /// thrown: skipping a directory that could not be listed would leave a bundle in it unstamped without a word.
+    private func entries(of path: String) throws -> [String] {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return [] }
+        return try fileManager.contentsOfDirectory(atPath: path)
     }
 
     /// The re-encoded archive `Info.plist`, or nil (with a log line) when it has no `ApplicationProperties` to stamp.
