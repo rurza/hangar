@@ -6,6 +6,8 @@ import { route, start } from './router.js';
 import { appsPage } from './pages/apps.js';
 import { appDetailPage } from './pages/app-detail.js';
 import { workflowPage } from './pages/workflow.js';
+import { buildPage } from './pages/build.js';
+import { historyPage } from './pages/history.js';
 
 // MARK: Icons
 
@@ -104,7 +106,9 @@ function shell(root) {
       tabBar.update(path);
       const title = main.querySelector('h1')?.textContent ?? '';
       compactTitle.textContent = title;
-      document.title = title ? `${title} – Hangar` : 'Hangar';
+      // A page may name itself more fully for the browser tab, e.g. "Build 311 · Legilo".
+      const documentTitle = main.querySelector('[data-document-title]')?.dataset.documentTitle || title;
+      document.title = documentTitle ? `${documentTitle} – Hangar` : 'Hangar';
       watchTitle();
       // Move focus to the new page for keyboard and screen reader users, but not on the first load.
       if (!first) main.focus({ preventScroll: true });
@@ -123,8 +127,8 @@ function placeholder(title, iconName, emptyTitle, message, subtitle) {
 route('/', appsPage);
 route('/apps/:app', appDetailPage);
 route('/apps/:app/workflow', workflowPage);
-route('/builds', placeholder('History', 'history', 'No Builds Yet', 'Every build you deploy appears here.'));
-route('/builds/:id', placeholder('Build', 'history', 'Nothing Here Yet', 'The build’s jobs and logs appear here.'));
+route('/builds', historyPage);
+route('/builds/:id', buildPage);
 route('/machines', placeholder('Machines', 'machines', 'No Machines Yet', 'Macs that run your builds appear here.'));
 route('/settings', placeholder('Settings', 'settings', 'Nothing to Set Yet', 'App Store Connect, GitHub and global variables appear here.'));
 
