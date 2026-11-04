@@ -194,6 +194,17 @@ For each action:
 
 ### Environment variables and secrets (like Xcode Cloud)
 
+**Everything an app needs is set in Hangar's UI**: repo access, the App Store
+Connect key, env vars and secrets, appcast feeds and so on. Nothing is set up
+by hand on a worker beyond the one-time bootstrap: the `hangar` user, Xcode
+and tools. Adding a Mac or changing a key never means touching the other
+Macs.
+
+**Secrets are write-only.** You can set, replace or delete a secret, but no
+page, API call or CLI command returns its value. Only a job receives it, and
+only at run time. This matters because v1 has no login: anyone on the tailnet
+can trigger builds, but nobody can read secrets out of Hangar.
+
 - **Each app is configured in Hangar** with environment variables, the way an
   Xcode Cloud workflow is. Each variable is either **plain** or **secret**.
   Examples:
