@@ -3,7 +3,7 @@
 // from what the server parsed.
 
 import { api, ApiError, seg } from '../api.js';
-import { navigate } from '../router.js';
+import { addLeaveGuard, navigate } from '../router.js';
 import {
   button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, section, selectContents,
   switchField, toast,
@@ -121,7 +121,16 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     event.returnValue = '';
   };
   window.addEventListener('beforeunload', onBeforeUnload);
-  // The router has no leave hook, so in-app links are caught before its own (bubbling) click handler.
+  const confirmDiscard = () => confirm({
+    title: 'Discard Unsaved Changes?',
+    message: 'Your edits to the workflow have not been saved.',
+    confirmLabel: 'Discard',
+    destructive: true,
+  });
+  // Back and Forward: the router asks before leaving and restores this page's URL when the user stays.
+  const removeLeaveGuard = addLeaveGuard(() => !isDirty() || confirmDiscard());
+  // The router does not ask before following links, so in-app links are caught before its own (bubbling) click
+  // handler.
   const onLinkClick = async (event) => {
     if (!isDirty() || event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -131,13 +140,7 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     if (url.origin !== location.origin || (url.pathname === location.pathname && url.search === location.search)) return;
     event.preventDefault();
     event.stopPropagation();
-    const leave = await confirm({
-      title: 'Discard Unsaved Changes?',
-      message: 'Your edits to the workflow have not been saved.',
-      confirmLabel: 'Discard',
-      destructive: true,
-    });
-    if (!leave) return;
+    if (!(await confirmDiscard())) return;
     models = null;
     navigate(url.pathname + url.search + url.hash);
   };
@@ -145,6 +148,7 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   context.onCleanup(() => {
     window.removeEventListener('beforeunload', onBeforeUnload);
     document.removeEventListener('click', onLinkClick, true);
+    removeLeaveGuard();
   });
 
   // MARK: Rendering
