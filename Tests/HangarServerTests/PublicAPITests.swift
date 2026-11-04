@@ -73,6 +73,9 @@ struct APIFixture {
     }
 }
 
+/// What every client sends with a JSON body; the cross-site guard refuses a body without it.
+let jsonHeaders: HTTPFields = [.contentType: "application/json"]
+
 func body(_ value: some Encodable) throws -> ByteBuffer { ByteBuffer(bytes: try JSONCoding.encoder.encode(value)) }
 
 func decode<T: Decodable>(_ type: T.Type, _ response: TestResponse) throws -> T {
@@ -99,12 +102,12 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         try await fixture.test { client in
             let request = CreateAppRequest(
                 name: "Legilo", repoURL: "https://github.com/acme/legilo.git", appStoreConnectAppID: "42")
-            let created = try await client.execute(uri: "/api/v1/apps", method: .post, body: try body(request)) {
+            let created = try await client.execute(uri: "/api/v1/apps", method: .post, headers: jsonHeaders, body: try body(request)) {
                 #expect($0.status == .created)
                 return try decode(App.self, $0)
             }
             #expect(created.slug == "legilo")
-            try await client.execute(uri: "/api/v1/apps", method: .post, body: try body(request)) { response throws in
+            try await client.execute(uri: "/api/v1/apps", method: .post, headers: jsonHeaders, body: try body(request)) { response throws in
                 #expect(response.status == .conflict)
                 #expect(try decode(APIError.self, response).code == "app_exists")
             }
@@ -140,7 +143,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
 
     @Test func malformedBodyIs400() async throws {
         try await APIFixture().test { client in
-            try await client.execute(uri: "/api/v1/apps", method: .post, body: ByteBuffer(string: "{nope")) { response throws in
+            try await client.execute(uri: "/api/v1/apps", method: .post, headers: jsonHeaders, body: ByteBuffer(string: "{nope")) { response throws in
                 #expect(response.status == .badRequest)
                 #expect(try decode(APIError.self, response).code == "invalid_request")
             }
@@ -154,7 +157,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         try await fixture.test { client in
             let input = VariableInput(value: secret, isSecret: true)
             for uri in ["/api/v1/apps/legilo/variables/API_TOKEN", "/api/v1/variables/GLOBAL_TOKEN"] {
-                try await client.execute(uri: uri, method: .put, body: try body(input)) { response throws in
+                try await client.execute(uri: uri, method: .put, headers: jsonHeaders, body: try body(input)) { response throws in
                     #expect(response.status == .noContent)
                     #expect(response.body.readableBytes == 0)
                 }
@@ -168,7 +171,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
                     #expect(try decode([VariableSummary].self, response).count == 1)
                 }
             }
-            try await client.execute(uri: "/api/v1/apps/legilo/variables/bad-name", method: .put, body: try body(input)) { response throws in
+            try await client.execute(uri: "/api/v1/apps/legilo/variables/bad-name", method: .put, headers: jsonHeaders, body: try body(input)) { response throws in
                 #expect(response.status == .badRequest)
                 #expect(try decode(APIError.self, response).code == "invalid_variable_name")
                 #expect(!String(buffer: response.body).contains(secret))
@@ -187,7 +190,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         let app = try fixture.createApp()
         try await fixture.test { client in
             let request = DeployRequest(app: "legilo", workflow: "testflight", ref: "main")
-            let build = try await client.execute(uri: "/api/v1/builds", method: .post, body: try body(request)) {
+            let build = try await client.execute(uri: "/api/v1/builds", method: .post, headers: jsonHeaders, body: try body(request)) {
                 #expect($0.status == .accepted)
                 return try decode(Build.self, $0)
             }
@@ -223,14 +226,14 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
                 (DeployRequest(app: "nope", workflow: "testflight", ref: "main"), .notFound, "app_not_found"),
             ]
             for (request, status, code) in cases {
-                try await client.execute(uri: "/api/v1/builds", method: .post, body: try body(request)) { response throws in
+                try await client.execute(uri: "/api/v1/builds", method: .post, headers: jsonHeaders, body: try body(request)) { response throws in
                     #expect(response.status == status)
                     #expect(try decode(APIError.self, response).code == code)
                 }
             }
             fixture.host.state.withLock { $0.files = [:] }
             let request = DeployRequest(app: "legilo", workflow: "testflight", ref: "main")
-            try await client.execute(uri: "/api/v1/builds", method: .post, body: try body(request)) { response throws in
+            try await client.execute(uri: "/api/v1/builds", method: .post, headers: jsonHeaders, body: try body(request)) { response throws in
                 #expect(response.status == .badRequest)
                 #expect(try decode(APIError.self, response).code == "workflow_file_missing")
             }
@@ -269,11 +272,11 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         let fixture = try APIFixture()
         try fixture.createApp()
         try await fixture.test { client in
-            try await client.execute(uri: "/api/v1/apps/legilo/numbers/next", method: .put, body: try body(BumpNumberRequest(next: 100))) { response throws in
+            try await client.execute(uri: "/api/v1/apps/legilo/numbers/next", method: .put, headers: jsonHeaders, body: try body(BumpNumberRequest(next: 100))) { response throws in
                 #expect(response.status == .conflict)
                 #expect(try decode(APIError.self, response).code == "bump_not_higher")
             }
-            try await client.execute(uri: "/api/v1/apps/legilo/numbers/next", method: .put, body: try body(BumpNumberRequest(next: 400))) { response throws in
+            try await client.execute(uri: "/api/v1/apps/legilo/numbers/next", method: .put, headers: jsonHeaders, body: try body(BumpNumberRequest(next: 400))) { response throws in
                 #expect(response.status == .ok)
                 #expect(try decode(NumbersReport.self, response).next == 400)
             }
@@ -329,13 +332,13 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         let fixture = try APIFixture()
         try await fixture.test { client in
             let created = try await client.execute(
-                uri: "/api/v1/machines", method: .post, body: try body(CreateMachineRequest(name: "studio"))
+                uri: "/api/v1/machines", method: .post, headers: jsonHeaders, body: try body(CreateMachineRequest(name: "studio"))
             ) {
                 #expect($0.status == .created)
                 return try decode(CreateMachineResponse.self, $0)
             }
             #expect(!created.token.isEmpty)
-            try await client.execute(uri: "/api/v1/machines", method: .post, body: try body(CreateMachineRequest(name: "studio"))) { response throws in
+            try await client.execute(uri: "/api/v1/machines", method: .post, headers: jsonHeaders, body: try body(CreateMachineRequest(name: "studio"))) { response throws in
                 #expect(response.status == .conflict)
                 #expect(try decode(APIError.self, response).code == "machine_exists")
             }

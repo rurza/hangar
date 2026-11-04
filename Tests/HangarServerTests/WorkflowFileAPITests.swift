@@ -29,7 +29,7 @@ private let uri = "/api/v1/apps/legilo/workflow-file"
         let fixture = try APIFixture()
         try fixture.createApp()
         try await fixture.test { client in
-            try await client.execute(uri: uri, method: .put, body: try body(PutWorkflowFileRequest(yaml: legiloYAML))) { response throws in
+            try await client.execute(uri: uri, method: .put, headers: jsonHeaders, body: try body(PutWorkflowFileRequest(yaml: legiloYAML))) { response throws in
                 #expect(response.status == .ok)
                 let stored = try decode(StoredWorkflowFile.self, response)
                 #expect(stored.yaml == legiloYAML)
@@ -47,7 +47,7 @@ private let uri = "/api/v1/apps/legilo/workflow-file"
         try fixture.createApp()
         try await fixture.test { client in
             let yaml = legiloYAML.replacingOccurrences(of: "platform: macos", with: "platform: android")
-            try await client.execute(uri: uri, method: .put, body: try body(PutWorkflowFileRequest(yaml: yaml))) { response throws in
+            try await client.execute(uri: uri, method: .put, headers: jsonHeaders, body: try body(PutWorkflowFileRequest(yaml: yaml))) { response throws in
                 #expect(response.status == .badRequest)
                 let error = try decode(APIError.self, response)
                 #expect(error.code == "invalid_workflow_file")
@@ -65,7 +65,7 @@ private let uri = "/api/v1/apps/legilo/workflow-file"
         try fixture.createApp()
         try await fixture.test { client in
             let yaml = legiloYAML + "\n# " + String(repeating: "x", count: 70_000)
-            try await client.execute(uri: uri, method: .put, body: try body(PutWorkflowFileRequest(yaml: yaml))) { response throws in
+            try await client.execute(uri: uri, method: .put, headers: jsonHeaders, body: try body(PutWorkflowFileRequest(yaml: yaml))) { response throws in
                 #expect(response.status == .badRequest)
                 let error = try decode(APIError.self, response)
                 #expect(error.code == "invalid_workflow_file")
@@ -78,7 +78,7 @@ private let uri = "/api/v1/apps/legilo/workflow-file"
         let fixture = try APIFixture()
         try fixture.createApp()
         try await fixture.test { client in
-            try await client.execute(uri: uri, method: .put, body: try body(PutWorkflowFileRequest(yaml: legiloYAML))) { _ in }
+            try await client.execute(uri: uri, method: .put, headers: jsonHeaders, body: try body(PutWorkflowFileRequest(yaml: legiloYAML))) { _ in }
             try await client.execute(uri: uri, method: .delete) { #expect($0.status == .noContent) }
             try await client.execute(uri: uri, method: .get) { #expect($0.status == .notFound) }
             try await client.execute(uri: uri, method: .delete) { #expect($0.status == .noContent) }
