@@ -61,11 +61,14 @@ import Testing
         func head() throws -> String { try git(["-C", layout.repository, "rev-parse", "HEAD"]) }
     }
 
-    static func checkout(_ fixture: Fixture, url: String? = nil, commit: String, token: String? = nil) async throws
+    static func checkout(
+        _ fixture: Fixture, url: String? = nil, commit: String, token: String? = nil,
+        extraEnvironment: [String: String] = [:]
+    ) async throws
         -> [String]
     {
         let lines = Mutex<[String]>([])
-        try await Checkout(runner: LiveProcessRunner(), layout: fixture.layout)
+        try await Checkout(runner: LiveProcessRunner(), layout: fixture.layout, extraEnvironment: extraEnvironment)
             .run(repoURL: url ?? "file://" + fixture.remote, commit: commit, token: token) { line in
                 lines.withLock { $0.append(line) }
             }
@@ -176,5 +179,83 @@ import Testing
         await #expect(throws: CheckoutError.self) {
             _ = try await Self.checkout(fixture, commit: String(repeating: "a", count: 40))
         }
+    }
+
+    @Test func removesNestedGitRepositories() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let sha = try fixture.commit(["a.txt": "1"], message: "one")
+        _ = try await Self.checkout(fixture, commit: sha)
+        let nested = fixture.layout.repository + "/.build/checkouts/dep"
+        try FileManager.default.createDirectory(atPath: nested, withIntermediateDirectories: true)
+        try fixture.git(["init", nested])
+        try "x".write(toFile: nested + "/f", atomically: true, encoding: .utf8)
+
+        _ = try await Self.checkout(fixture, commit: sha)
+        #expect(!FileManager.default.fileExists(atPath: nested))
+    }
+
+    @Test func tokenEnvironmentIsScopedAndIsolated() {
+        let environment = Checkout.environment(token: "ghp_secret")
+        #expect(environment["GIT_CONFIG_COUNT"] == "3")
+        #expect(environment["GIT_CONFIG_KEY_0"] == "credential.helper")
+        #expect(environment["GIT_CONFIG_VALUE_0"] == "")
+        #expect(environment["GIT_CONFIG_KEY_1"] == "credential.https://github.com.helper")
+        #expect(environment["GIT_CONFIG_VALUE_1"] == "")
+        #expect(environment["GIT_CONFIG_KEY_2"] == "credential.https://github.com.helper")
+        #expect(environment["GIT_CONFIG_VALUE_2"]?.contains("$HANGAR_GITHUB_TOKEN") == true)
+        #expect(environment["HANGAR_GITHUB_TOKEN"] == "ghp_secret")
+        #expect(environment["GIT_CONFIG_GLOBAL"] == nil)
+        #expect(environment.filter { $0.value.contains("ghp_secret") }.keys.sorted() == ["HANGAR_GITHUB_TOKEN"])
+
+        let none = Checkout.environment(token: nil)
+        #expect(!none.keys.contains { $0.hasPrefix("GIT_CONFIG_KEY") || $0 == "GIT_CONFIG_COUNT" })
+        #expect(none["HANGAR_GITHUB_TOKEN"] == nil)
+    }
+
+    @Test func runnerReceivesTokenOnlyInTokenVariable() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let runner = RecordingProcessRunner()
+        try await Checkout(runner: runner, layout: fixture.layout)
+            .run(repoURL: "https://github.com/o/r.git", commit: "abc", token: "ghp_secret") { _ in }
+        #expect(!runner.commands.isEmpty)
+        for command in runner.commands {
+            #expect(!command.arguments.joined(separator: " ").contains("ghp_secret"))
+            #expect(command.environment["HANGAR_GITHUB_TOKEN"] == "ghp_secret")
+            #expect(command.environment.filter { $0.value.contains("ghp_secret") }.count == 1)
+        }
+    }
+
+    @Test func resetsAndSyncsSubmodules() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        // A second bare repo serves as the submodule; file:// submodules need protocol.file.allow in tests.
+        let sub = fixture.root + "/sub.git"
+        try fixture.git(["init", "--bare", "-b", "main", sub])
+        let subWork = fixture.root + "/subwork"
+        try fixture.git(["clone", sub, subWork])
+        try "s".write(toFile: subWork + "/s.txt", atomically: true, encoding: .utf8)
+        try fixture.git(["add", "-A"], in: subWork)
+        try fixture.git(["commit", "-m", "sub"], in: subWork)
+        try fixture.git(["push", "origin", "HEAD:main"], in: subWork)
+
+        let work = fixture.root + "/work"
+        _ = try fixture.commit(["a.txt": "1"], message: "one")
+        try fixture.git(
+            ["-c", "protocol.file.allow=always", "submodule", "add", "file://" + sub, "Sub"], in: work)
+        try fixture.git(["commit", "-m", "add sub"], in: work)
+        try fixture.git(["push", "origin", "HEAD:main"], in: work)
+        let sha = try fixture.git(["rev-parse", "HEAD"], in: work)
+
+        let allow = ["GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "protocol.file.allow", "GIT_CONFIG_VALUE_0": "always"]
+        _ = try await Self.checkout(fixture, commit: sha, extraEnvironment: allow)
+        let tracked = fixture.layout.repository + "/Sub/s.txt"
+        try "edited".write(toFile: tracked, atomically: true, encoding: .utf8)
+        try "junk".write(toFile: fixture.layout.repository + "/Sub/junk", atomically: true, encoding: .utf8)
+
+        _ = try await Self.checkout(fixture, commit: sha, extraEnvironment: allow)
+        #expect(try String(contentsOfFile: tracked, encoding: .utf8) == "s")
+        #expect(!FileManager.default.fileExists(atPath: fixture.layout.repository + "/Sub/junk"))
     }
 }

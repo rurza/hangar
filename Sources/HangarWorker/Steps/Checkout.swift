@@ -16,10 +16,14 @@ public enum CheckoutError: Error, Equatable, CustomStringConvertible {
 public struct Checkout: Sendable {
     private let runner: any ProcessRunner
     private let layout: WorkspaceLayout
+    private let extraEnvironment: [String: String]
 
-    public init(runner: any ProcessRunner, layout: WorkspaceLayout) {
+    /// `extraEnvironment` is added to every git child (the token settings win on a clash); tests use it to allow
+    /// `file://` submodules.
+    public init(runner: any ProcessRunner, layout: WorkspaceLayout, extraEnvironment: [String: String] = [:]) {
         self.runner = runner
         self.layout = layout
+        self.extraEnvironment = extraEnvironment
     }
 
     public func run(repoURL: String, commit: String, token: String?, log: @Sendable (String) -> Void) async throws {
@@ -51,33 +55,49 @@ public struct Checkout: Sendable {
             try await git(["-C", repository, "fetch", "origin", commit], token: token, log: log)
             try await git(["-C", repository, "checkout", "--detach", commit], token: token, log: log)
         }
-        try await git(["-C", repository, "submodule", "update", "--init", "--recursive"], token: token, log: log)
-        try await git(["-C", repository, "clean", "-fdx"], token: token, log: log)
+        // reset --hard leaves submodule worktrees alone, and a moved submodule URL needs syncing first.
+        try await git(["-C", repository, "submodule", "sync", "--recursive"], token: token, log: log)
         try await git(
-            ["-C", repository, "submodule", "foreach", "--recursive", "git clean -fdx"], token: token, log: log)
+            ["-C", repository, "submodule", "foreach", "--recursive", "git reset --hard"], token: token, log: log)
+        try await git(
+            ["-C", repository, "submodule", "update", "--init", "--recursive", "--force"], token: token, log: log)
+        // Doubled -f: a single one skips nested git repositories (SwiftPM checkouts, repos cloned by scripts).
+        try await git(["-C", repository, "clean", "-ffdx"], token: token, log: log)
+        try await git(
+            ["-C", repository, "submodule", "foreach", "--recursive", "git clean -ffdx"], token: token, log: log)
     }
 
     @discardableResult
     private func git(_ arguments: [String], token: String?, log: @Sendable (String) -> Void) async throws -> String {
         let display = (["git"] + arguments).joined(separator: " ")
         log(display)
-        var environment = [
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
-            "HOME": NSHomeDirectory(),
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_CONFIG_NOSYSTEM": "1",
-        ]
-        if let token {
-            // The helper reads the token from the child's environment, so it never lands in a URL or .git/config.
-            environment["GIT_CONFIG_COUNT"] = "1"
-            environment["GIT_CONFIG_KEY_0"] = "credential.helper"
-            environment["GIT_CONFIG_VALUE_0"] =
-                "!f() { echo username=x-access-token; echo password=$HANGAR_GITHUB_TOKEN; }; f"
-            environment["HANGAR_GITHUB_TOKEN"] = token
-        }
+        let environment = Self.environment(token: token, extra: extraEnvironment)
         let outcome = try await runner.run(
             ProcessCommand(executable: "/usr/bin/git", arguments: arguments, environment: environment), onLine: log)
         guard outcome.exitCode == 0 else { throw CheckoutError.gitFailed(command: display, exitCode: outcome.exitCode) }
         return outcome.output
+    }
+
+    /// The complete environment of a git child. The helper reads the token from `HANGAR_GITHUB_TOKEN`, so it never
+    /// lands in a URL or `.git/config`. The two empty values reset any helper from the user's gitconfig (generic and
+    /// github.com-scoped), so nothing like osxkeychain can store the token, and ours answers for github.com only.
+    static func environment(token: String?, extra: [String: String] = [:]) -> [String: String] {
+        var environment = extra.merging([
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
+            "HOME": NSHomeDirectory(),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        ]) { _, new in new }
+        if let token {
+            environment["GIT_CONFIG_COUNT"] = "3"
+            environment["GIT_CONFIG_KEY_0"] = "credential.helper"
+            environment["GIT_CONFIG_VALUE_0"] = ""
+            environment["GIT_CONFIG_KEY_1"] = "credential.https://github.com.helper"
+            environment["GIT_CONFIG_VALUE_1"] = ""
+            environment["GIT_CONFIG_KEY_2"] = "credential.https://github.com.helper"
+            environment["GIT_CONFIG_VALUE_2"] = "!f() { echo username=x-access-token; echo password=$HANGAR_GITHUB_TOKEN; }; f"
+            environment["HANGAR_GITHUB_TOKEN"] = token
+        }
+        return environment
     }
 }
