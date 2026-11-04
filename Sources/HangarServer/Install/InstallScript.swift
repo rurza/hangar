@@ -40,6 +40,9 @@ enum InstallScript {
         # downloads hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac, enrolls this
         # Mac, writes the worker configuration and starts the agent. No sudo, no checkout, no Swift build.
         #
+        # Run it again to update: when this Mac is already enrolled with this server (`hangar-worker check`), it
+        # replaces the binary and restarts the agent without asking for a code.
+        #
         # Settings, all optional, as environment variables (put them after the pipe: ... | HANGAR_MAX_JOBS=2 sh):
         #   HANGAR_PAIRING_CODE   the pairing code; asked for on the terminal when unset
         #   HANGAR_MACHINE_NAME   how this Mac appears in Hangar (default: its local host name)
@@ -217,7 +220,35 @@ enum InstallScript {
             mv -f "$download" "$worker"
             say "Installed $worker"
 
-            # 2. The pairing code. The script itself arrives on stdin, so the code is read from the terminal.
+            # 2. Already enrolled with this server? Then this run is an update: no code, no new machine.
+            config_file=${config:-"$HOME/Library/Application Support/Hangar/worker/config.json"}
+            if [ -f "$config_file" ]; then
+                configured=$(/usr/bin/plutil -extract serverURL raw -o - "$config_file" 2>/dev/null || true)
+                if [ "$configured" = "$HANGAR_SERVER" ]; then
+                    if enrolled=$("$worker" check --config "$config_file"); then
+                        finish "$enrolled" "Updated $enrolled."
+                        return 0
+                    else
+                        result=$?
+                        case $result in
+                            3) say "This Mac was removed in Hangar, so it is enrolled again." ;;
+                            4) die "Cannot reach $HANGAR_SERVER to check this Mac's enrollment. Nothing was enrolled; run this again once the server is reachable." ;;
+                            *) die "Checking this Mac's enrollment failed (hangar-worker check exited $result). Nothing was enrolled." ;;
+                        esac
+                    fi
+                else
+                    warn "This Mac's worker is set up for ${configured:-another server}; it is enrolled with $HANGAR_SERVER instead, and $config_file is replaced."
+                fi
+            fi
+
+            # Enrolling creates the machine in Hangar, so make sure setup can write its configuration first.
+            config_dir=$(dirname "$config_file")
+            if ! { (umask 077 && mkdir -p "$config_dir") 2>/dev/null && [ -w "$config_dir" ] \
+                && { [ ! -e "$config_file" ] || [ -w "$config_file" ]; }; }; then
+                die "Cannot write the worker configuration $config_file. Fix its permissions (or set HANGAR_WORKER_CONFIG), then run this again."
+            fi
+
+            # 3. The pairing code. The script itself arrives on stdin, so the code is read from the terminal.
             code=${HANGAR_PAIRING_CODE:-}
             if [ -z "$code" ]; then
                 (: </dev/tty) 2>/dev/null || die "No terminal to ask for the pairing code. Set HANGAR_PAIRING_CODE."
@@ -229,7 +260,7 @@ enum InstallScript {
                 '' | *[!A-Z0-9]*) die "That is not a pairing code. It looks like ABCD-EFGH: 8 letters and digits." ;;
             esac
 
-            # 3. Enroll. The body goes on stdin and the answer, which holds the token, stays in this shell.
+            # 4. Enroll. The body goes on stdin and the answer, which holds the token, stays in this shell.
             say "Enrolling $name..."
             body=$(printf '{"code":"%s","name":"%s","maxConcurrentJobs":%s}' "$code" "$(json_escape "$name")" "$max_jobs")
             response=$(printf '%s' "$body" | curl -sS -X POST -H 'Content-Type: application/json' \
@@ -240,16 +271,16 @@ enum InstallScript {
             unset response
             case $status in
                 201) ;;
-                409) die "Hangar already has a machine named \"$name\". Pick another name: curl -fsSL $HANGAR_SERVER/install | HANGAR_MACHINE_NAME=<name> sh (or remove the old machine in Hangar first)." ;;
+                409) die "Hangar already has a machine named \"$name\". The code is still valid; run this again with another name, e.g.: curl -fsSL $HANGAR_SERVER/install | HANGAR_MACHINE_NAME=mini-2 sh" ;;
                 403) die "The pairing code was not accepted: mistyped, already used or expired (codes last 15 minutes). Get a new one in Hangar → Machines → Add Mac." ;;
-                429) die "Too many wrong pairing codes. Wait 10 minutes, then run this again." ;;
+                429) die "Too many wrong pairing codes from this Mac. Wait 10 minutes, then run this again." ;;
                 *)
                     message=$(printf '%s' "$answer" | json_value message)
                     die "Enrolling failed: HTTP $status${message:+: $message}"
                     ;;
             esac
 
-            # 4. The configuration. The token reaches setup through its environment, never its arguments.
+            # 5. The configuration. The token reaches setup through its environment, never its arguments.
             token=$(printf '%s' "$answer" | json_value token)
             unset answer
             [ -n "$token" ] || die "The server's answer holds no token."
@@ -259,20 +290,25 @@ enum InstallScript {
                 || die "hangar-worker setup failed. $name is enrolled already: remove it in Hangar → Machines before running this again."
             unset token
 
+            finish "$name" "Done — $name should appear in Hangar within a few seconds."
+        }
+
+        # The last steps of both an install and an update: the launchd agent and a health check.
+        # finish <name> <closing line>
+        finish() {
             case ":$PATH:" in
                 *":$bin_dir:"*) ;;
                 *) say "Note: $bin_dir is not on your PATH; the launchd agent does not need it." ;;
             esac
-
-            # 5. The launchd agent and a health check.
             if [ "${HANGAR_NO_LAUNCHD:-}" = 1 ]; then
                 say "HANGAR_NO_LAUNCHD=1: the launchd agent was neither written nor loaded, and the doctor was skipped."
-                say "Done. Run the worker by hand with: $worker run${config:+ --config $config}"
+                say "$2"
+                say "Run the worker by hand with: $worker run${config:+ --config $config}"
                 return 0
             fi
             install_agent
             summary
-            say "Done — $name should appear in Hangar within a few seconds."
+            say "$2"
         }
 
         # Nothing runs until the whole script has arrived: a cut-off download only defines functions.

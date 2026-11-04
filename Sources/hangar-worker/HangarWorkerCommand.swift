@@ -11,7 +11,7 @@ private let defaultConfigPath = defaultSupportDirectory + "/config.json"
 struct HangarWorkerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "hangar-worker", abstract: "The Hangar build worker.",
-        subcommands: [Run.self, Doctor.self, Setup.self])
+        subcommands: [Run.self, Doctor.self, Setup.self, Check.self])
 
     struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Runs the worker: heartbeats and builds assigned jobs.")
@@ -52,6 +52,33 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(await doctor.report(runningJobIDs: []))
             print(String(decoding: data, as: UTF8.self))
+        }
+    }
+
+    struct Check: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Checks that the server still accepts this machine's token.",
+            discussion: """
+                Prints the machine's name on standard output and a message on standard error. Exit status: 0 the \
+                token is accepted, 3 the server refuses it (the machine was removed in Hangar), 4 the server cannot \
+                be reached, 2 the configuration cannot be read, 1 anything else. Nothing secret is printed.
+                """)
+
+        @Option(help: "Worker configuration file.")
+        var config: String = defaultConfigPath
+
+        func run() async throws {
+            let configuration: WorkerConfiguration
+            do {
+                configuration = try WorkerConfiguration.load(from: config)
+            } catch {
+                FileHandle.standardError.write(Data("\(error)\n".utf8))
+                throw ExitCode(2)
+            }
+            let outcome = await WorkerCheck.run(configuration: configuration, transport: URLSessionTransport())
+            FileHandle.standardError.write(Data((outcome.message(server: configuration.serverURL) + "\n").utf8))
+            if case .accepted(let machine) = outcome { print(machine.name) }
+            if outcome.exitCode != 0 { throw ExitCode(outcome.exitCode) }
         }
     }
 

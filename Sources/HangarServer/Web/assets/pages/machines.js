@@ -256,6 +256,7 @@ function openAddMacSheet({ knownIDs, listen, onManual }) {
   });
 
   let pairing = null;
+  let deadline = 0; // performance.now() when the code expires, from the server's expiresIn
   let enrolled = null; // the new machine, once it has enrolled
   let timer = null;
 
@@ -275,10 +276,10 @@ function openAddMacSheet({ knownIDs, listen, onManual }) {
       return;
     }
     if (!pairing) return;
-    const seconds = (Date.parse(pairing.expiresAt) - Date.now()) / 1000;
+    // Counted from the server's remaining time on a monotonic clock, so a wrong browser clock does not matter.
+    const seconds = (deadline - performance.now()) / 1000;
     const expired = seconds <= 0;
-    // A clock that runs behind the server's never shows more than the 15 minutes a code lasts.
-    expiry.textContent = expired ? 'This code has expired.' : `Expires in ${minutesAndSeconds(Math.min(seconds, 15 * 60))}`;
+    expiry.textContent = expired ? 'This code has expired.' : `Expires in ${minutesAndSeconds(seconds)}`;
     codeText.classList.toggle('pairing-code-expired', expired);
     copyCodeButton.disabled = expired;
     newCodeButton.hidden = !expired;
@@ -289,6 +290,7 @@ function openAddMacSheet({ knownIDs, listen, onManual }) {
     handle?.setError(null);
     try {
       pairing = await api.post('/machines/pairings');
+      deadline = performance.now() + Number(pairing.expiresIn) * 1000;
       codeText.textContent = pairing.code;
       copyCodeButton.disabled = false;
       tick();

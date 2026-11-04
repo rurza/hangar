@@ -30,9 +30,11 @@ Do these steps on every build Mac.
    ```
    and type the code when asked. The sheet shows the Mac as connected once its worker sends its first heartbeat.
 
+   Use the server's own address and port, `http://<tailnet-host>:8787` (the one the server listens on), not an HTTPS name from `tailscale serve` or another proxy: the script downloads the worker and enrolls through the address it was fetched from, always over plain `http://`, and the worker keeps that address in its configuration.
+
    The script downloads `hangar-worker` from the server into `~/.local/bin` (no `sudo`), enrolls the Mac with the code, which gives it its machine token, runs `hangar-worker setup` (the configuration goes to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600), writes `~/Library/LaunchAgents/app.hangar.worker.plist`, loads it with `launchctl bootstrap gui/$(id -u)` and runs the doctor. The token travels from the server's answer to `hangar-worker setup` in the environment: it is never in a command line, on screen or in a log.
 
-   A code is good for one Mac and 15 minutes; **Get a New Code** in the sheet makes another. After 10 wrong codes within 10 minutes the server refuses every code for the rest of those 10 minutes.
+   A code is good for one Mac and 15 minutes; **Get a New Code** in the sheet makes another. After 10 wrong codes from one Mac within 10 minutes the server refuses that Mac's codes for the rest of those 10 minutes.
 
    Options go in the environment of `sh`, after the pipe, e.g. `curl -fsSL http://<tailnet-host>:8787/install | HANGAR_MACHINE_NAME=mini-2 sh`:
 
@@ -47,7 +49,11 @@ Do these steps on every build Mac.
 
    The server must have `hangar-worker` next to `hangar-server` (install-server.sh puts it there); otherwise the sheet says so and the script stops with "the server has no hangar-worker to hand out". The command needs the server's tailnet address: if you opened Hangar on `localhost`, replace that in the command.
 
-   To upgrade a worker later, remove the machine in Hangar and run the command again, or install from source (below).
+   **To update, run the command again.** The script installs the new binary and then runs `hangar-worker check`, which asks the server whether this Mac's token is still valid. If it is (and the configuration points at the same server), it skips the code, restarts the agent, runs the doctor and prints "Updated <name>". If the machine was removed in Hangar, it asks for a new code and enrolls the Mac again. If the server cannot be reached, it stops without enrolling anything. A configuration for a different server is replaced after a warning.
+
+   `hangar-worker check [--config <file>]` exits 0 when the token is accepted (it prints the machine's name), 3 when the server refuses it, 4 when the server cannot be reached and 2 when the configuration cannot be read.
+
+   The worker the server hands out is universal (Apple silicon and Intel). Before enrolling, the script checks that it can write the configuration, so a permissions problem never leaves a machine in Hangar without a worker.
 7. **Install from source instead** (the old way, which also works without the server handing out a binary). Create the machine on the server, on any Mac on the tailnet (or with **Add Manually…** in the Add Mac sheet):
    ```sh
    hangar machines add <name>

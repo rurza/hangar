@@ -22,6 +22,7 @@ final class ManualClock: Sendable {
             #expect(letters.allSatisfy { PairingCodes.alphabet.contains($0) })
             #expect(!letters.contains { "01ILO".contains($0) })
             #expect(pairing.expiresAt == clock.now.addingTimeInterval(15 * 60))
+            #expect(pairing.expiresIn == 15 * 60)
         }
     }
 
@@ -93,5 +94,39 @@ final class ManualClock: Sendable {
         clock.advance(by: 16 * 60)
         #expect(throws: PairingError.invalidCode) { try codes.redeem(pairing.code) {} }
         #expect(codes.recentFailures == 1)
+    }
+
+    @Test func failuresAreCountedPerPeer() throws {
+        let clock = ManualClock()
+        let codes = PairingCodes(now: { clock.now })
+        let pairing = codes.create()
+        for _ in 0..<10 {
+            #expect(throws: PairingError.invalidCode) { try codes.redeem("AAAA-AAAA", from: "100.64.0.9") {} }
+        }
+        #expect(throws: PairingError.tooManyAttempts) { try codes.redeem(pairing.code, from: "100.64.0.9") {} }
+        // Another Mac on the tailnet is not locked out by the first one's mistakes.
+        #expect(throws: Never.self) { try codes.redeem(pairing.code, from: "100.64.0.10") {} }
+    }
+
+    @Test func aHundredFailuresFromAnyPeersLockEveryone() throws {
+        let clock = ManualClock()
+        let codes = PairingCodes(now: { clock.now })
+        let pairing = codes.create()
+        for attempt in 0..<100 {
+            #expect(throws: PairingError.invalidCode) {
+                try codes.redeem("AAAA-AAAA", from: "peer-\(attempt / 5)") {}
+            }
+        }
+        #expect(throws: PairingError.tooManyAttempts) { try codes.redeem(pairing.code, from: "someone-new") {} }
+    }
+
+    @Test func codesOfOtherLengthsNeverMatch() {
+        let clock = ManualClock()
+        let codes = PairingCodes(now: { clock.now })
+        let pairing = codes.create()
+        let letters = pairing.code.replacingOccurrences(of: "-", with: "")
+        #expect(!codes.redeem(String(letters.prefix(7))))
+        #expect(!codes.redeem(letters + "A"))
+        #expect(codes.redeem(letters))
     }
 }

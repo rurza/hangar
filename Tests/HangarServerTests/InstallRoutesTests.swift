@@ -35,6 +35,9 @@ import Testing
                 #expect(script.hasPrefix("#!/bin/sh\n"))
                 #expect(script.contains("HANGAR_SERVER='http://localhost'\n"))
                 #expect(!script.contains(InstallScript.originPlaceholder))
+                // An enrolled Mac is updated in place; a taken name gets a concrete example.
+                #expect(script.contains(#"check --config "$config_file""#))
+                #expect(script.contains("HANGAR_MACHINE_NAME=mini-2 sh"))
                 let parsed = try Self.shellParses(script)
                 #expect(parsed.ok, "sh -n: \(parsed.errors)")
             }

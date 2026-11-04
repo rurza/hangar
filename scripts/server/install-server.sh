@@ -75,6 +75,10 @@ fi
 cd "$ROOT"
 swift build -c release
 BIN_DIR="$(swift build -c release --show-bin-path)"
+# hangar-worker is built universal (Apple silicon and Intel), so the server can hand it to any build Mac.
+WORKER_BUILD=(swift build -c release --product hangar-worker --arch arm64 --arch x86_64)
+"${WORKER_BUILD[@]}"
+WORKER_BIN_DIR="$("${WORKER_BUILD[@]}" --show-bin-path)"
 
 ensure_install_dir
 as_installer install -m 755 "$BIN_DIR/hangar-server" "$INSTALL_DIR/hangar-server"
@@ -88,11 +92,11 @@ as_installer rm -rf "${INSTALL_DIR:?}/$WEB_BUNDLE"
 as_installer cp -R "$BIN_DIR/$WEB_BUNDLE" "$INSTALL_DIR/$WEB_BUNDLE"
 # The server serves the hangar-worker next to it at /install/hangar-worker. -S replaces it by renaming, so a worker
 # already running from this directory keeps its old copy until launchd restarts it.
-if [ ! -x "$BIN_DIR/hangar-worker" ]; then
-    echo "error: $BIN_DIR/hangar-worker is missing from the build output" >&2
+if [ ! -x "$WORKER_BIN_DIR/hangar-worker" ]; then
+    echo "error: $WORKER_BIN_DIR/hangar-worker is missing from the build output" >&2
     exit 1
 fi
-as_installer install -S -m 755 "$BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
+as_installer install -S -m 755 "$WORKER_BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
 if [ -x "$BIN_DIR/hangar" ]; then
     as_installer install -m 755 "$BIN_DIR/hangar" "$INSTALL_DIR/hangar"
 else

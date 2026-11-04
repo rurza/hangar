@@ -13,6 +13,9 @@ extension HangarServerApp {
     func addWorkerRoutes(to api: APIGroup) {
         let worker = api.group("worker").add(middleware: MachineAuth(machines: machines))
 
+        // `hangar-worker check`: is this token still a machine's? Never returns the token.
+        worker.get("me") { _, context in try Response.json(try context.requireMachine()) }
+
         worker.post("heartbeat") { request, context in
             let machine = try context.requireMachine()
             let input = try await request.decode(as: HeartbeatRequest.self, context: context)

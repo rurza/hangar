@@ -18,7 +18,7 @@ extension HangarServerApp {
             let input = try await request.decode(as: EnrollRequest.self, context: context)
             let maxConcurrentJobs = input.maxConcurrentJobs ?? 1
             try validateMachine(name: input.name, maxConcurrentJobs: maxConcurrentJobs)
-            let (machine, token) = try pairings.redeem(input.code) {
+            let (machine, token) = try pairings.redeem(input.code, from: context.peer) {
                 try createMachine(name: input.name, maxConcurrentJobs: maxConcurrentJobs)
             }
             events.publish(.server(.machine(machine)))

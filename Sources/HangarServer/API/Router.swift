@@ -1,14 +1,23 @@
 import Foundation
 import HangarCore
 import Hummingbird
+import NIOCore
 
 /// Request context of every Hangar route: the shared JSON coders (ISO 8601 dates with milliseconds).
-public struct HangarRequestContext: RequestContext {
+public struct HangarRequestContext: RemoteAddressRequestContext {
     public var coreContext: CoreRequestContextStorage
     /// The authenticated worker machine; set by `MachineAuth` on the worker routes, nil on the public ones.
     public var machine: Machine?
+    /// The connected peer; the pairing rate limit counts failures per address.
+    public let remoteAddress: SocketAddress?
 
-    public init(source: ApplicationRequestContextSource) { coreContext = .init(source: source) }
+    public init(source: ApplicationRequestContextSource) {
+        coreContext = .init(source: source)
+        remoteAddress = source.channel.remoteAddress
+    }
+
+    /// The peer's IP address, without the port; "unknown" when there is none (the router test client).
+    var peer: String { remoteAddress?.ipAddress ?? "unknown" }
 
     public var requestDecoder: JSONDecoder { JSONCoding.decoder }
     public var responseEncoder: JSONEncoder { JSONCoding.encoder }

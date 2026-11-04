@@ -48,14 +48,17 @@ public struct CreateMachineResponse: Codable, Equatable, Sendable {
     }
 }
 
-/// A one-time code that enrolls a new machine (`POST /machines/pairings`): `XXXX-XXXX`, valid until `expiresAt`.
+/// A one-time code that enrolls a new machine (`POST /machines/pairings`): `XXXX-XXXX`, valid until `expiresAt`,
+/// which is `expiresIn` seconds after the server made it (clients count down from that, not their own clock).
 public struct Pairing: Codable, Equatable, Sendable {
     public var code: String
     public var expiresAt: Date
+    public var expiresIn: Int
 
-    public init(code: String, expiresAt: Date) {
+    public init(code: String, expiresAt: Date, expiresIn: Int) {
         self.code = code
         self.expiresAt = expiresAt
+        self.expiresIn = expiresIn
     }
 }
 

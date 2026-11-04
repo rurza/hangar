@@ -43,8 +43,8 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /jobs/{id}/artifacts/{name}` | | `200` the file, `application/octet-stream`, `Content-Disposition: attachment` |
 | `GET /machines` | | `200` `[Machine]` with their latest reports; never tokens |
 | `POST /machines` | `CreateMachineRequest` | `201` `CreateMachineResponse` `{machine, token}` |
-| `POST /machines/pairings` | | `201` `Pairing` `{code, expiresAt}`: a one-time code (`XXXX-XXXX`, from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`) valid for 15 minutes; at most 5 are live, a sixth drops the oldest; kept in memory, so a restart forgets them |
-| `POST /enroll` | `EnrollRequest` `{code, name, maxConcurrentJobs?}` | `201` `CreateMachineResponse` `{machine, token}`, like `POST /machines` (`maxConcurrentJobs` defaults to 1) and a `machine` event; `403` `invalid_pairing_code` for an unknown, used or expired code; `409` `machine_exists` and `400` `invalid_name` leave the code usable; after 10 failed codes within 10 minutes every call is `429` `too_many_attempts` until the oldest failure is 10 minutes old. The code is case-insensitive and its dash optional. This is the install script's call: curl sends JSON without `Origin`, so the cross-site rules let it through |
+| `POST /machines/pairings` | | `201` `Pairing` `{code, expiresAt, expiresIn}`: a one-time code (`XXXX-XXXX`, from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`) valid for 15 minutes (`expiresIn` is the seconds left, for a countdown that does not depend on the client's clock); at most 5 are live, a sixth drops the oldest; kept in memory, so a restart forgets them |
+| `POST /enroll` | `EnrollRequest` `{code, name, maxConcurrentJobs?}` | `201` `CreateMachineResponse` `{machine, token}`, like `POST /machines` (`maxConcurrentJobs` defaults to 1) and a `machine` event; `403` `invalid_pairing_code` for an unknown, used or expired code; `409` `machine_exists` and `400` `invalid_name` leave the code usable; after 10 failed codes from one address within 10 minutes, that address gets `429` `too_many_attempts` until its oldest failure is 10 minutes old (and after 100 failures from all addresses together, every address does). The code is case-insensitive, its dash optional, and it is compared in constant time. This is the install script's call: curl sends JSON without `Origin`, so the cross-site rules let it through |
 | `DELETE /machines/{id}` | | `204` |
 | `GET /settings` | | `200` `SettingsStatus` `{version, appStoreConnect: {keyID, issuerID?, kind}?, githubTokenSet}`; `appStoreConnect` is absent unless `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` are set; `kind` is `"team"` when `HANGAR_ASC_ISSUER_ID` is set (non-empty) and `"individual"` otherwise, when `issuerID` is absent; the key and the token are never returned; `workerInstallAvailable` is true when the server has a `hangar-worker` to hand out at `GET /install/hangar-worker` |
 | `GET /asc/apps` | | `200` `[ASCAppSummary]` `{id, name, bundleID, registered, iconURL?}` sorted by name, the team's apps from App Store Connect; `registered` is true when a Hangar app already uses that ID; `iconURL` (https, 512 px) is absent when no icon was found (each source is given up after 5 s); `409` `asc_not_configured` without the key |
@@ -58,8 +58,8 @@ These live outside `/api/v1`. They are `GET`s, so the cross-site rules do not ap
 
 | Method and path | Response |
 | --- | --- |
-| `GET /install` | `200` `text/plain; charset=utf-8`: the worker install script, run as `curl -fsSL http://<server>:8787/install \| sh`. The server's address in it is `http://<Host>`, taken from the request's (already allowed) `Host`; a `Host` that is not a plain DNS name or IP address with a valid port gets `400` `invalid_request`. See [worker setup](worker-setup.md) |
-| `GET /install/hangar-worker` | `200` the `hangar-worker` binary next to `hangar-server` (symlinks resolved), `application/octet-stream` with `Content-Length` and `X-Hangar-Version`; `503` `worker_binary_missing` when there is none (install-server.sh installs it) |
+| `GET /install` | `200` `text/plain; charset=utf-8`: the worker install script, run as `curl -fsSL http://<server>:8787/install \| sh` against the server's own address and port (not a `tailscale serve` HTTPS proxy: the script uses the address it was fetched from, always over `http://`). The server's address in it is `http://<Host>`, taken from the request's (already allowed) `Host`; a `Host` that is not a plain DNS name or IP address with a valid port gets `400` `invalid_request`. See [worker setup](worker-setup.md) |
+| `GET /install/hangar-worker` | `200` the `hangar-worker` binary next to `hangar-server` (symlinks resolved), `application/octet-stream` with `Content-Length` and `X-Hangar-Version`; `503` `worker_binary_missing` when there is none (install-server.sh installs it, universal: Apple silicon and Intel) |
 
 ## Worker routes
 
@@ -67,6 +67,7 @@ Worker machines call these routes under `/api/v1/worker`. Each needs `Authorizat
 
 | Method and path | Request | Response |
 | --- | --- | --- |
+| `GET /worker/me` | | `200` `Machine`: the machine the token belongs to (never the token); `hangar-worker check` uses it |
 | `POST /worker/heartbeat` | `HeartbeatRequest` | `200` `HeartbeatResponse`: the IDs of the machine's jobs a user asked to cancel |
 | `GET /worker/jobs/next?wait=` | `wait` in seconds, default 25, at most 60 | `200` `JobAssignment` for the oldest job assigned to the machine; `204` when none is assigned within `wait` |
 | `POST /worker/jobs/{id}/start` | | `200` `Job`, now `running`; the job must be `assigned` |
