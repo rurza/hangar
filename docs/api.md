@@ -4,6 +4,11 @@ The `hangar` CLI and the web UI talk to the server only through this API. Every 
 
 **No public endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine; afterwards only its hash is stored. Error messages name variables but never contain their values.
 
+## Request rules
+
+- Every request's `Host` must name the server (see [server setup](server-setup.md#options)): its bound address, its host or MagicDNS name, a `*.ts.net` name or an `--allowed-host`. Any other gets `421` `host_not_allowed`, on every route including the web UI.
+- On the public routes (not `/api/v1/worker/*`), every method but `GET`, `HEAD` and `OPTIONS` is refused with `403` `cross_site_request` when `Sec-Fetch-Site` is present and not `same-origin` or `none`, or when `Origin` names another host or port than `Host`. A request body must be sent as `Content-Type: application/json` (parameters such as `charset` are fine), else `415` `unsupported_media_type`; bodiless calls such as `DELETE` or a cancel need no Content-Type. The CLI sends neither `Origin` nor `Sec-Fetch-Site`.
+
 ## Routes
 
 An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine's `{id}` is its name or its UUID.
@@ -69,8 +74,11 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | --- | --- |
 | `400` | `invalid_request` (malformed body or query), `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
 | `401` | `unauthorized` (worker routes) |
+| `403` | `cross_site_request` |
 | `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found` |
 | `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured` |
+| `415` | `unsupported_media_type` |
+| `421` | `host_not_allowed` |
 | `502` | `app_store_connect_not_configured`, `build_number_source_unavailable` (the message names the source), `build_number_not_integer`, `source_host_error`, `upstream_unavailable` |
 | `500` | `internal_error` |
 
