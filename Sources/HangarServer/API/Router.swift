@@ -21,6 +21,8 @@ extension HangarServerApp {
     public func buildRouter(webRoot: URL? = WebUI.root) -> Router<HangarRequestContext> {
         let router = Router(context: HangarRequestContext.self)
         router.add(middleware: APIErrorMiddleware())
+        // Every route, the UI's included: a DNS-rebinding page arrives under a Host that is not this server's.
+        router.add(middleware: HostCheck(policy: configuration.hostPolicy))
         // The cross-site guard skips the worker routes, which a machine token authenticates.
         let api = router.group("api/v1").add(middleware: CrossSiteGuard())
         api.get("health") { _, _ in try Response.json(HealthResponse(ok: true, version: HangarVersion.current)) }

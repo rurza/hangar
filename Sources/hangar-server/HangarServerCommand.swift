@@ -25,6 +25,12 @@ struct HangarServerCommand: AsyncParsableCommand {
         var retentionDays: Int = 30
         @Option(help: "Machines with less free disk get no new jobs.")
         var minFreeDiskGb: Double = 20
+        @Option(
+            name: .customLong("allowed-host"),
+            help: ArgumentHelp(
+                "Another host name the server answers to (repeatable); HANGAR_ALLOWED_HOSTS takes a comma-separated list.",
+                discussion: "Always allowed: the bound address, localhost when bound to loopback, this Mac's host name, its MagicDNS name and any *.ts.net name."))
+        var allowedHosts: [String] = []
 
         func run() async throws {
             LoggingSystem.bootstrap { StreamLogHandler.standardError(label: $0) }
@@ -53,14 +59,20 @@ struct HangarServerCommand: AsyncParsableCommand {
             try FileManager.default.createDirectory(atPath: resolvedDirectory, withIntermediateDirectories: true)
             let database = try Database(path: resolvedDirectory + "/hangar.sqlite")
             try database.migrate()
+            let extraHosts = allowedHosts
+                + (environment["HANGAR_ALLOWED_HOSTS"] ?? "").split(separator: ",").map {
+                    $0.trimmingCharacters(in: .whitespaces)
+                }.filter { !$0.isEmpty }
+            let localNames = await HostPolicy.detectLocalNames(runner: LiveProcessRunner())
             let configuration = ServerConfiguration(
                 host: resolvedHost!, port: resolvedPort, dataDirectory: resolvedDirectory,
-                retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb)
+                retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb, allowedHosts: localNames + extraHosts)
             let server = try HangarServerApp(
                 configuration: configuration, database: database,
                 appStoreConnectFactory: { LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport()) })
 
             logger.info("data directory \(resolvedDirectory)")
+            logger.info("allowed host names: \(configuration.hostPolicy.description)")
             logger.info("Hangar is running at \(Self.webURL(host: configuration.host, port: configuration.port))")
             // runService() returns after SIGTERM/SIGINT; cancelling the group then stops the scheduler and sweeper.
             try await withThrowingTaskGroup(of: Void.self) { group in

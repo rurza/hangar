@@ -13,10 +13,13 @@ public struct ServerConfiguration: Sendable {
     /// A job running this long that its machine's heartbeat no longer lists fails: the worker lost track of it
     /// (it restarted, or its finish never arrived). The grace covers a heartbeat sent just before the job started.
     public var untrackedJobGrace: TimeInterval
+    /// Host names the server answers to besides the bound host, its loopback names and `*.ts.net` (see `HostPolicy`):
+    /// this Mac's names found at start-up and `--allowed-host` / `HANGAR_ALLOWED_HOSTS`.
+    public var allowedHosts: [String]
 
     public init(
         host: String, port: Int = 8787, dataDirectory: String, retentionDays: Int = 30, minFreeDiskGB: Double = 20,
-        untrackedJobGrace: TimeInterval = 60
+        untrackedJobGrace: TimeInterval = 60, allowedHosts: [String] = []
     ) {
         self.host = host
         self.port = port
@@ -24,7 +27,11 @@ public struct ServerConfiguration: Sendable {
         self.retentionDays = retentionDays
         self.minFreeDiskGB = minFreeDiskGB
         self.untrackedJobGrace = untrackedJobGrace
+        self.allowedHosts = allowedHosts
     }
+
+    /// The Host values the server answers.
+    public var hostPolicy: HostPolicy { HostPolicy(boundHost: host, extraNames: allowedHosts) }
 
     var jobsDirectory: URL { URL(fileURLWithPath: dataDirectory).appendingPathComponent("jobs") }
     var masterKeyPath: String { URL(fileURLWithPath: dataDirectory).appendingPathComponent("master.key").path }

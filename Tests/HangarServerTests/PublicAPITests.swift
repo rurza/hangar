@@ -46,13 +46,14 @@ struct APIFixture {
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient = {
             RecordingASC(credentials: $0)
         },
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = []
     ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
         let database = try HangarServer.Database(path: ":memory:")
         try database.migrate()
         server = try HangarServerApp(
-            configuration: ServerConfiguration(host: "127.0.0.1", dataDirectory: directory.path), database: database,
+            configuration: ServerConfiguration(
+                host: boundHost, dataDirectory: directory.path, allowedHosts: allowedHosts), database: database,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
             numberSources: sources.map { sources in { @Sendable in sources } }, now: now)
     }

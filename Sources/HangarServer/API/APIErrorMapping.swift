@@ -34,6 +34,7 @@ enum APIErrorMapping {
     static func status(code: String) -> HTTPResponse.Status {
         if code == "unauthorized" { return .unauthorized }
         if code == "cross_site_request" { return .forbidden }
+        if code == "host_not_allowed" { return .misdirectedRequest }
         if code == "unsupported_media_type" { return .unsupportedMediaType }
         if notFoundCodes.contains(code) { return .notFound }
         if conflictCodes.contains(code) { return .conflict }
