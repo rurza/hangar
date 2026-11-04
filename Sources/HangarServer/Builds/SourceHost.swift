@@ -11,5 +11,6 @@ public protocol SourceHost: Sendable {
 public enum SourceHostError: Error, Equatable, Sendable {
     case unsupportedRepository(String)
     case refNotFound(String)
+    case invalidPath(String)
     case http(status: Int, body: String)
 }

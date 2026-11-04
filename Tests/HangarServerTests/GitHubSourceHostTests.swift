@@ -91,4 +91,38 @@ import Testing
             _ = try await host.readFile(repoURL: "https://github.com/a/b", commit: "abc", path: ".hangar.yml", token: nil)
         }
     }
+
+    @Test func malformedOwnerOrRepoMakesNoRequest() async throws {
+        for url in ["https://github.com/a b/c", "https://github.com/../c", "https://github.com/a/c?x=1", "https://github.com/a/#x", "https://github.com/a/.."] {
+            let (host, transport) = make([])
+            await #expect(throws: SourceHostError.unsupportedRepository(url)) {
+                _ = try await host.resolveCommit(repoURL: url, ref: "main", token: nil)
+            }
+            #expect(transport.requests.isEmpty)
+        }
+    }
+
+    @Test func dotSegmentsInRefsMakeNoRequest() async throws {
+        for ref in ["../x", "a/./b", "a//b", "", "a/"] {
+            let (host, transport) = make([])
+            await #expect(throws: SourceHostError.refNotFound(ref)) {
+                _ = try await host.resolveCommit(repoURL: "https://github.com/a/b", ref: ref, token: nil)
+            }
+            #expect(transport.requests.isEmpty)
+        }
+    }
+
+    @Test func dotSegmentsInPathsMakeNoRequest() async throws {
+        let (host, transport) = make([])
+        await #expect(throws: SourceHostError.invalidPath("../secrets")) {
+            _ = try await host.readFile(repoURL: "https://github.com/a/b", commit: "abc", path: "../secrets", token: nil)
+        }
+        #expect(transport.requests.isEmpty)
+    }
+
+    @Test func queryAndFragmentCharactersInRefsAreEscaped() async throws {
+        let (host, transport) = make([.init(body: #"{"sha":"abc"}"#)])
+        _ = try await host.resolveCommit(repoURL: "https://github.com/a/b", ref: "x?y#z", token: nil)
+        #expect(transport.requests.first?.url?.absoluteString == "https://api.github.com/repos/a/b/commits/x%3Fy%23z")
+    }
 }
