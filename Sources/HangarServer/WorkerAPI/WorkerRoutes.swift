@@ -38,7 +38,11 @@ extension HangarServerApp {
 
         worker.post("jobs/:id/start") { _, context in
             let job = try workerJob(context)
-            guard try builds.transitionJob(id: job.id, from: [.assigned], to: .running, at: now()) else {
+            // Machine-guarded: a job reassigned since `workerJob` looked it up is not started by this machine.
+            guard
+                try builds.transitionJob(
+                    id: job.id, from: [.assigned], to: .running, at: now(), machineID: try context.requireMachine().id)
+            else {
                 throw try stateConflict(job.id, "cannot start")
             }
             return try Response.json(publishChange(of: job))
@@ -85,7 +89,7 @@ extension HangarServerApp {
             guard
                 try builds.transitionJob(
                     id: job.id, from: [.assigned, .running], to: result.status, at: now(),
-                    failureReason: result.failureReason)
+                    failureReason: result.failureReason, machineID: try context.requireMachine().id)
             else { throw try stateConflict(job.id, "cannot finish") }
             try builds.setOutputs(jobID: job.id, result.outputs)
             cancelRequests.clear(job.id)

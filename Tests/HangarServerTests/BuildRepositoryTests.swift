@@ -123,6 +123,22 @@ import Testing
         #expect(try builds.job(id: job)?.status == .succeeded)
     }
 
+    @Test func machineGuardedTransitionRefusesAJobReassignedToAnotherMachine() throws {
+        let build = makeBuild()
+        try builds.insert(build, workflow: workflow)
+        let job = build.jobs[0].id
+        let (machineA, machineB) = (UUID(), UUID())
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(try builds.assign(jobID: job, to: machineA, at: t0))
+        // A looked the job up while it was its own; it is requeued and assigned to B before A transitions it.
+        #expect(try builds.unassign(jobID: job))
+        #expect(try builds.assign(jobID: job, to: machineB, at: t0))
+        #expect(!(try builds.transitionJob(id: job, from: [.assigned], to: .running, at: t0, machineID: machineA)))
+        #expect(try builds.job(id: job)?.status == .assigned)
+        #expect(try builds.transitionJob(id: job, from: [.assigned], to: .running, at: t0, machineID: machineB))
+        #expect(try builds.job(id: job)?.status == .running)
+    }
+
     @Test func duplicateReservedNumberThrows() throws {
         try builds.reserveNumber(appID: app.id, number: 5, buildID: UUID())
         #expect(throws: (any Error).self) { try builds.reserveNumber(appID: app.id, number: 5, buildID: UUID()) }

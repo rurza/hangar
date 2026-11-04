@@ -150,28 +150,35 @@ public struct BuildRepository: Sendable {
         }
     }
 
-    /// Like `setJobStatus`, but only when the job is currently in one of `from`; true when it moved.
+    /// Like `setJobStatus`, but only when the job is currently in one of `from` and, with `machineID`, still
+    /// assigned to that machine (checked in the same statement); true when it moved.
     @discardableResult
     public func transitionJob(
-        id: UUID, from: Set<JobStatus>, to status: JobStatus, at date: Date, failureReason: String? = nil
+        id: UUID, from: Set<JobStatus>, to status: JobStatus, at date: Date, failureReason: String? = nil,
+        machineID: UUID? = nil
     ) throws -> Bool {
         guard !from.isEmpty else { return false }
         return try database.write { db in
-            try Self.setJobStatus(db, id: id, from: from, to: status, at: date, failureReason: failureReason)
+            try Self.setJobStatus(
+                db, id: id, from: from, to: status, at: date, failureReason: failureReason, machineID: machineID)
             return db.changesCount == 1
         }
     }
 
     private static func setJobStatus(
         _ db: GRDB.Database, id: UUID, from: Set<JobStatus>?, to status: JobStatus, at date: Date,
-        failureReason: String?
+        failureReason: String?, machineID: UUID? = nil
     ) throws {
         var arguments: StatementArguments = [status.rawValue, dbTime(date), failureReason, id.uuidString]
         var condition = ""
+        // Bare `?` after `?4` are numbered ?5, ?6, …
         if let from {
-            // Bare `?` after `?4` are numbered ?5, ?6, …
-            condition = " AND status IN (\(Array(repeating: "?", count: from.count).joined(separator: ", ")))"
+            condition += " AND status IN (\(Array(repeating: "?", count: from.count).joined(separator: ", ")))"
             arguments += StatementArguments(from.map(\.rawValue))
+        }
+        if let machineID {
+            condition += " AND machine_id = ?"
+            arguments += [machineID.uuidString]
         }
         try db.execute(
             sql: """
