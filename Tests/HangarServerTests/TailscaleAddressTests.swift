@@ -6,11 +6,14 @@ import Testing
 
 @Suite struct TailscaleAddressTests {
     private let appBinary = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+    private let homebrew = "/opt/homebrew/bin/tailscale"
+    private let intel = "/usr/local/bin/tailscale"
+    private let allInstalled: @Sendable (String) -> Bool = { _ in true }
 
     @Test func usesTheAppBinaryAndTakesTheFirstIPv4Line() async {
         let runner = RecordingProcessRunner()
         runner.script({ $0.executable == appBinary }, lines: ["100.64.1.2", "100.64.9.9"])
-        #expect(await TailscaleAddress.detect(runner: runner) == "100.64.1.2")
+        #expect(await TailscaleAddress.detect(runner: runner, fileExists: allInstalled) == "100.64.1.2")
         #expect(runner.commands.map(\.executable) == [appBinary])
         #expect(runner.commands[0].arguments == ["ip", "-4"])
     }
@@ -19,18 +22,33 @@ import Testing
         let runner = RecordingProcessRunner()
         runner.script({ $0.executable == appBinary }, lines: ["no such file"], exitCode: 127)
         runner.script({ $0.executable == "tailscale" }, lines: ["100.100.1.1"])
-        #expect(await TailscaleAddress.detect(runner: runner) == "100.100.1.1")
+        #expect(await TailscaleAddress.detect(runner: runner, fileExists: { $0 == appBinary }) == "100.100.1.1")
         #expect(runner.commands.map(\.executable) == [appBinary, "tailscale"])
+    }
+
+    @Test func triesTheHomebrewCLIWhenTheAppIsMissing() async {
+        let runner = RecordingProcessRunner()
+        runner.script({ $0.executable == homebrew }, lines: ["100.64.3.4"])
+        let installed: @Sendable (String) -> Bool = { $0 == homebrew }
+        #expect(await TailscaleAddress.detect(runner: runner, fileExists: installed) == "100.64.3.4")
+        #expect(runner.commands.map(\.executable) == [homebrew])
+    }
+
+    @Test func triesIntelHomebrewThenPathInOrder() async {
+        let runner = RecordingProcessRunner()
+        runner.script({ _ in true }, lines: ["stopped"], exitCode: 1)
+        #expect(await TailscaleAddress.detect(runner: runner, fileExists: allInstalled) == nil)
+        #expect(runner.commands.map(\.executable) == [appBinary, homebrew, intel, "tailscale"])
     }
 
     @Test func returnsNilWhenBothFailOrPrintNoAddress() async {
         let failing = RecordingProcessRunner()
         failing.script({ _ in true }, lines: ["Tailscale is stopped."], exitCode: 1)
-        #expect(await TailscaleAddress.detect(runner: failing) == nil)
+        #expect(await TailscaleAddress.detect(runner: failing, fileExists: allInstalled) == nil)
 
         let garbage = RecordingProcessRunner()
         garbage.script({ _ in true }, lines: ["", "fd7a:115c::1", "not an ip"])
-        #expect(await TailscaleAddress.detect(runner: garbage) == nil)
+        #expect(await TailscaleAddress.detect(runner: garbage, fileExists: allInstalled) == nil)
     }
 
     /// Fails the first `failures` `tailscale` calls (both candidates count), then prints an address.
@@ -49,7 +67,7 @@ import Testing
     @Test func waitSucceedsAfterARetry() async {
         let runner = FlakyRunner(failures: 4)  // two rounds of two candidates
         let address = await TailscaleAddress.waitForAddress(
-            runner: runner, timeout: .seconds(2), interval: .milliseconds(5))
+            runner: runner, timeout: .seconds(2), interval: .milliseconds(5), fileExists: { $0 == appBinary })
         #expect(address == "100.64.0.7")
         #expect(runner.callCount == 5)
     }
@@ -57,7 +75,7 @@ import Testing
     @Test func waitGivesUpAfterTheTimeout() async {
         let runner = FlakyRunner(failures: .max)
         let address = await TailscaleAddress.waitForAddress(
-            runner: runner, timeout: .milliseconds(40), interval: .milliseconds(10))
+            runner: runner, timeout: .milliseconds(40), interval: .milliseconds(10), fileExists: { $0 == appBinary })
         #expect(address == nil)
         #expect(runner.callCount >= 2)
     }
