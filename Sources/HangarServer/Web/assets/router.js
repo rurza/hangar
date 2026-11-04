@@ -12,6 +12,9 @@ const routes = [];
 let outlet = null;
 let afterRender = null;
 let current = null; // { cleanups, controller }
+let shownURL = null; // path, query and hash of the page on screen
+const leaveGuards = new Set();
+let guarding = false;
 
 /** Registers a page for a path pattern such as `/apps/:app`. Earlier registrations win. */
 export function route(pattern, render) {
@@ -35,6 +38,44 @@ export function route(pattern, render) {
 export function onCleanup(fn) {
   if (current) current.cleanups.push(fn);
   else fn();
+}
+
+/**
+ * Adds `guard`, an async function resolving to true when the page on screen may be left, and returns the function
+ * that removes it. Browser Back and Forward ask every guard; when one says no, the page stays and its URL is
+ * pushed back onto the history. In-app links are not asked (pages whose links stay reachable catch those
+ * themselves); `navigate()` is not asked either.
+ */
+export function addLeaveGuard(guard) {
+  leaveGuards.add(guard);
+  return () => leaveGuards.delete(guard);
+}
+
+async function onPopState() {
+  // The URL has already changed. While a guard is asking, another Back is undone at once.
+  if (guarding) {
+    history.pushState(null, '', shownURL);
+    return;
+  }
+  if (leaveGuards.size > 0) {
+    guarding = true;
+    let stay = false;
+    try {
+      for (const guard of [...leaveGuards]) {
+        if (!(await guard())) {
+          stay = true;
+          break;
+        }
+      }
+    } finally {
+      guarding = false;
+    }
+    if (stay) {
+      history.pushState(null, '', shownURL);
+      return;
+    }
+  }
+  render();
 }
 
 /** Goes to `path` (with optional query), adding a history entry unless `replace` is set. */
@@ -89,6 +130,7 @@ async function render() {
   leave();
   closeAllSheets();
   const path = location.pathname;
+  shownURL = path + location.search + location.hash;
   const state = { cleanups: [], controller: new AbortController() };
   current = state;
   const isCurrent = () => current === state;
@@ -169,6 +211,6 @@ export function start(outletElement, { onRendered } = {}) {
   outlet = outletElement;
   afterRender = onRendered;
   document.addEventListener('click', onLinkClick);
-  window.addEventListener('popstate', () => render());
+  window.addEventListener('popstate', onPopState);
   render();
 }

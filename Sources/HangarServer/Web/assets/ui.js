@@ -199,14 +199,19 @@ let sheetCount = 0;
  * the buttons are disabled. Afterwards the sheet closes, unless `onClick` returned `false` or threw — a thrown
  * error's message is shown inside the sheet. Esc, the close button and a click on the backdrop close it, focus
  * stays inside while it is open and returns to where it was afterwards. `onClose` runs once it has closed. With
- * `submitOnEnter`, Return in a single-line input runs the first primary action, as in a form.
+ * `submitOnEnter`, Return in a single-line input runs the first primary action, as in a form. `beforeDismiss`
+ * (async, resolving to a boolean) is asked before Esc, the close button or the backdrop closes the sheet; false
+ * keeps it open. Actions and `close()` are not asked.
  */
-export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary' }], onClose, submitOnEnter = false } = {}) {
+export function sheet({
+  title, body, actions = [{ label: 'Done', kind: 'primary' }], onClose, submitOnEnter = false, beforeDismiss,
+} = {}) {
   const id = `sheet-title-${++sheetCount}`;
   const returnFocus = document.activeElement;
   const error = h('p', { class: 'sheet-error', role: 'alert', hidden: true });
   let closed = false;
   let busy = false;
+  let asking = false;
 
   const buttons = actions.map((action) => h('button', {
     type: 'button',
@@ -215,7 +220,7 @@ export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary'
     onClick: () => run(action),
   }, action.label));
 
-  const closeButton = h('button', { type: 'button', class: 'sheet-close', 'aria-label': 'Close', onClick: () => close() },
+  const closeButton = h('button', { type: 'button', class: 'sheet-close', 'aria-label': 'Close', onClick: () => dismiss() },
     svg('svg', { viewBox: '0 0 24 24', 'aria-hidden': 'true' },
       svg('path', { d: 'M7 7l10 10M17 7L7 17' })));
 
@@ -230,13 +235,13 @@ export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary'
   });
   backdrop.addEventListener('click', (event) => {
     // Only a press that started and ended on the backdrop closes, not a text selection dragged out of the sheet.
-    if (event.target === backdrop && backdrop.dataset.pressed === 'true') close();
+    if (event.target === backdrop && backdrop.dataset.pressed === 'true') dismiss();
     delete backdrop.dataset.pressed;
   });
   backdrop.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.stopPropagation();
-      close();
+      dismiss();
     } else if (event.key === 'Tab') {
       trap(event);
     } else if (event.key === 'Enter' && submitOnEnter && !event.isComposing && event.target instanceof HTMLInputElement
@@ -286,6 +291,19 @@ export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary'
   function setError(message) {
     error.textContent = message ?? '';
     error.hidden = !message;
+  }
+
+  async function dismiss() {
+    if (closed || asking) return;
+    if (beforeDismiss) {
+      asking = true;
+      try {
+        if (!(await beforeDismiss())) return;
+      } finally {
+        asking = false;
+      }
+    }
+    close();
   }
 
   function close() {

@@ -2,6 +2,7 @@
 // the new machine's token once, with the install commands) and Remove.
 
 import { api, events, seg } from '../api.js';
+import { addLeaveGuard } from '../router.js';
 import {
   button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring, selectContents,
   sheet, toast,
@@ -277,8 +278,11 @@ function openTokenSheet(machine, token) {
   const commandBlock = h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'Install commands' },
     h('code', null, commands));
 
+  let tokenCopied = false;
+
   async function copy(text, block, what) {
     if (await copyText(text)) {
+      if (text === token) tokenCopied = true;
       toast(`Copied the ${what}`, 'success');
       return;
     }
@@ -286,8 +290,21 @@ function openTokenSheet(machine, token) {
     toast(`The ${what} is selected. Press ⌘C to copy it.`, 'info');
   }
 
+  // The token cannot be shown again, so Esc, the backdrop, the close button and Back ask first unless it was
+  // copied; Done closes at once.
+  const mayDismiss = () => tokenCopied || confirm({
+    title: 'Close Without the Token?',
+    message: 'You haven’t copied the token. It is not shown again; without it you must remove this machine '
+      + 'and add it again.',
+    confirmLabel: 'Close',
+    destructive: true,
+  });
+  const removeGuard = addLeaveGuard(mayDismiss);
+
   const isLocal = LOCAL_HOSTS.has(location.hostname);
   sheet({
+    beforeDismiss: mayDismiss,
+    onClose: removeGuard,
     title: `${machine.name} Added`,
     body: h('div', { class: 'form token-sheet' },
       h('p', { class: 'token-warning', role: 'note' }, 'Save this token now; it is not shown again.'),
