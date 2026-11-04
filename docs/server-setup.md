@@ -18,7 +18,7 @@ scripts/server/install-server.sh
 
 The script builds in release mode, copies `hangar-server` (and `hangar`, when the build produces it) to `/usr/local/bin` (using `sudo` only if that directory is not writable), writes `~/Library/LaunchAgents/app.hangar.server.plist` and loads it with `launchctl bootstrap gui/$(id -u)`. The agent starts at login and is restarted if it exits. Run the script again to upgrade; it replaces the old instance.
 
-To install without `sudo`, pick a directory you own: `scripts/server/install-server.sh --bin-dir ~/.local/bin`. The directory is created if missing, the launchd plist points at the binary there, and the web UI bundle goes beside it. (`--render-only <file>` just writes the plist, for testing.)
+To install without `sudo`, pick a directory you own: `scripts/server/install-server.sh --bin-dir ~/.local/bin`. The directory is created if missing, the launchd plist points at the binary there, and the web UI bundle goes beside it. (`--render-only <file>` just writes the plist, for testing.) The scripts no longer read an `INSTALL_DIR` environment variable; pass `--bin-dir` instead.
 
 The web UI ships in `Hangar_HangarServer.bundle`, which the script copies next to `hangar-server` (replacing an older copy). If you copy the binary by hand, copy the bundle beside it too; without it the server still runs and the API works, but the UI pages answer `503` "Web UI not installed".
 

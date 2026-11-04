@@ -50,6 +50,10 @@ workflows:
 
 Secret variables are available to `ci_scripts` hooks and post-actions but not to `xcodebuild`, so not to build phases: xcodebuild records its environment in DerivedData logs and in the result bundle, which is uploaded as an artifact. If a build phase needs a secret, write it to a file from `ci_pre_xcodebuild.sh`.
 
+### Reserved names
+
+Hangar sets `CI_*` (the Xcode Cloud variables), `PATH`, `HOME`, `DEVELOPER_DIR`, `USER`, `LOGNAME`, `TMPDIR` and `SHELL` for every job; a variable with one of these names is ignored with a warning in the job log, and the web UI refuses to create one. `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden. `TMPDIR` is the job's own `tmp` folder inside the job directory, created before the first hook and deleted with the job.
+
 ### Private Swift packages
 
 Swift packages are resolved before the archive, in a separate `xcodebuild -resolvePackageDependencies` run that uses the system git. That run, and only that run, can authenticate to github.com with the `HANGAR_GITHUB_TOKEN` variable, so private packages hosted on GitHub resolve as long as the token can read them. The archive itself then runs with automatic package resolution disabled and without the token. Packages on other hosts must be reachable without credentials.

@@ -21,7 +21,7 @@ Phase 1: the TestFlight path (archive, export, upload to App Store Connect, wait
 
 Requires macOS 15+, Xcode and [Tailscale](https://tailscale.com) on every Mac. Details: [server setup](docs/server-setup.md), [worker setup](docs/worker-setup.md).
 
-1. **Install the server** on the always-on Mac. Add `--bin-dir ~/.local/bin` to install without sudo:
+1. **Install the server** on the always-on Mac. Add `--bin-dir ~/.local/bin` to install without sudo (the install scripts no longer read `INSTALL_DIR`; use `--bin-dir`):
 
    ```sh
    scripts/server/install-server.sh
