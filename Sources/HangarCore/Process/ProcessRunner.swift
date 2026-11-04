@@ -74,6 +74,10 @@ extension LiveProcessRunner {
             var cancelled = false
             /// Bumped on every chunk after exit, so only the latest idle timer can fire.
             var idleGeneration = 0
+            /// True while `onLine` is being called outside the lock; the idle cap must not fire then.
+            var delivering = false
+            /// Set once the idle cap gave up on the pipe; later chunks are ignored.
+            var abandoned = false
         }
 
         private let state = Mutex(State())
@@ -142,22 +146,37 @@ extension LiveProcessRunner {
             }
         }
 
+        /// Runs on the pipe's serial handler queue, so chunks are processed one at a time and in order.
+        /// Lines are parsed under the lock but delivered to `onLine` outside it, so a slow consumer never blocks
+        /// `cancel()` or the exit handler.
         private func receive(_ data: Data) {
-            state.withLock { state in
-                guard state.continuation != nil else { return }
+            let batch = state.withLock { state -> (lines: [String], onLine: @Sendable (String) -> Void)? in
+                guard state.continuation != nil, !state.abandoned, let onLine = state.onLine else { return nil }
+                state.delivering = true
+                var lines: [String] = []
                 if data.isEmpty {
                     state.readHandle?.readabilityHandler = nil
-                    state.reachedEOF = true
-                    flushPartialLine(&state)
-                    finishIfDone(&state)
-                    return
+                    if let tail = takePartialLine(&state) { lines.append(tail) }
+                } else {
+                    state.buffer.append(data)
+                    while let newline = state.buffer.firstIndex(of: 0x0A) {
+                        lines.append(String(decoding: state.buffer[state.buffer.startIndex..<newline], as: UTF8.self))
+                        state.buffer.removeSubrange(state.buffer.startIndex...newline)
+                    }
                 }
-                if state.exitCode != nil { armIdleTimer(&state) }
-                state.buffer.append(data)
-                while let newline = state.buffer.firstIndex(of: 0x0A) {
-                    let line = String(decoding: state.buffer[state.buffer.startIndex..<newline], as: UTF8.self)
-                    state.buffer.removeSubrange(state.buffer.startIndex...newline)
-                    emit(line, &state)
+                state.lines.append(contentsOf: lines)
+                return (lines, onLine)
+            }
+            guard let batch else { return }
+            batch.lines.forEach(batch.onLine)
+            state.withLock { state in
+                state.delivering = false
+                if data.isEmpty {
+                    state.reachedEOF = true
+                    finishIfDone(&state)
+                } else if state.exitCode != nil {
+                    // Measured from the end of delivery, so the cap only counts time the pipe sat idle.
+                    armIdleTimer(&state)
                 }
             }
         }
@@ -172,31 +191,37 @@ extension LiveProcessRunner {
         }
 
         /// After the child exits, output is read until EOF. The only exception is a grandchild that inherited the
-        /// pipe and keeps it open: if no data arrives for 1 s, stop waiting. Re-armed on every received chunk.
+        /// pipe and keeps it open: if nothing arrives for 1 s while no delivery is running, stop waiting.
+        /// Re-armed after every processed chunk.
         private func armIdleTimer(_ current: inout State) {
             current.idleGeneration += 1
             let generation = current.idleGeneration
             DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(1)) { [self] in
-                state.withLock { state in
-                    guard state.continuation != nil, state.idleGeneration == generation else { return }
+                let batch = state.withLock { state -> (tail: String, onLine: @Sendable (String) -> Void)? in
+                    guard state.continuation != nil, state.idleGeneration == generation, !state.delivering,
+                        let onLine = state.onLine
+                    else { return nil }
+                    state.abandoned = true
+                    state.delivering = true
                     state.readHandle?.readabilityHandler = nil
+                    let tail = takePartialLine(&state)
+                    if let tail { state.lines.append(tail) }
+                    return (tail ?? "", onLine)
+                }
+                guard let batch else { return }
+                if !batch.tail.isEmpty { batch.onLine(batch.tail) }
+                state.withLock { state in
+                    state.delivering = false
                     state.reachedEOF = true
-                    flushPartialLine(&state)
                     finishIfDone(&state)
                 }
             }
         }
 
-        private func emit(_ line: String, _ state: inout State) {
-            state.lines.append(line)
-            state.onLine?(line)
-        }
-
-        private func flushPartialLine(_ state: inout State) {
-            guard !state.buffer.isEmpty else { return }
-            let line = String(decoding: state.buffer, as: UTF8.self)
-            state.buffer.removeAll()
-            emit(line, &state)
+        private func takePartialLine(_ state: inout State) -> String? {
+            guard !state.buffer.isEmpty else { return nil }
+            defer { state.buffer.removeAll() }
+            return String(decoding: state.buffer, as: UTF8.self)
         }
 
         private func finishIfDone(_ state: inout State) {

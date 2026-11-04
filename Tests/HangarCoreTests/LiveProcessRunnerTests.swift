@@ -62,15 +62,18 @@ final class LineCollector: Sendable {
     }
 
     @Test func slowConsumerStillReceivesEveryLineOfLargeOutput() async throws {
+        // 600 lines of 120 bytes exceed the 64 KB pipe buffer, so the child exits while data is still unread.
+        // At 10 ms per line, delivering one pipe chunk takes longer than the 1 s idle cap.
+        let text = String(repeating: "x", count: 119)
         let received = LineCollector()
         let outcome = try await runner.run(
-            ProcessCommand(executable: "/usr/bin/seq", arguments: ["1", "20000"])
+            ProcessCommand(executable: "/bin/sh", arguments: ["-c", "i=0; while [ $i -lt 600 ]; do echo \(text); i=$((i+1)); done"])
         ) { line in
             received.append(line)
-            let end = ContinuousClock.now + .microseconds(200)
-            while ContinuousClock.now < end {}
+            Thread.sleep(forTimeInterval: 0.01)
         }
         #expect(outcome.exitCode == 0)
-        #expect(received.values == (1...20000).map(String.init))
+        #expect(received.values == Array(repeating: text, count: 600))
+        #expect(outcome.output == Array(repeating: text, count: 600).joined(separator: "\n"))
     }
 }
