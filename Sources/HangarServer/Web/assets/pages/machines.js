@@ -302,7 +302,8 @@ function openTokenSheet(machine, token) {
           button('Copy Commands', { kind: 'plain', class: 'button button-plain button-small', onClick: () => copy(commands, commandBlock, 'commands') })),
         h('p', { class: 'field-hint' },
           `On ${machine.name}, as the hangar user, in a checkout of the Hangar repository. The first line waits `
-          + 'for the token: paste it and press Return. Nothing is shown while you paste.'),
+          + 'for the token: paste it and press Return. Nothing is shown while you paste. To install without sudo, '
+          + 'add --bin-dir ~/.local/bin to the second command.'),
         commandBlock,
         isLocal
           ? h('p', { class: 'field-hint field-error' },

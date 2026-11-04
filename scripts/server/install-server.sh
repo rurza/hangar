@@ -1,10 +1,35 @@
 #!/bin/bash
-# Builds Hangar in release mode, installs hangar-server with its web UI bundle (and hangar, once it exists) into
-# /usr/local/bin, and (re)loads the app.hangar.server launchd agent for the current user.
+# Builds Hangar in release mode, installs hangar-server with its web UI bundle (and hangar, when it was built)
+# into a bin directory, and (re)loads the app.hangar.server launchd agent for the current user.
+#
+# Usage: install-server.sh [--bin-dir <dir>]
+#   --bin-dir <dir>      where to install (default /usr/local/bin). Created if missing; sudo is used only when it
+#                        is not writable, so `--bin-dir ~/.local/bin` installs without sudo.
+#   --render-only <out>  for testing: write the launchd plist for the chosen --bin-dir to <out> and exit, without
+#                        building or installing anything.
 set -euo pipefail
 
+usage() { echo "usage: $0 [--bin-dir <dir>]" >&2; exit 2; }
+
+INSTALL_DIR="/usr/local/bin"
+RENDER_ONLY=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --bin-dir) [ $# -ge 2 ] || usage; INSTALL_DIR="$2"; shift 2 ;;
+        --render-only) [ $# -ge 2 ] || usage; RENDER_ONLY="$2"; shift 2 ;;
+        *) usage ;;
+    esac
+done
+# Expand a leading ~ and make the path absolute: the plist needs an absolute binary path.
+case "$INSTALL_DIR" in
+    "~") INSTALL_DIR="$HOME" ;;
+    "~/"*) INSTALL_DIR="$HOME/${INSTALL_DIR#"~/"}" ;;
+esac
+case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
+INSTALL_DIR="${INSTALL_DIR%/}"
+[ -n "$INSTALL_DIR" ] || INSTALL_DIR="/"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 LABEL="app.hangar.server"
 PLIST_TEMPLATE="$ROOT/scripts/server/$LABEL.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -21,6 +46,11 @@ render_plist() {
 as_installer() {
     if [ -w "$INSTALL_DIR" ]; then "$@"; else sudo "$@"; fi
 }
+
+if [ -n "$RENDER_ONLY" ]; then
+    render_plist "$INSTALL_DIR/hangar-server" "$HOME" > "$RENDER_ONLY"
+    exit 0
+fi
 
 cd "$ROOT"
 swift build -c release

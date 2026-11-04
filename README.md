@@ -21,71 +21,27 @@ Phase 1: the TestFlight path (archive, export, upload to App Store Connect, wait
 
 Requires macOS 15+, Xcode and [Tailscale](https://tailscale.com) on every Mac. Details: [server setup](docs/server-setup.md), [worker setup](docs/worker-setup.md).
 
-1. **Install the server** (and the CLI) on the always-on Mac:
+1. **Install the server** on the always-on Mac. Add `--bin-dir ~/.local/bin` to install without sudo:
 
    ```sh
    scripts/server/install-server.sh
    ```
 
-2. **Point the CLI at it**, from any Mac on the tailnet:
+2. **Open the web UI** at `http://<server>:8787` (the server's tailnet address) and follow it through:
+   - **Settings**: add the App Store Connect key and a GitHub token. (An individual API key has no issuer ID; leave it empty. xcodebuild only accepts team keys, so builds then sign and upload with the Apple account signed in to Xcode on each build Mac, see the [worker setup](docs/worker-setup.md). Hangar still uses the individual key for build numbers and TestFlight.)
+   - **Apps → Add app**: name, repository and App Store Connect app.
+   - **Workflow**: define the workflow for the app (the editor writes the same configuration as [`.hangar.yml`](docs/hangar-yml.md), which you can also keep in the repo).
+   - **Machines → Add machine**: it shows a one-time token and the install commands. Run them on the build Mac, as the dedicated `hangar` user (prepared as described in the worker setup), from a checkout of this repository:
 
-   ```sh
-   export HANGAR_SERVER=http://<tailnet-host>:8787
-   ```
+     ```sh
+     read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
+     scripts/worker/install-worker.sh --server http://<server>:8787    # add --bin-dir ~/.local/bin to skip sudo
+     hangar-worker doctor
+     ```
 
-3. **Create a machine and install the worker.** Create the machine from a Mac that has the `hangar` CLI (the server Mac, where `install-server.sh` installs it; elsewhere run `swift build -c release --product hangar` and copy the binary), with `HANGAR_SERVER` set. Copy the token it prints:
+   - **Deploy**: pick the app, workflow and ref, and watch the build live.
 
-   ```sh
-   hangar machines add <name>        # prints the worker token once
-   ```
-
-   Then on the build Mac, as the dedicated `hangar` user (prepared as described in the worker setup), enter the token without echo and install the worker:
-
-   ```sh
-   read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
-   scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
-   hangar-worker doctor
-   ```
-
-   Back on a Mac with the CLI, check that the machine is online with `hangar machines list`.
-
-4. **Set the App Store Connect key and a GitHub token:**
-
-   ```sh
-   hangar settings asc-key --key-id <id> --issuer-id <id> --p8 AuthKey_<id>.p8
-   hangar settings github-token      # reads the token from stdin
-   ```
-
-   For an individual API key (it has no issuer ID), leave out `--issuer-id`. xcodebuild only accepts team keys, so builds then sign and upload with the Apple account signed in to Xcode on each build Mac (see the [worker setup](docs/worker-setup.md)); Hangar still uses the individual key for build numbers and TestFlight.
-
-5. **Add an app:**
-
-   ```sh
-   hangar apps add MyApp --repo https://github.com/<you>/<repo> --asc-app-id <id>
-   hangar numbers myapp
-   ```
-
-6. **Add `.hangar.yml` to the app repo** (see [hangar-yml](docs/hangar-yml.md)):
-
-   ```yaml
-   version: 1
-   workflows:
-     testflight:
-       project: MyApp.xcodeproj
-       xcode: "27.2"
-       actions:
-         - { scheme: MyApp, platform: ios, export: app-store-connect }
-       post-actions:
-         - testflight
-   ```
-
-7. **Deploy and watch:**
-
-   ```sh
-   hangar deploy myapp testflight --ref main   # watches when run in a terminal
-   hangar status
-   hangar logs <build-id> --follow
-   ```
+The same steps are available from the command line (`hangar settings`, `hangar apps add`, `hangar machines add`, `hangar deploy`, `hangar status`, `hangar logs --follow`, with `HANGAR_SERVER=http://<server>:8787` set); see the [HTTP API](docs/api.md) and the [`.hangar.yml` reference](docs/hangar-yml.md).
 
 ## Documentation
 

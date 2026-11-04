@@ -1,8 +1,12 @@
 #!/bin/bash
-# Builds Hangar in release mode, installs hangar-worker into /usr/local/bin, writes its configuration and
+# Builds Hangar in release mode, installs hangar-worker into a bin directory (default /usr/local/bin), writes its configuration and
 # (re)loads the app.hangar.worker launchd agent in the current user's GUI session. Run it as the build user.
 #
-# Usage: install-worker.sh --server <url> --token <token>
+# Usage: install-worker.sh --server <url> --token <token> [--bin-dir <dir>]
+#   --bin-dir <dir>      where to install (default /usr/local/bin). Created if missing; sudo is used only when it
+#                        is not writable, so `--bin-dir ~/.local/bin` installs without sudo.
+#   --render-only <out>  for testing: write the launchd plist for the chosen --bin-dir to <out> and exit, without
+#                        building or installing anything (--server and --token are not needed).
 #
 # Keep the token out of the process list and shell history by passing it in the environment:
 #   read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
@@ -12,25 +16,37 @@
 # build) and stays in shell history.
 set -euo pipefail
 
-usage() { echo "usage: $0 --server <url> --token <token>   (or set HANGAR_WORKER_TOKEN)" >&2; exit 2; }
+usage() { echo "usage: $0 --server <url> --token <token> [--bin-dir <dir>]   (or set HANGAR_WORKER_TOKEN)" >&2; exit 2; }
 
 SERVER=""
+INSTALL_DIR="/usr/local/bin"
+RENDER_ONLY=""
 TOKEN="${HANGAR_WORKER_TOKEN:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --server) [ $# -ge 2 ] || usage; SERVER="$2"; shift 2 ;;
         --token) [ $# -ge 2 ] || usage; TOKEN="$2"; shift 2 ;;
+        --bin-dir) [ $# -ge 2 ] || usage; INSTALL_DIR="$2"; shift 2 ;;
+        --render-only) [ $# -ge 2 ] || usage; RENDER_ONLY="$2"; shift 2 ;;
         *) usage ;;
     esac
 done
-if [ -z "$TOKEN" ] && [ -t 0 ]; then
+# Expand a leading ~ and make the path absolute: the plist needs an absolute binary path.
+case "$INSTALL_DIR" in
+    "~") INSTALL_DIR="$HOME" ;;
+    "~/"*) INSTALL_DIR="$HOME/${INSTALL_DIR#"~/"}" ;;
+esac
+case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
+INSTALL_DIR="${INSTALL_DIR%/}"
+[ -n "$INSTALL_DIR" ] || INSTALL_DIR="/"
+
+if [ -z "$RENDER_ONLY" ] && [ -z "$TOKEN" ] && [ -t 0 ]; then
     read -rs -p "Worker token: " TOKEN
     echo
 fi
-[ -n "$SERVER" ] && [ -n "$TOKEN" ] || usage
+[ -n "$RENDER_ONLY" ] || { [ -n "$SERVER" ] && [ -n "$TOKEN" ] || usage; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 LABEL="app.hangar.worker"
 PLIST_TEMPLATE="$ROOT/scripts/worker/$LABEL.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -47,6 +63,11 @@ render_plist() {
 as_installer() {
     if [ -w "$INSTALL_DIR" ]; then "$@"; else sudo "$@"; fi
 }
+
+if [ -n "$RENDER_ONLY" ]; then
+    render_plist "$INSTALL_DIR/hangar-worker" "$HOME" > "$RENDER_ONLY"
+    exit 0
+fi
 
 cd "$ROOT"
 swift build -c release --product hangar-worker
