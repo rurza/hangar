@@ -2,7 +2,8 @@ import Dependencies
 
 private enum ProcessRunnerKey: DependencyKey {
     static let liveValue: any ProcessRunner = LiveProcessRunner()
-    static let testValue: any ProcessRunner = RecordingProcessRunner()
+    /// A fresh recorder per access, so parallel tests never share recorded commands or scripts.
+    static var testValue: any ProcessRunner { RecordingProcessRunner() }
 }
 
 extension DependencyValues {

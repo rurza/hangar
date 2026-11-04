@@ -60,4 +60,17 @@ final class LineCollector: Sendable {
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(begin.duration(to: clock.now) < .seconds(10))
     }
+
+    @Test func slowConsumerStillReceivesEveryLineOfLargeOutput() async throws {
+        let received = LineCollector()
+        let outcome = try await runner.run(
+            ProcessCommand(executable: "/usr/bin/seq", arguments: ["1", "20000"])
+        ) { line in
+            received.append(line)
+            let end = ContinuousClock.now + .microseconds(200)
+            while ContinuousClock.now < end {}
+        }
+        #expect(outcome.exitCode == 0)
+        #expect(received.values == (1...20000).map(String.init))
+    }
 }

@@ -72,6 +72,8 @@ extension LiveProcessRunner {
             var exitCode: Int32?
             var reachedEOF = false
             var cancelled = false
+            /// Bumped on every chunk after exit, so only the latest idle timer can fire.
+            var idleGeneration = 0
         }
 
         private let state = Mutex(State())
@@ -150,6 +152,7 @@ extension LiveProcessRunner {
                     finishIfDone(&state)
                     return
                 }
+                if state.exitCode != nil { armIdleTimer(&state) }
                 state.buffer.append(data)
                 while let newline = state.buffer.firstIndex(of: 0x0A) {
                     let line = String(decoding: state.buffer[state.buffer.startIndex..<newline], as: UTF8.self)
@@ -160,17 +163,22 @@ extension LiveProcessRunner {
         }
 
         private func terminated(_ status: Int32) {
-            let waitForDrain = state.withLock { state -> Bool in
-                guard state.continuation != nil else { return false }
+            state.withLock { state in
+                guard state.continuation != nil else { return }
                 state.exitCode = status
                 finishIfDone(&state)
-                return state.continuation != nil
+                if state.continuation != nil { armIdleTimer(&state) }
             }
-            guard waitForDrain else { return }
-            // The pipe may stay open if a grandchild inherited it; give it 1 s to close, then stop waiting.
+        }
+
+        /// After the child exits, output is read until EOF. The only exception is a grandchild that inherited the
+        /// pipe and keeps it open: if no data arrives for 1 s, stop waiting. Re-armed on every received chunk.
+        private func armIdleTimer(_ current: inout State) {
+            current.idleGeneration += 1
+            let generation = current.idleGeneration
             DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(1)) { [self] in
                 state.withLock { state in
-                    guard state.continuation != nil else { return }
+                    guard state.continuation != nil, state.idleGeneration == generation else { return }
                     state.readHandle?.readabilityHandler = nil
                     state.reachedEOF = true
                     flushPartialLine(&state)
