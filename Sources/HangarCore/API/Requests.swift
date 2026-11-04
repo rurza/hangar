@@ -1,0 +1,106 @@
+import Foundation
+
+public struct DeployRequest: Codable, Equatable, Sendable {
+    public var app: String
+    public var workflow: String
+    public var ref: String
+    public var machine: String?
+
+    public init(app: String, workflow: String, ref: String, machine: String? = nil) {
+        self.app = app
+        self.workflow = workflow
+        self.ref = ref
+        self.machine = machine
+    }
+}
+
+public struct CreateAppRequest: Codable, Equatable, Sendable {
+    public var name: String
+    public var repoURL: String
+    public var appStoreConnectAppID: String
+    public var iconURL: String?
+
+    public init(name: String, repoURL: String, appStoreConnectAppID: String, iconURL: String? = nil) {
+        self.name = name
+        self.repoURL = repoURL
+        self.appStoreConnectAppID = appStoreConnectAppID
+        self.iconURL = iconURL
+    }
+}
+
+public struct CreateMachineRequest: Codable, Equatable, Sendable {
+    public var name: String
+    public var maxConcurrentJobs: Int
+
+    public init(name: String, maxConcurrentJobs: Int = 1) {
+        self.name = name
+        self.maxConcurrentJobs = maxConcurrentJobs
+    }
+}
+
+public struct CreateMachineResponse: Codable, Equatable, Sendable {
+    public var machine: Machine
+    public var token: String
+
+    public init(machine: Machine, token: String) {
+        self.machine = machine
+        self.token = token
+    }
+}
+
+public struct BumpNumberRequest: Codable, Equatable, Sendable {
+    public var next: Int
+
+    public init(next: Int) { self.next = next }
+}
+
+/// A Swift error and the JSON error body `{ "code", "message" }`.
+public struct APIError: Error, Codable, Equatable, Sendable {
+    public var code: String
+    public var message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
+    }
+}
+
+/// The SSE payload of `/events`. JSON form: `{"type": "build", "build": {...}}`
+/// (likewise `job`, `machine`); `eventName` is the SSE `event:` field.
+public enum ServerEvent: Codable, Equatable, Sendable {
+    case build(Build)
+    case job(Job)
+    case machine(Machine)
+
+    public var eventName: String {
+        switch self {
+        case .build: "build"
+        case .job: "job"
+        case .machine: "machine"
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case type, build, job, machine }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .type) {
+        case "build": self = .build(try container.decode(Build.self, forKey: .build))
+        case "job": self = .job(try container.decode(Job.self, forKey: .job))
+        case "machine": self = .machine(try container.decode(Machine.self, forKey: .machine))
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                forKey: .type, in: container, debugDescription: "Unknown event type '\(other)'")
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(eventName, forKey: .type)
+        switch self {
+        case .build(let build): try container.encode(build, forKey: .build)
+        case .job(let job): try container.encode(job, forKey: .job)
+        case .machine(let machine): try container.encode(machine, forKey: .machine)
+        }
+    }
+}
