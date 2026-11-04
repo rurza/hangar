@@ -2,6 +2,7 @@ import Foundation
 import HangarCore
 import Hummingbird
 import Logging
+import ServiceLifecycle
 
 /// Server-sent events: `event: <name>\ndata: <single-line JSON>\n\n`, plus a `: keep-alive` comment every 15 s.
 enum SSE {
@@ -14,7 +15,9 @@ enum SSE {
         "event: \(event)\ndata: \(String(decoding: try JSONCoding.encoder.encode(data), as: UTF8.self))\n\n"
     }
 
-    /// Streams what `produce` yields until it returns or the client goes away (which cancels it).
+    /// Streams what `produce` yields until it returns, the client goes away (which cancels it) or the server shuts
+    /// down gracefully. A stream never finishes on its own, and graceful shutdown waits for every response to finish,
+    /// so without the last case one open page would keep the server from stopping.
     static func response(
         clock: any Clock<Duration>,
         produce: @escaping @Sendable (AsyncStream<String>.Continuation) async throws -> Void
@@ -24,7 +27,9 @@ enum SSE {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     defer { output.finish() }
-                    do { try await produce(output) } catch is CancellationError {} catch {
+                    do {
+                        try await cancelWhenGracefulShutdown { try await produce(output) }
+                    } catch is CancellationError {} catch {
                         logger.error("event stream failed: \(error)")
                     }
                 }

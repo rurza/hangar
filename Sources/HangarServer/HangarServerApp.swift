@@ -2,6 +2,10 @@ import Foundation
 import HangarAppStoreConnect
 import HangarCore
 import Hummingbird
+import Logging
+import NIOCore
+import ServiceLifecycle
+import UnixSignals
 
 /// The composition root: builds the repositories and services once and exposes them, so the worker routes and the
 /// executable's run loop (scheduler, retention sweeper) share them with the public API.
@@ -80,10 +84,27 @@ public struct HangarServerApp: Sendable {
         appIconBackfill.fill(try apps.all())
     }
 
-    public func build() -> some ApplicationProtocol {
+    /// `onServerRunning` gets the port the server listens on (useful with port 0).
+    public func build(onServerRunning: @escaping @Sendable (Int) async -> Void = { _ in }) -> some ApplicationProtocol {
         Application(
             router: buildRouter(),
-            configuration: .init(address: .hostname(configuration.host, port: configuration.port), serverName: "hangar"))
+            configuration: .init(address: .hostname(configuration.host, port: configuration.port), serverName: "hangar"),
+            onServerRunning: { channel in await onServerRunning(channel.localAddress?.port ?? 0) })
+    }
+
+    /// How long a graceful shutdown may take before the remaining requests are cancelled: a backstop for any
+    /// response that does not end by itself, so a launchd restart never stalls.
+    public static let maximumGracefulShutdownDuration: Duration = .seconds(5)
+
+    /// The service group that runs `application`: shut down gracefully on `gracefulShutdownSignals`, cancelled
+    /// after `maximumGracefulShutdownDuration`.
+    public func serviceGroup(
+        running application: some Service, gracefulShutdownSignals: [UnixSignal] = [.sigterm, .sigint], logger: Logger
+    ) -> ServiceGroup {
+        var configuration = ServiceGroupConfiguration(
+            services: [application], gracefulShutdownSignals: gracefulShutdownSignals, logger: logger)
+        configuration.maximumGracefulShutdownDuration = Self.maximumGracefulShutdownDuration
+        return ServiceGroup(configuration: configuration)
     }
 
     /// The App Store Connect credentials from the `HANGAR_ASC_*` globals, nil unless the key ID and the key are set.

@@ -21,6 +21,7 @@ let package = Package(
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),
         .package(url: "https://github.com/pointfreeco/swift-dependencies", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log", from: "1.6.0"),
+        .package(url: "https://github.com/swift-server/swift-service-lifecycle", from: "2.0.0"),
     ],
     targets: [
         .target(name: "HangarCore", dependencies: [
@@ -33,6 +34,8 @@ let package = Package(
             .product(name: "Hummingbird", package: "hummingbird"),
             .product(name: "GRDB", package: "GRDB.swift"),
             .product(name: "Logging", package: "swift-log"),
+            .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
+            .product(name: "UnixSignals", package: "swift-service-lifecycle"),
         ], resources: [.copy("Web")]),
         .target(name: "HangarWorker", dependencies: [
             "HangarCore", "HangarAppStoreConnect",
@@ -44,6 +47,7 @@ let package = Package(
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
             .product(name: "Hummingbird", package: "hummingbird"),
             .product(name: "Logging", package: "swift-log"),
+            .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
         ]),
         .executableTarget(name: "hangar-worker", dependencies: [
             "HangarWorker", "HangarCore",
@@ -63,6 +67,7 @@ let package = Package(
         .testTarget(name: "HangarServerTests", dependencies: [
             "HangarServer",
             .product(name: "HummingbirdTesting", package: "hummingbird"),
+            .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
         ]),
         .testTarget(name: "HangarWorkerTests", dependencies: ["HangarWorker"]),
         .testTarget(name: "HangarClientTests", dependencies: ["HangarClient", "HangarCore"]),

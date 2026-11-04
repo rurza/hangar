@@ -83,11 +83,12 @@ struct HangarServerCommand: AsyncParsableCommand {
                     "one-command worker install unavailable: no hangar-worker next to hangar-server; reinstall with scripts/server/install-server.sh")
             }
             logger.info("Hangar is running at \(Self.webURL(host: configuration.host, port: configuration.port))")
-            // runService() returns after SIGTERM/SIGINT; cancelling the group then stops the scheduler and sweeper.
+            // The service group returns after SIGTERM/SIGINT (open event streams end at once; anything else gets 5 s);
+            // cancelling the task group then stops the scheduler and sweeper.
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { await server.scheduler.run() }
                 group.addTask { await server.sweeper.run() }
-                group.addTask { try await server.build().runService() }
+                group.addTask { try await server.serviceGroup(running: server.build(), logger: logger).run() }
                 _ = try await group.next()
                 group.cancelAll()
                 while let _ = try await group.next() {}
