@@ -61,6 +61,7 @@ struct HangarServerCommand: AsyncParsableCommand {
                 appStoreConnectFactory: { LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport()) })
 
             logger.info("data directory \(resolvedDirectory)")
+            logger.info("Hangar is running at \(Self.webURL(host: configuration.host, port: configuration.port))")
             // runService() returns after SIGTERM/SIGINT; cancelling the group then stops the scheduler and sweeper.
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask { await server.scheduler.run() }
@@ -70,6 +71,11 @@ struct HangarServerCommand: AsyncParsableCommand {
                 group.cancelAll()
                 while let _ = try await group.next() {}
             }
+        }
+
+        /// The web app's address; an IPv6 host goes in brackets.
+        static func webURL(host: String, port: Int) -> String {
+            "http://\(host.contains(":") ? "[\(host)]" : host):\(port)/"
         }
     }
 }

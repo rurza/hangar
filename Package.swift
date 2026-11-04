@@ -33,7 +33,7 @@ let package = Package(
             .product(name: "Hummingbird", package: "hummingbird"),
             .product(name: "GRDB", package: "GRDB.swift"),
             .product(name: "Logging", package: "swift-log"),
-        ]),
+        ], resources: [.copy("Web")]),
         .target(name: "HangarWorker", dependencies: [
             "HangarCore", "HangarAppStoreConnect",
             .product(name: "Logging", package: "swift-log"),

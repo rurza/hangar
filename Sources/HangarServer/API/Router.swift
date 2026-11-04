@@ -17,7 +17,7 @@ public struct HangarRequestContext: RequestContext {
 public typealias APIGroup = RouterGroup<HangarRequestContext>
 
 extension HangarServerApp {
-    /// The public API under `/api/v1`; the worker routes mount on the same router.
+    /// The public API under `/api/v1`; the worker routes and the web app mount on the same router.
     public func buildRouter() -> Router<HangarRequestContext> {
         let router = Router(context: HangarRequestContext.self)
         router.add(middleware: APIErrorMiddleware())
@@ -33,6 +33,7 @@ extension HangarServerApp {
         addMachineRoutes(to: api)
         addWorkerRoutes(to: api)
         api.get("events") { _, _ in eventsResponse() }
+        WebUI().addRoutes(to: router)
         return router
     }
 
