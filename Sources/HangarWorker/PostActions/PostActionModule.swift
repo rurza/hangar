@@ -15,6 +15,9 @@ public struct PostActionContext: Sendable {
     /// The project's directory relative to `repository`; `.` when it sits at the root.
     public var projectDirectory: String
     public var environment: [String: String]
+    /// `environment` without secret variables, for any `xcodebuild` the action runs: xcodebuild records its
+    /// environment in DerivedData logs and result bundles.
+    public var xcodebuildEnvironment: [String: String]
     public var layout: WorkspaceLayout
     public var developerDir: String
     /// The workflow's `team:`; passed to the upload's export options.
@@ -27,7 +30,8 @@ public struct PostActionContext: Sendable {
 
     public init(
         app: App, action: ArchiveAction, buildNumber: Int, archivePath: String, exportedArtifactPath: String?,
-        repository: String, projectDirectory: String, environment: [String: String], layout: WorkspaceLayout,
+        repository: String, projectDirectory: String, environment: [String: String],
+        xcodebuildEnvironment: [String: String]? = nil, layout: WorkspaceLayout,
         developerDir: String, teamID: String?, key: ASCKeyArguments?, appStoreConnect: (any AppStoreConnectClient)?,
         runner: any ProcessRunner, clock: any Clock<Duration>, log: @escaping @Sendable (String) -> Void
     ) {
@@ -39,6 +43,7 @@ public struct PostActionContext: Sendable {
         self.repository = repository
         self.projectDirectory = projectDirectory
         self.environment = environment
+        self.xcodebuildEnvironment = xcodebuildEnvironment ?? environment
         self.layout = layout
         self.developerDir = developerDir
         self.teamID = teamID

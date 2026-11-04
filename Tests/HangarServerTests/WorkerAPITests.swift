@@ -94,6 +94,7 @@ import Testing
             // Compared by ID: a date's ISO 8601 round trip need not give back the identical Double.
             #expect(assignment.app.id == app.id)
             #expect(assignment.workflow == (try server.builds.workflow(buildID: setup.build.id)))
+            #expect(assignment.workflowName == "testflight")
             #expect(assignment.buildNumber == setup.build.buildNumber)
             #expect(assignment.commit == setup.build.commit)
             #expect(assignment.ref == "main")

@@ -60,6 +60,42 @@ import Testing
         #expect(failing.logLines == ["first", "second"])
     }
 
+    /// Moves the test clock forward while `body` runs, for waits on it.
+    private func ticking<Value: Sendable>(_ body: @escaping @Sendable () async -> Value) async -> Value {
+        let ticker = Task { [clock] in
+            while !Task.isCancelled {
+                await clock.advance(by: .seconds(1))
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        defer { ticker.cancel() }
+        return await body()
+    }
+
+    @Test func finalFlushRetriesWhenTheLastSendFails() async {
+        let failing = FakeServerConnection(failLogCalls: 1)
+        let log = makeLog(failing)
+        for index in 0..<3 { log.line(step: "cleanup", "line \(index)") }
+
+        let dropped = await ticking { await log.finalFlush() }
+
+        #expect(dropped == 0)
+        #expect(failing.logLines == ["line 0", "line 1", "line 2"])
+    }
+
+    @Test func finalFlushGivesUpAfterFiveAttemptsAndCountsTheLines() async {
+        let failing = FakeServerConnection(failLogCalls: 100)
+        let log = makeLog(failing)
+        log.line(step: "cleanup", "a")
+        log.line(step: "cleanup", "b")
+
+        let dropped = await ticking { await log.finalFlush() }
+
+        #expect(dropped == 2)
+        #expect(failing.batches.isEmpty)
+        #expect(log.pendingCount == 2)
+    }
+
     @Test func linesAreMaskedBeforeBatching() async {
         let log = makeLog(secrets: ["hunter2-secret"])
         log.line(step: "archive", "password is hunter2-secret")

@@ -4,7 +4,8 @@ import Synchronization
 
 @testable import HangarWorker
 
-/// Records every call a worker makes to the server, in order. `failLogCalls` makes that many `log` calls throw first.
+/// Records every call a worker makes to the server, in order. `failLogCalls` makes that many `log` calls throw first;
+/// uploads named in `failUploads` always throw.
 final class FakeServerConnection: ServerConnection {
     enum Event: Equatable {
         case start
@@ -22,9 +23,11 @@ final class FakeServerConnection: ServerConnection {
     }
 
     private let state: Mutex<State>
+    private let failUploads: Set<String>
 
-    init(failLogCalls: Int = 0) {
+    init(failLogCalls: Int = 0, failUploads: Set<String> = []) {
         state = Mutex(State(failLogCalls: failLogCalls))
+        self.failUploads = failUploads
     }
 
     var events: [Event] { state.withLock { $0.events } }
@@ -74,6 +77,7 @@ final class FakeServerConnection: ServerConnection {
     }
 
     func uploadArtifact(jobID: UUID, name: String, fileURL: URL) async throws {
+        if failUploads.contains(name) { throw Unavailable() }
         state.withLock { $0.events.append(.upload(name: name, path: fileURL.path)) }
     }
 

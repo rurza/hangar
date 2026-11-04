@@ -46,6 +46,10 @@ workflows:
 | `platform` | `ios`, `macos`, `visionos`, `tvos`, `watchos`. |
 | `export` | `app-store-connect`, `developer-id`. |
 
+### Secret variables
+
+Secret variables are available to `ci_scripts` hooks and post-actions but not to `xcodebuild`, so not to build phases: xcodebuild records its environment in DerivedData logs and in the result bundle, which is uploaded as an artifact. If a build phase needs a secret, write it to a file from `ci_pre_xcodebuild.sh`.
+
 ### Post-actions
 
 An entry is either a bare name (`- testflight`) or a one-key map (`- testflight: { ... }`). Every post-action accepts `requires-approval: true`, which holds the step until someone approves it. Unknown post-action names, unknown settings and wrongly typed settings are rejected when the file is parsed.

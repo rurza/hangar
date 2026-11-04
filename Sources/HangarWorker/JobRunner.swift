@@ -44,7 +44,11 @@ public struct JobRunner: Sendable {
 
     /// What the `checkout` step prepares for the steps after it.
     private struct Prepared: Sendable {
+        /// Everything, for hooks and post-actions.
         var environment: [String: String]
+        /// `environment` without secret variables: xcodebuild records the environment in DerivedData logs and the
+        /// result bundle, which is uploaded.
+        var xcodebuildEnvironment: [String: String]
         var developerDir: String
         var key: ASCKeyArguments
     }
@@ -52,15 +56,15 @@ public struct JobRunner: Sendable {
     public func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
         let jobID = assignment.job.id
         let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID)
-        let secrets = assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value)
-        let log = JobLog(jobID: jobID, masker: SecretMasker(secrets: secrets), connection: connection, clock: clock)
+        let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
+        let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock)
         let materializer = SecretsMaterializer(directory: layout.secrets)
 
         do {
             try await connection.start(jobID: jobID)
         } catch {
             logger.error("could not start job: \(error)", metadata: ["job": "\(jobID)"])
-            let result = JobResult(status: .failed, failureReason: "start: \(error)")
+            let result = JobResult(status: .failed, failureReason: masker.mask("start: \(error)"))
             try? await connection.finish(jobID: jobID, result)
             return result
         }
@@ -85,20 +89,31 @@ public struct JobRunner: Sendable {
 
         await pipeline.step(StepName.uploadArtifacts, .always) { [connection, runner] in
             let lines = log.lines(StepName.uploadArtifacts)
-            let artifacts = try await ArtifactCollector(runner: runner)
+            // Every piece is attempted; the step fails at the end if any could not be zipped or uploaded.
+            let collection = try await ArtifactCollector(runner: runner)
                 .collect(layout: layout, scheme: assignment.job.action.scheme, log: lines)
-            for artifact in artifacts {
+            var failures = collection.failures
+            for artifact in collection.artifacts {
                 lines("uploading \(artifact.name)")
-                try await connection.uploadArtifact(jobID: jobID, name: artifact.name, fileURL: artifact.url)
+                do {
+                    try await connection.uploadArtifact(jobID: jobID, name: artifact.name, fileURL: artifact.url)
+                } catch {
+                    lines("error: could not upload \(artifact.name): \(error)")
+                    failures.append("could not upload \(artifact.name): \(error)")
+                }
             }
+            if !failures.isEmpty { throw ArtifactError.incomplete(failures) }
         }
 
         await pipeline.report(StepName.cleanup, .running)
         let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
         await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
-        await log.flush()
+        await log.finalFlush()
 
-        let result = JobResult(status: pipeline.status, failureReason: pipeline.failureReason, outputs: outputs)
+        // Error descriptions (an App Store Connect response body, say) and post-action outputs may hold a secret.
+        let result = JobResult(
+            status: pipeline.status, failureReason: pipeline.failureReason.map(masker.mask),
+            outputs: outputs.mapValues(masker.mask))
         do {
             try await connection.finish(jobID: jobID, result)
         } catch {
@@ -123,16 +138,18 @@ public struct JobRunner: Sendable {
             repository: layout.repository, projectFile: layout.repository + "/" + workflow.projectOrWorkspacePath,
             derivedData: layout.derivedData, archive: layout.archive(scheme: action.scheme),
             resultBundle: layout.resultBundle, workspace: layout.jobDirectory)
-        // JobAssignment does not carry the workflow's name yet, so CI_WORKFLOW stays empty.
         let ci = CIEnvironment.make(
-            app: assignment.app, workflow: "", action: action, buildNumber: assignment.buildNumber,
+            app: assignment.app, workflow: assignment.workflowName, action: action, buildNumber: assignment.buildNumber,
             jobID: assignment.job.id, buildID: assignment.job.buildID, commit: assignment.commit, ref: assignment.ref,
             teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH)
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
         merged.warnings.forEach(log)
         try materializer.write(merged.filesToWrite)
         guard let key = ASCKeyArguments(environment: merged.env) else { throw PreparationError.appStoreConnectKeyMissing }
-        return Prepared(environment: merged.env, developerDir: developerDir, key: key)
+        let secretNames = Set(assignment.environment.filter(\.isSecret).map(\.name))
+        return Prepared(
+            environment: merged.env, xcodebuildEnvironment: merged.env.filter { !secretNames.contains($0.key) },
+            developerDir: developerDir, key: key)
     }
 
     /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs.
@@ -157,7 +174,7 @@ public struct JobRunner: Sendable {
         await pipeline.step(StepName.archive, .xcodebuild) { [runner] in
             try await ArchiveStep(runner: runner).run(
                 workflow: workflow, action: action, repository: layout.repository, layout: layout,
-                developerDir: prepared.developerDir, key: prepared.key, environment: environment,
+                developerDir: prepared.developerDir, key: prepared.key, environment: prepared.xcodebuildEnvironment,
                 log: log.lines(StepName.archive))
         }
         await pipeline.step(StepName.stamp) {
@@ -168,7 +185,8 @@ public struct JobRunner: Sendable {
             try await ExportStep(runner: runner).run(
                 archivePath: archivePath, method: action.export, destination: "export", exportPath: layout.export,
                 jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
-                key: prepared.key, signing: .cloudManaged, environment: environment, log: log.lines(StepName.export))
+                key: prepared.key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
+                log: log.lines(StepName.export))
         }
         let additions = CIEnvironment.postXcodebuildAdditions(
             exitCode: pipeline.xcodebuildExitCode ?? 0, action: action,
@@ -186,7 +204,8 @@ public struct JobRunner: Sendable {
             let context = PostActionContext(
                 app: assignment.app, action: action, buildNumber: assignment.buildNumber, archivePath: archivePath,
                 exportedArtifactPath: exported?.exportedArtifactPath, repository: layout.repository,
-                projectDirectory: projectDirectory, environment: environment, layout: layout,
+                projectDirectory: projectDirectory, environment: environment,
+                xcodebuildEnvironment: prepared.xcodebuildEnvironment, layout: layout,
                 developerDir: prepared.developerDir, teamID: workflow.teamID, key: prepared.key,
                 appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name))
             let output = await pipeline.step(name) { try await PostActionRegistry.make(spec).run(context) }

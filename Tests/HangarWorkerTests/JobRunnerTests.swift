@@ -7,10 +7,16 @@ import Testing
 
 @testable import HangarWorker
 
-/// Answers App Store Connect with one processed build and records the credentials it was made with.
-private final class ProcessedBuildClient: AppStoreConnectClient {
+/// Answers App Store Connect with one processed build, or fails with `failure` as the error's description.
+private struct ProcessedBuildClient: AppStoreConnectClient {
+    struct Failure: Error, CustomStringConvertible { let description: String }
+
+    var buildID = "asc-build"
+    var failure: String?
+
     func builds(appID: String, version: String?) async throws -> [ASCBuild] {
-        [ASCBuild(id: "asc-build", version: version ?? "", processingState: "VALID", platform: "IOS", uploadedDate: nil)]
+        if let failure { throw Failure(description: failure) }
+        return [ASCBuild(id: buildID, version: version ?? "", processingState: "VALID", platform: "IOS", uploadedDate: nil)]
     }
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
@@ -44,8 +50,11 @@ private final class PipelineRunner: ProcessRunner {
                 let path = repository + "/ci_scripts/" + hook.rawValue
                 fileManager.createFile(atPath: path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
             }
-        } else if arguments.first == "archive", let index = arguments.firstIndex(of: "-archivePath") {
+        } else if arguments.first == "archive", let index = arguments.firstIndex(of: "-archivePath"),
+            let result = arguments.firstIndex(of: "-resultBundlePath")
+        {
             let archive = arguments[index + 1]
+            try fileManager.createDirectory(atPath: arguments[result + 1], withIntermediateDirectories: true)
             let app = archive + "/Products/Applications/Demo.app"
             try fileManager.createDirectory(atPath: app, withIntermediateDirectories: true)
             try fileManager.createDirectory(atPath: archive + "/dSYMs", withIntermediateDirectories: true)
@@ -84,12 +93,14 @@ private final class Shared<Value: Sendable>: Sendable {
         let dataDirectory = NSTemporaryDirectory() + "hangar-job-" + UUID().uuidString
         let applications: String
         let runner = PipelineRunner()
-        let connection = FakeServerConnection()
+        let connection: FakeServerConnection
         let clock = TestClock()
         let credentials = Shared<[ASCCredentials]>([])
+        var appStoreConnect = ProcessedBuildClient()
         var assignment: JobAssignment
 
-        init(xcode: String = "27.2") throws {
+        init(xcode: String = "27.2", connection: FakeServerConnection = FakeServerConnection()) throws {
+            self.connection = connection
             applications = dataDirectory + "-apps"
             try XcodeLocatorTests.makeXcode(
                 in: URL(fileURLWithPath: applications), name: "Xcode.app", version: xcode, build: "27C100")
@@ -104,7 +115,7 @@ private final class Shared<Value: Sendable>: Sendable {
                 workflow: Workflow(
                     project: "Demo.xcodeproj", xcode: "27.2", teamID: "TEAM123", actions: [job.action],
                     postActions: [PostActionSpec(name: "testflight")]),
-                buildNumber: 311, commit: String(repeating: "a", count: 40), ref: "main",
+                workflowName: "release", buildNumber: 311, commit: String(repeating: "a", count: 40), ref: "main",
                 environment: [
                     EnvEntry(name: "HANGAR_ASC_KEY_ID", value: "KEY123"),
                     EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: "issuer-1"),
@@ -122,9 +133,9 @@ private final class Shared<Value: Sendable>: Sendable {
                 connection: connection, runner: runner,
                 locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: applications),
                 dataDirectory: dataDirectory, clock: clock,
-                appStoreConnectFactory: { [credentials] received in
+                appStoreConnectFactory: { [credentials, appStoreConnect] received in
                     credentials.update { $0.append(received) }
-                    return ProcessedBuildClient()
+                    return appStoreConnect
                 })
             return await jobRunner.run(assignment, cancelled: cancelled)
         }
@@ -174,6 +185,8 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postXcodebuild.currentDirectory == layout.repository + "/ci_scripts")
         let postClone = try #require(fixture.hook(.postClone))
         #expect(postClone.environment["CI_BUILD_NUMBER"] == "311")
+        #expect(postClone.environment["CI_WORKFLOW"] == "release")
+        #expect(postClone.environment["CI_WORKFLOW_ID"] == "release")
         #expect(postClone.environment["HANGAR_ASC_KEY_PATH"] == layout.secrets + "/HANGAR_ASC_KEY_PATH")
         #expect(postClone.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
 
@@ -184,7 +197,7 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.credentials.get().map(\.privateKeyPEM) == [Self.pem])
         #expect(fixture.credentials.get().map(\.keyID) == ["KEY123"])
 
-        #expect(fixture.connection.uploads == ["Demo-dSYMs.zip", "Demo.ipa", "ExportOptions.plist"])
+        #expect(fixture.connection.uploads == ["Demo-dSYMs.zip", "Demo.xcresult.zip", "Demo.ipa", "ExportOptions.plist"])
         // Cleanup: the repository is cleaned and the job directory (secrets included) is gone.
         #expect(fixture.runner.commands.last?.arguments == ["-C", layout.repository, "clean", "-ffdx"])
         #expect(!FileManager.default.fileExists(atPath: layout.jobDirectory))
@@ -310,5 +323,77 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.hook(.postXcodebuild) == nil)
         #expect(fixture.connection.status(of: "upload-artifacts") == .succeeded)
         #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+    }
+
+    @Test func failureReasonAndOutputsAreMasked() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.appStoreConnect.failure = "HTTP 401: {\"detail\": \"bad token \(Self.githubToken)\"}"
+
+        let result = await fixture.run()
+
+        #expect(result.status == .failed)
+        #expect(result.failureReason == "post-action:testflight: HTTP 401: {\"detail\": \"bad token [masked]\"}")
+        #expect(fixture.connection.result == result)
+
+        var leaking = try Fixture()
+        defer { leaking.removeAll() }
+        leaking.appStoreConnect.buildID = Self.githubToken
+        let succeeded = await leaking.run()
+        #expect(succeeded.status == .succeeded)
+        #expect(succeeded.outputs["testflight.buildID"] == "[masked]")
+    }
+
+    @Test func xcodebuildNeverSeesSecretVariables() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+
+        _ = await fixture.run()
+
+        let xcodebuilds = fixture.runner.commands.filter { $0.executable == "/usr/bin/xcodebuild" }
+        // archive, the export, and TestFlight's upload export
+        #expect(xcodebuilds.count == 3)
+        for command in xcodebuilds {
+            #expect(command.environment["HANGAR_GITHUB_TOKEN"] == nil)
+            #expect(command.environment["HANGAR_ASC_KEY_PATH"] == nil)
+            #expect(!command.environment.values.contains { $0.contains(Self.githubToken) || $0.contains(Self.pemBody) })
+            #expect(command.environment["HANGAR_ASC_KEY_ID"] == "KEY123")
+            #expect(command.environment["CI_WORKFLOW"] == "release")
+        }
+        for hook in Hook.allCases {
+            let command = try #require(fixture.hook(hook))
+            #expect(command.environment["HANGAR_GITHUB_TOKEN"] == Self.githubToken)
+            #expect(command.environment["HANGAR_ASC_KEY_PATH"] == fixture.layout.secrets + "/HANGAR_ASC_KEY_PATH")
+        }
+    }
+
+    @Test func artifactFailuresDoNotStopTheOthers() async throws {
+        let fixture = try Fixture(connection: FakeServerConnection(failUploads: ["Demo.ipa"]))
+        defer { fixture.removeAll() }
+        fixture.runner.recording.script(
+            { $0.executable == "/usr/bin/ditto" && $0.arguments.contains { $0.hasSuffix("/dSYMs") } }, lines: [],
+            exitCode: 1)
+
+        let result = await fixture.run()
+
+        #expect(fixture.connection.uploads == ["Demo.xcresult.zip", "ExportOptions.plist"])
+        #expect(fixture.connection.status(of: "upload-artifacts") == .failed)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+        #expect(result.status == .failed)
+        #expect(result.failureReason?.hasPrefix("upload-artifacts: ditto exited with status 1 while zipping Demo-dSYMs.zip") == true)
+        #expect(result.failureReason?.contains("could not upload Demo.ipa") == true)
+    }
+
+    @Test func aRefusedLogBatchIsStillDelivered() async throws {
+        let fixture = try Fixture(connection: FakeServerConnection(failLogCalls: 1))
+        defer { fixture.removeAll() }
+        fixture.runner.recording.script(Self.isArchive, lines: ["archived"])
+
+        let result = await fixture.runTicking(cancelled: { false })
+
+        #expect(result.status == .succeeded)
+        #expect(fixture.connection.logLines.contains("archived"))
+        #expect(fixture.connection.logLines.contains("git clone https://github.com/acme/demo.git \(fixture.layout.repository)"))
+        #expect(fixture.connection.events.last == .finish(result))
     }
 }

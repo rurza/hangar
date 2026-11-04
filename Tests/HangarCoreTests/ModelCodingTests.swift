@@ -21,11 +21,12 @@ struct ModelCodingTests {
             workflow: Workflow(
                 xcode: "27.2", actions: [ArchiveAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect)],
                 postActions: [PostActionSpec(name: "testflight", settings: ["groups": .array([.string("QA")])])]),
-            buildNumber: 42, commit: "abc", ref: "main",
+            workflowName: "release", buildNumber: 42, commit: "abc", ref: "main",
             environment: [EnvEntry(name: "A", value: "b", isSecret: true)])
         let data = try JSONCoding.encoder.encode(assignment)
         #expect(try JSONCoding.decoder.decode(JobAssignment.self, from: data) == assignment)
         #expect(String(decoding: data, as: UTF8.self).contains("2027-01-15T08:00:00.125Z"))
+        #expect(String(decoding: data, as: UTF8.self).contains(#""workflowName":"release""#))
     }
 
     @Test func datesKeepMilliseconds() throws {

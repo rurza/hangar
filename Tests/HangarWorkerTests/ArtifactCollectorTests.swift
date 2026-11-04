@@ -33,8 +33,10 @@ import Testing
         try Self.make(layout.export + "/Packaging.log")
 
         let lines = LineSink()
-        let collected = try await ArtifactCollector(runner: LiveProcessRunner())
+        let collection = try await ArtifactCollector(runner: LiveProcessRunner())
             .collect(layout: layout, scheme: "Demo", log: lines.append)
+        let collected = collection.artifacts
+        #expect(collection.failures.isEmpty)
 
         #expect(
             collected.map(\.name) == [
@@ -58,8 +60,25 @@ import Testing
 
         let collected = try await ArtifactCollector(runner: runner).collect(layout: layout, scheme: "Demo", log: { _ in })
 
-        #expect(collected.map(\.name) == ["Demo.xcresult.zip"])
+        #expect(collected.artifacts.map(\.name) == ["Demo.xcresult.zip"])
         #expect(runner.commands.map(\.executable) == ["/usr/bin/ditto"])
         #expect(runner.commands.first?.arguments.prefix(3) == ["-c", "-k", "--keepParent"])
+    }
+
+    @Test func aFailedZipDoesNotStopTheRest() async throws {
+        let directory = NSTemporaryDirectory() + "hangar-artifacts-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let layout = WorkspaceLayout(dataDirectory: directory, appSlug: "demo", jobID: UUID())
+        try Self.make(layout.archive(scheme: "Demo") + "/dSYMs/Demo.app.dSYM/Contents/Info.plist")
+        try Self.make(layout.resultBundle + "/Info.plist")
+        let runner = RecordingProcessRunner()
+        runner.script({ $0.arguments.contains { $0.hasSuffix("/dSYMs") } }, lines: ["ditto: No space left"], exitCode: 1)
+        let lines = LineSink()
+
+        let collection = try await ArtifactCollector(runner: runner).collect(layout: layout, scheme: "Demo", log: lines.append)
+
+        #expect(collection.artifacts.map(\.name) == ["Demo.xcresult.zip"])
+        #expect(collection.failures == ["ditto exited with status 1 while zipping Demo-dSYMs.zip"])
+        #expect(lines.all.contains("error: ditto exited with status 1 while zipping Demo-dSYMs.zip"))
     }
 }

@@ -44,7 +44,7 @@ public struct TestFlightAction: PostActionModule {
         _ = try await ExportStep(runner: context.runner).run(
             archivePath: context.archivePath, method: .appStoreConnect, destination: "upload",
             exportPath: context.layout.upload, jobDirectory: context.layout.jobDirectory, teamID: context.teamID,
-            developerDir: context.developerDir, key: key, signing: .cloudManaged, environment: context.environment,
+            developerDir: context.developerDir, key: key, signing: .cloudManaged, environment: context.xcodebuildEnvironment,
             log: context.log)
 
         guard settings.waitForProcessing else {

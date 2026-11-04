@@ -4,18 +4,21 @@ public struct JobAssignment: Codable, Equatable, Sendable {
     public var job: Job
     public var app: App
     public var workflow: Workflow
+    /// The workflow's key in `.hangar.yml` (`CI_WORKFLOW`).
+    public var workflowName: String
     public var buildNumber: Int
     public var commit: String
     public var ref: String
     public var environment: [EnvEntry]
 
     public init(
-        job: Job, app: App, workflow: Workflow, buildNumber: Int, commit: String, ref: String,
+        job: Job, app: App, workflow: Workflow, workflowName: String, buildNumber: Int, commit: String, ref: String,
         environment: [EnvEntry]
     ) {
         self.job = job
         self.app = app
         self.workflow = workflow
+        self.workflowName = workflowName
         self.buildNumber = buildNumber
         self.commit = commit
         self.ref = ref

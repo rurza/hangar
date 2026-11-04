@@ -8,10 +8,11 @@ import Synchronization
 ///
 /// Lines go out in batches of at most 200: as soon as 200 are waiting, every second on the clock, and on `flush()`.
 /// Sends run one at a time in order. A batch the server did not take stays queued, ahead of newer lines, and is
-/// retried on the next send.
+/// retried on the next send; `finalFlush()` retries with backoff before the job reports its result.
 public final class JobLog: Sendable {
     static let batchSize = 200
     static let interval = Duration.seconds(1)
+    static let finalAttempts = 5
 
     private struct State {
         var pending: [LogEntry] = []
@@ -23,6 +24,7 @@ public final class JobLog: Sendable {
     private let jobID: UUID
     private let masker: SecretMasker
     private let connection: any ServerConnection
+    private let clock: any Clock<Duration>
     private let state = Mutex(State())
     private let logger = Logger(label: "app.hangar.worker.job")
 
@@ -30,6 +32,7 @@ public final class JobLog: Sendable {
         self.jobID = jobID
         self.masker = masker
         self.connection = connection
+        self.clock = clock
         let timer = Task { [weak self] in
             while !Task.isCancelled {
                 do { try await clock.sleep(for: Self.interval) } catch { return }
@@ -58,6 +61,27 @@ public final class JobLog: Sendable {
     public func flush() async {
         await queueSend().value
     }
+
+    /// The last flush of a job: retries up to `finalAttempts` times, waiting 1 s, 2 s, 4 s… on the clock in between.
+    /// Lines the server still has not taken are reported in a local warning and their count returned.
+    @discardableResult
+    public func finalFlush() async -> Int {
+        var delay = Self.interval
+        for attempt in 1...Self.finalAttempts {
+            await flush()
+            if pendingCount == 0 { return 0 }
+            guard attempt < Self.finalAttempts else { break }
+            do { try await clock.sleep(for: delay) } catch { break }
+            delay *= 2
+        }
+        let dropped = pendingCount
+        logger.warning(
+            "dropping \(dropped) log lines the server did not take after \(Self.finalAttempts) attempts",
+            metadata: ["job": "\(jobID.uuidString)"])
+        return dropped
+    }
+
+    var pendingCount: Int { state.withLock { $0.pending.count } }
 
     private func queueSend() -> Task<Void, Never> {
         state.withLock { state in
