@@ -49,7 +49,11 @@ let package = Package(
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ]),
         .testTarget(name: "HangarCoreTests", dependencies: ["HangarCore"]),
-        .testTarget(name: "HangarAppStoreConnectTests", dependencies: ["HangarAppStoreConnect"]),
+        .testTarget(
+            name: "HangarAppStoreConnectTests",
+            dependencies: ["HangarAppStoreConnect", "HangarCore"],
+            resources: [.copy("Fixtures")]
+        ),
         .testTarget(name: "HangarServerTests", dependencies: [
             "HangarServer",
             .product(name: "HummingbirdTesting", package: "hummingbird"),

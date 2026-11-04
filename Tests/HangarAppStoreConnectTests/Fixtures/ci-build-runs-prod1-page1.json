@@ -1,0 +1,2 @@
+{"data":[{"type":"ciBuildRuns","id":"r1","attributes":{"number":250}},{"type":"ciBuildRuns","id":"r2","attributes":{"number":251}}],
+ "links":{"next":"https://api.appstoreconnect.apple.com/v1/ciProducts/prod1/buildRuns?cursor=XY&limit=200"}}

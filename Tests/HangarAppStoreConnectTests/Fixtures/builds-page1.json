@@ -1,0 +1,13 @@
+{
+  "data": [
+    {"type":"builds","id":"b1","attributes":{"version":"250","processingState":"VALID","uploadedDate":"2026-10-01T10:00:00.123-07:00"},
+     "relationships":{"preReleaseVersion":{"data":{"type":"preReleaseVersions","id":"p1"}}}},
+    {"type":"builds","id":"b2","attributes":{"version":"251","processingState":"PROCESSING","uploadedDate":"2026-10-02T10:00:00Z"},
+     "relationships":{"preReleaseVersion":{"data":{"type":"preReleaseVersions","id":"p2"}}}}
+  ],
+  "included": [
+    {"type":"preReleaseVersions","id":"p1","attributes":{"version":"1.0","platform":"IOS"}},
+    {"type":"preReleaseVersions","id":"p2","attributes":{"version":"1.0","platform":"MAC_OS"}}
+  ],
+  "links": {"self":"https://api.appstoreconnect.apple.com/v1/builds?limit=200","next":"https://api.appstoreconnect.apple.com/v1/builds?cursor=AQ&limit=200"}
+}

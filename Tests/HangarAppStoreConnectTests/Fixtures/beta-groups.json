@@ -1,0 +1,4 @@
+{"data":[
+ {"type":"betaGroups","id":"g1","attributes":{"name":"Team","isInternalGroup":true}},
+ {"type":"betaGroups","id":"g2","attributes":{"name":"Public","isInternalGroup":false}}
+]}

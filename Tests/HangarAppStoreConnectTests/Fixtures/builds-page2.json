@@ -1,0 +1,10 @@
+{
+  "data": [
+    {"type":"builds","id":"b3","attributes":{"version":"1.2.3","processingState":"INVALID","uploadedDate":null},
+     "relationships":{"preReleaseVersion":{"data":{"type":"preReleaseVersions","id":"p1"}}}}
+  ],
+  "included": [
+    {"type":"preReleaseVersions","id":"p1","attributes":{"version":"1.0","platform":"IOS"}}
+  ],
+  "links": {"self":"https://api.appstoreconnect.apple.com/v1/builds?cursor=AQ&limit=200"}
+}

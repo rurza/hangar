@@ -1,0 +1,4 @@
+{"data":[
+ {"type":"betaBuildLocalizations","id":"loc-de","attributes":{"locale":"de-DE","whatsNew":"alt"}},
+ {"type":"betaBuildLocalizations","id":"loc-en","attributes":{"locale":"en-US","whatsNew":"old"}}
+]}
