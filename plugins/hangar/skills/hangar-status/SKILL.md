@@ -17,7 +17,7 @@ If either is missing, say so and stop.
 ## Commands
 
 - What is running or queued: `hangar status` (add `--json` for fields). Lists every queued or running build.
-- One build: `hangar status <id> --json`. Read `status`, `jobs[].status`, `jobs[].steps`, `jobs[].queueNote`, `jobs[].failureReason` and `jobs[].outputs`. This exits 1 for a failed build and 2 for a cancelled one: read the output anyway, it is not a command error.
+- One build: `hangar status <id> --json`. Read `status`, `jobs[].status`, `jobs[].steps`, `jobs[].queueNote`, `jobs[].failureReason` and `jobs[].outputs`. This exits 1 for a failed build and 2 for a cancelled one: when JSON was printed on stdout, read it anyway, it is not a command error. Exit 1 with empty stdout and an `error:` line on stderr is a request failure (the server could not be reached, an unknown id), not a failed build: report the error verbatim and read `status` only from JSON that was printed.
 - Recent builds: `hangar builds [--app <app>] [--limit <n>] --json`, to find a build id.
 - Why a job is queued: the job's `queueNote` in `hangar status`. For machine context run `hangar machines list` (or `--json`: `name`, `lastSeenAt`, `report.runningJobIDs`, `report.xcodes`).
 - Why a build failed: find the failed job and step in `hangar status <id> --json`, then `hangar logs <id> --step <failed step> --tail 80`. `<id>` can be a job id or a build id; use the job id when a build has several jobs.

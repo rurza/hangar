@@ -26,8 +26,10 @@ If the user says "Xcode Cloud", stop and say this skill never starts Xcode Cloud
    - `inFlight` is true (another build of this app is queued or running), or
    - `lastXcodeCloudRun` is not null and is `>= next` (Xcode Cloud has used a number Hangar would hand out).
 4. Deploy: `hangar deploy <app> <workflow> --ref <ref> [--machine <machine>] --json --no-wait`. Add `--machine` only if the user asked for one. This returns as soon as the build is queued; read `id` and `buildNumber` from the JSON.
+   - If `deploy` itself fails (exit 1, no JSON on stdout, an `error:` line on stderr), nothing was queued. Report the error verbatim and stop. Do not retry, and do not say a build was queued.
 5. Poll `hangar status <id> --json` every 30 seconds (`sleep 30` between calls) until `status` is `succeeded`, `failed` or `cancelled`. `queued` and `running` are not terminal.
-   - `status <id>` exits 1 for a failed build and 2 for a cancelled one, even with `--json`. A non-zero exit is not a command error: read the JSON from stdout and go by `status`.
+   - `status <id>` exits 1 for a failed build and 2 for a cancelled one, even with `--json`. When JSON was printed on stdout, a non-zero exit is not a command error: read the JSON and go by `status`.
+   - Exit 1 with empty stdout and an `error:` line on stderr is a request failure (for example the server could not be reached), not a failed build. Only read `status` from JSON when JSON was printed.
    - If the command cannot reach the server, retry on the next poll. Do not report a failure; the build may still be running. Report lost contact only after several consecutive failed polls, and say the build may still be running.
    - If you ran `deploy` with `--watch` instead, exit 3 means lost contact with the server, not a failed build. Check `hangar status <id> --json`.
    - Exit 64 is a usage error: fix the arguments.
