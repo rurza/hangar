@@ -1064,6 +1064,128 @@ button.add-card:active { transform: scale(0.985); }
   font: 600 18px/1 var(--font);
 }
 
+/* MARK: Workflow editor */
+
+.back-link {
+  display: inline-block;
+  margin-bottom: var(--space-1);
+  font: var(--callout);
+  letter-spacing: -0.32px;
+}
+
+.workflow-editor { display: grid; gap: var(--space-2); }
+.workflow-banner {
+  padding: 12px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--failure) 12%, transparent);
+  color: var(--failure);
+  font: var(--subhead);
+  letter-spacing: -0.24px;
+  overflow-wrap: anywhere;
+}
+.workflow-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-1); }
+.workflow-status { color: var(--secondary); font: var(--footnote); }
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--fill);
+}
+.segment {
+  min-width: 72px;
+  min-height: 32px;
+  padding: 4px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  font: var(--subhead);
+  font-weight: 500;
+  letter-spacing: -0.24px;
+  cursor: pointer;
+}
+.segment[aria-selected="true"], .segment[aria-checked="true"] {
+  background: var(--card-raised);
+  box-shadow: var(--shadow-control);
+  font-weight: 600;
+}
+.segmented-small .segment { min-width: 0; padding-inline: 10px; }
+
+.workflow-panel { display: grid; gap: var(--space-2); }
+.workflow-start-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-1); }
+.workflow-start .inline-error-message { text-align: center; padding-bottom: var(--space-1); }
+
+.workflow-card { display: grid; gap: var(--space-3); }
+.workflow-card-header { display: flex; align-items: flex-end; gap: var(--space-1); }
+.workflow-name { flex: 1; min-width: 0; }
+.workflow-name .input { font: var(--headline); font-family: var(--font-mono); }
+.location-row { display: flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
+.location-row .input { flex: 1; min-width: min(100%, 200px); }
+.field-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: var(--space-2); }
+
+.workflow-group { display: grid; gap: var(--space-1); }
+.workflow-group-title { font: var(--headline); }
+
+.action-head, .action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.4fr) 72px;
+  gap: var(--space-1);
+  align-items: center;
+}
+.action-head { padding-inline: 4px; color: var(--secondary); font: var(--footnote); font-weight: 600; }
+.action-list { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.select { appearance: auto; padding-block: 0; cursor: pointer; }
+.action-row .select { padding-inline: 8px; font: var(--subhead); }
+.add-action { border-radius: var(--radius-sm); padding-inline: 4px; }
+
+@media (max-width: 639.98px) {
+  .action-head { display: none; }
+  .action-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+    padding: var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--fill);
+  }
+  .action-row .input { grid-column: 1 / -1; background: var(--card); }
+  .action-row .select { background: var(--card); }
+  .action-row .button { grid-column: 1 / -1; justify-self: end; }
+}
+
+.testflight-settings { padding-left: var(--space-2); border-left: 2px solid var(--separator); }
+
+.chip-input-row { display: flex; gap: var(--space-1); align-items: center; }
+.chip-input-row .input { flex: 1; min-width: 0; }
+.chips-editable { margin-top: 2px; }
+.chip-removable { display: inline-flex; align-items: center; gap: 4px; padding-right: 4px; }
+.chip-remove {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--secondary);
+  font: 500 15px/1 var(--font);
+  cursor: pointer;
+}
+.chip-remove:hover { background: var(--fill-strong); color: var(--text); }
+
+.workflow-add { box-shadow: none; }
+
+.yaml-card { display: grid; gap: var(--space-1); }
+.yaml-block {
+  margin: 0;
+  padding: var(--space-2);
+  overflow-x: auto;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  font: 400 13px/20px var(--font-mono);
+  white-space: pre;
+  tab-size: 2;
+}
+
 /* MARK: Reduced motion */
 
 @media (prefers-reduced-motion: reduce) {

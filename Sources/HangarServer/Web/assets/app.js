@@ -5,6 +5,7 @@ import { emptyState, h, page, svg } from './ui.js';
 import { route, start } from './router.js';
 import { appsPage } from './pages/apps.js';
 import { appDetailPage } from './pages/app-detail.js';
+import { workflowPage } from './pages/workflow.js';
 
 // MARK: Icons
 
@@ -121,8 +122,7 @@ function placeholder(title, iconName, emptyTitle, message, subtitle) {
 
 route('/', appsPage);
 route('/apps/:app', appDetailPage);
-route('/apps/:app/workflow', (params) =>
-  placeholder('Workflow', 'apps', 'No Workflow Yet', 'The workflow editor appears here.', params.app)());
+route('/apps/:app/workflow', workflowPage);
 route('/builds', placeholder('History', 'history', 'No Builds Yet', 'Every build you deploy appears here.'));
 route('/builds/:id', placeholder('Build', 'history', 'Nothing Here Yet', 'The build’s jobs and logs appear here.'));
 route('/machines', placeholder('Machines', 'machines', 'No Machines Yet', 'Macs that run your builds appear here.'));
