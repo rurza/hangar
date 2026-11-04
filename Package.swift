@@ -37,8 +37,10 @@ let package = Package(
         .target(name: "HangarWorker", dependencies: ["HangarCore", "HangarAppStoreConnect"]),
         .target(name: "HangarClient", dependencies: ["HangarCore"]),
         .executableTarget(name: "hangar-server", dependencies: [
-            "HangarServer",
+            "HangarServer", "HangarCore", "HangarAppStoreConnect",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            .product(name: "Hummingbird", package: "hummingbird"),
+            .product(name: "Logging", package: "swift-log"),
         ]),
         .executableTarget(name: "hangar-worker", dependencies: [
             "HangarWorker",
