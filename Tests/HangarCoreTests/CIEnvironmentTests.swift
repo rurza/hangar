@@ -61,7 +61,8 @@ import Testing
         ])
         #expect(env["USER"] == "hangar")
         #expect(env["LOGNAME"] == "hangar-l")
-        #expect(env["TMPDIR"] == "/var/folders/x/T/")
+        // TMPDIR is the job's own, not the worker's.
+        #expect(env["TMPDIR"] == "/j/tmp")
         #expect(env["SHELL"] == "/bin/zsh")
         #expect(env["LANG"] == "pl_PL.UTF-8")
         #expect(env["LC_ALL"] == "pl_PL.UTF-8")
@@ -74,7 +75,7 @@ import Testing
         #expect(env["USER"] == NSUserName())
         #expect(env["LOGNAME"] == NSUserName())
         #expect(make(processEnvironment: ["USER": "a"])["LOGNAME"] == "a")
-        #expect(env["TMPDIR"] == nil)
+        #expect(env["TMPDIR"] == "/j/tmp")
     }
 
     @Test func setsDefaultUTF8LanguageWhenMissing() {
@@ -93,7 +94,7 @@ import Testing
             ], secretsDirectory: "/s")
         #expect(merged.env["LANG"] == "C")
         #expect(merged.env["USER"] == "hangar")
-        #expect(merged.env["TMPDIR"] == "/t/")
+        #expect(merged.env["TMPDIR"] == "/j/tmp")
     }
 
     @Test func shaRefSetsNoBranch() {

@@ -167,6 +167,9 @@ public struct JobRunner: Sendable {
             jobID: assignment.job.id, buildID: assignment.job.buildID, commit: assignment.commit, ref: assignment.ref,
             teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH)
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
+        // TMPDIR must exist before the first hook; cleanup removes it with the job directory.
+        try FileManager.default.createDirectory(
+            atPath: layout.temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         merged.warnings.forEach(log)
         try materializer.write(merged.filesToWrite)
         guard Self.nonEmpty(merged.env["HANGAR_ASC_KEY_ID"]) != nil, Self.nonEmpty(merged.env["HANGAR_ASC_KEY_PATH"]) != nil

@@ -168,6 +168,13 @@ private final class Shared<Value: Sendable>: Sendable {
     @Test func happyPathStepOrder() async throws {
         let fixture = try Fixture()
         defer { fixture.removeAll() }
+        // Whether the job's TMPDIR existed when the first hook ran.
+        let temporaryExisted = Shared<Bool?>(nil)
+        fixture.runner.whenRunning { [layout = fixture.layout] command in
+            if command.executable.hasSuffix("/" + Hook.postClone.rawValue) {
+                temporaryExisted.update { $0 = FileManager.default.fileExists(atPath: layout.temporary) }
+            }
+        }
 
         let result = await fixture.run()
 
@@ -190,6 +197,9 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postClone.environment["CI_WORKFLOW_ID"] == "release")
         #expect(postClone.environment["HANGAR_ASC_KEY_PATH"] == layout.secrets + "/HANGAR_ASC_KEY_PATH")
         #expect(postClone.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
+        #expect(postClone.environment["TMPDIR"] == layout.jobDirectory + "/tmp")
+        #expect(temporaryExisted.get() == true)
+        #expect(!FileManager.default.fileExists(atPath: layout.temporary))
 
         let clone = try #require(fixture.command { $0.arguments.first == "clone" })
         #expect(clone.environment["HANGAR_GITHUB_TOKEN"] == Self.githubToken)

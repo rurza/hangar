@@ -1,4 +1,5 @@
 import Foundation
+import HangarCore
 
 /// Where a job's files live under the worker data directory. Pure path computation; nothing here touches the disk.
 public struct WorkspaceLayout: Sendable, Equatable {
@@ -17,6 +18,8 @@ public struct WorkspaceLayout: Sendable, Equatable {
     public var export: String { "\(jobDirectory)/export" }
     public var upload: String { "\(jobDirectory)/upload" }
     public var resultBundle: String { "\(jobDirectory)/result.xcresult" }
+    /// The job's `TMPDIR`.
+    public var temporary: String { CIEnvironment.temporaryDirectory(workspace: jobDirectory) }
 
     public func archive(scheme: String) -> String { "\(jobDirectory)/archive/\(scheme).xcarchive" }
 }

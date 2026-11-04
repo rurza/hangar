@@ -31,6 +31,10 @@ public struct CIEnvironment: Sendable {
         public var warnings: [String]
     }
 
+    /// The job's own temporary directory, `<job directory>/tmp`: `TMPDIR` of every job, created by the worker before
+    /// the first hook and removed with the job directory.
+    public static func temporaryDirectory(workspace: String) -> String { workspace + "/tmp" }
+
     /// Variables copied from the worker's own environment when set. LaunchAgents start with a bare one, and tools
     /// like xcodegen, brew, swift and git fail without a user name, a temp directory or a UTF-8 locale.
     static let passthroughNames = ["HOME", "USER", "LOGNAME", "TMPDIR", "SHELL", "LANG", "LC_ALL", "LC_CTYPE"]
@@ -89,6 +93,8 @@ public struct CIEnvironment: Sendable {
         if !isFullSHA(ref) { env["CI_BRANCH"] = ref }
         if let teamID { env["CI_TEAM_ID"] = teamID }
         env.merge(identityEnvironment(from: processEnvironment)) { ci, _ in ci }
+        // Per job, not the worker's: temporary files do not pile up across jobs or collide between concurrent ones.
+        env["TMPDIR"] = temporaryDirectory(workspace: paths.workspace)
         return env
     }
 
