@@ -68,12 +68,14 @@ export function replaceChildren(element, ...children) {
 // MARK: Page structure
 
 /**
- * A page: the large title (and optional subtitle and trailing actions) followed by the content. The shell shows
- * the title in the compact header once the large title scrolls away.
+ * A page: the large title (and optional subtitle and trailing actions) followed by the content. `leading` (a
+ * node, e.g. an app icon) sits before the title. The shell shows the title in the compact header once the large
+ * title scrolls away.
  */
-export function page({ title, subtitle, actions }, ...content) {
+export function page({ title, subtitle, actions, leading }, ...content) {
   return h('div', { class: 'page' },
     h('header', { class: 'page-header' },
+      leading ? h('div', { class: 'page-leading' }, leading) : null,
       h('div', { class: 'page-heading' },
         h('h1', { class: 'large-title' }, title),
         subtitle ? h('p', { class: 'page-subtitle' }, subtitle) : null),
@@ -114,6 +116,44 @@ export function button(label, { kind = 'secondary', onClick, type = 'button', ..
 /** An indeterminate activity indicator. */
 export function spinner(label = 'Loading') {
   return h('span', { class: 'spinner', role: 'progressbar', 'aria-label': label });
+}
+
+// MARK: Forms
+
+let fieldCount = 0;
+
+/**
+ * A labelled form field. `control` is an input, textarea or select (it gets an id when it has none); the label is
+ * tied to it and `hint` (text or node) becomes its description. Returns the field element.
+ */
+export function field({ label, hint, control, trailing }) {
+  const id = control.id || `field-${++fieldCount}`;
+  control.id = id;
+  const hintNode = hint ? h('p', { class: 'field-hint', id: `${id}-hint` }, hint) : null;
+  if (hintNode) control.setAttribute('aria-describedby', hintNode.id);
+  return h('div', { class: 'field' },
+    h('div', { class: 'field-label-row' }, h('label', { class: 'field-label', for: id }, label), trailing),
+    control,
+    hintNode);
+}
+
+/**
+ * An on/off switch with a label and optional hint, built on a checkbox with `role="switch"`. `onChange(checked)`
+ * runs on every change. Returns `{ element, input }`.
+ */
+export function switchField({ label, hint, checked = false, disabled = false, onChange }) {
+  const id = `switch-${++fieldCount}`;
+  const input = h('input', {
+    type: 'checkbox', role: 'switch', class: 'switch', id, checked, disabled,
+    'aria-describedby': hint ? `${id}-hint` : null,
+    onChange: () => onChange?.(input.checked),
+  });
+  const element = h('div', { class: 'switch-field' },
+    h('div', { class: 'switch-text' },
+      h('label', { class: 'field-label', for: id }, label),
+      hint ? h('p', { class: 'field-hint', id: `${id}-hint` }, hint) : null),
+    input);
+  return { element, input };
 }
 
 // MARK: Sheet
@@ -158,9 +198,10 @@ let sheetCount = 0;
  * `destructive`, `cancel` or `secondary`. Clicking an action runs `onClick(sheet)`; while its promise is pending
  * the buttons are disabled. Afterwards the sheet closes, unless `onClick` returned `false` or threw — a thrown
  * error's message is shown inside the sheet. Esc, the close button and a click on the backdrop close it, focus
- * stays inside while it is open and returns to where it was afterwards. `onClose` runs once it has closed.
+ * stays inside while it is open and returns to where it was afterwards. `onClose` runs once it has closed. With
+ * `submitOnEnter`, Return in a single-line input runs the first primary action, as in a form.
  */
-export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary' }], onClose } = {}) {
+export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary' }], onClose, submitOnEnter = false } = {}) {
   const id = `sheet-title-${++sheetCount}`;
   const returnFocus = document.activeElement;
   const error = h('p', { class: 'sheet-error', role: 'alert', hidden: true });
@@ -198,6 +239,12 @@ export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary'
       close();
     } else if (event.key === 'Tab') {
       trap(event);
+    } else if (event.key === 'Enter' && submitOnEnter && !event.isComposing && event.target instanceof HTMLInputElement
+      && !['checkbox', 'radio', 'button', 'submit'].includes(event.target.type)) {
+      const index = actions.findIndex((action) => action.kind === 'primary');
+      if (index < 0 || buttons[index].disabled) return;
+      event.preventDefault();
+      run(actions[index]);
     }
   });
 

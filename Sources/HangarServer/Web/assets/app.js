@@ -3,6 +3,8 @@
 
 import { emptyState, h, page, svg } from './ui.js';
 import { route, start } from './router.js';
+import { appsPage } from './pages/apps.js';
+import { appDetailPage } from './pages/app-detail.js';
 
 // MARK: Icons
 
@@ -117,9 +119,8 @@ function placeholder(title, iconName, emptyTitle, message, subtitle) {
     emptyState({ icon: icon(iconName, 'empty-icon'), title: emptyTitle, message }));
 }
 
-route('/', placeholder('Apps', 'apps', 'No Apps Yet', 'Apps you add to Hangar appear here.'));
-route('/apps/:app', (params) =>
-  placeholder(params.app, 'apps', 'Nothing Here Yet', 'Builds, numbers and variables of this app appear here.')());
+route('/', appsPage);
+route('/apps/:app', appDetailPage);
 route('/apps/:app/workflow', (params) =>
   placeholder('Workflow', 'apps', 'No Workflow Yet', 'The workflow editor appears here.', params.app)());
 route('/builds', placeholder('History', 'history', 'No Builds Yet', 'Every build you deploy appears here.'));
