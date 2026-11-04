@@ -52,7 +52,7 @@ You do not create the signing identity by hand. The first archive with the App S
 
 ## Secrets and xcodebuild
 
-Variables marked secret are masked in every log line and are never passed to `xcodebuild` (ruling R19): xcodebuild records its environment in DerivedData logs and the result bundle, which is uploaded as an artifact. Hooks and post-actions still receive them. As-file variables are written under the job directory with mode 0600 and overwritten with zeros when the job ends.
+Variables marked secret are masked in every log line and are never passed to `xcodebuild archive` or `-exportArchive`, because xcodebuild records its environment in DerivedData logs and in the result bundle, which is uploaded as an artifact. The one exception is Swift package resolution: the separate `xcodebuild -resolvePackageDependencies` run before the archive gets `HANGAR_GITHUB_TOKEN` (and nothing else secret), so private packages on GitHub resolve. Hooks and post-actions still receive every variable. As-file variables are written under the job directory with mode 0600 and overwritten with zeros when the job ends.
 
 ## Crash recovery
 
