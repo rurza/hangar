@@ -1,5 +1,6 @@
 import Foundation
 import Hummingbird
+import Logging
 
 /// The web app: static files bundled in the `Web` resource folder. `GET /assets/<file>` serves a file from
 /// `Web/assets`; every other `GET` outside `/api/` gets `index.html`, whose router renders the page.
@@ -14,17 +15,49 @@ public struct WebUI: Sendable {
     /// Asset paths are `<file>` or `<folder>/<file>` (the pages live in `assets/pages`).
     static let maxAssetDepth = 2
 
-    /// The bundled `Web` folder.
-    public static var root: URL { Bundle.module.url(forResource: "Web", withExtension: nil)! }
+    /// The SwiftPM resource bundle that holds `Web`; install-server.sh copies it next to the binary.
+    static let bundleName = "Hangar_HangarServer.bundle"
+    static let logger = Logger(label: "app.hangar.server.web")
 
-    let root: URL
+    /// The bundled `Web` folder, nil when the resource bundle is not installed. Found without `Bundle.module`,
+    /// whose accessor calls `fatalError` when the bundle is missing.
+    public static let root: URL? = locateRoot()
 
-    public init(root: URL = WebUI.root) { self.root = root }
+    /// Looks for the bundle next to the executable (symlinks resolved), in the main bundle's resources, and next
+    /// to the bundle holding this code (the test runner's case).
+    static func locateRoot() -> URL? {
+        let directories = [
+            Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent(),
+            Bundle.main.resourceURL,
+            Bundle(for: BundleFinder.self).bundleURL.deletingLastPathComponent(),
+        ]
+        for case let directory? in directories {
+            let bundle = directory.appendingPathComponent(bundleName, isDirectory: true)
+            // macOS bundles keep resources in Contents/Resources; SwiftPM on Linux puts them at the top.
+            for web in [bundle.appendingPathComponent("Contents/Resources/Web"), bundle.appendingPathComponent("Web")]
+            where FileManager.default.fileExists(atPath: web.appendingPathComponent("index.html").path) {
+                return web
+            }
+        }
+        return nil
+    }
+
+    private final class BundleFinder {}
+
+    let root: URL?
+
+    /// `root` nil serves 503 "web UI not installed" on the UI paths; the API is unaffected.
+    public init(root: URL? = WebUI.root) { self.root = root }
 
     public func addRoutes(to router: Router<HangarRequestContext>) {
+        if root == nil {
+            Self.logger.warning(
+                "web UI not installed: \(Self.bundleName) is not next to the executable; the API still works")
+        }
         router.get("/") { _, _ in try index() }
         router.get("assets/**") { _, context in
-            guard let file = assetURL(context.parameters.getCatchAll()) else { throw HTTPError(.notFound) }
+            guard let root else { return Self.notInstalled() }
+            guard let file = assetURL(context.parameters.getCatchAll(), root: root) else { throw HTTPError(.notFound) }
             return try serve(file)
         }
         router.get("**") { request, _ in
@@ -34,11 +67,31 @@ public struct WebUI: Sendable {
         }
     }
 
-    private func index() throws -> Response { try serve(root.appendingPathComponent("index.html")) }
+    /// The page every UI path gets when the resource bundle is missing.
+    static func notInstalled() -> Response {
+        let html = """
+            <!doctype html><html lang="en"><head><meta charset="utf-8"><title>Hangar</title></head><body>
+            <h1>Web UI not installed</h1><p>The server cannot find \(bundleName). Run scripts/server/install-server.sh \
+            again to install it next to hangar-server. The API under /api/v1 works without it.</p></body></html>
+
+            """
+        return Response(
+            status: .serviceUnavailable,
+            headers: [
+                .contentType: "text/html; charset=utf-8", .cacheControl: "no-cache",
+                .contentSecurityPolicy: contentSecurityPolicy, .xContentTypeOptions: "nosniff",
+            ],
+            body: ResponseBody(byteBuffer: ByteBuffer(string: html)))
+    }
+
+    private func index() throws -> Response {
+        guard let root else { return Self.notInstalled() }
+        return try serve(root.appendingPathComponent("index.html"))
+    }
 
     /// The file under `Web/assets` the raw path components name, nil unless every decoded component is a plain
     /// name (`[A-Za-z0-9._-]`, not starting with a dot) and the result is a regular file inside the folder.
-    func assetURL(_ components: [Substring]) -> URL? {
+    func assetURL(_ components: [Substring], root: URL) -> URL? {
         guard (1...Self.maxAssetDepth).contains(components.count) else { return nil }
         let folder = root.appendingPathComponent("assets", isDirectory: true).resolvingSymlinksInPath()
         var file = folder

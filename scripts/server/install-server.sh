@@ -1,6 +1,6 @@
 #!/bin/bash
-# Builds Hangar in release mode, installs hangar-server (and hangar, once it exists) into /usr/local/bin,
-# and (re)loads the app.hangar.server launchd agent for the current user.
+# Builds Hangar in release mode, installs hangar-server with its web UI bundle (and hangar, once it exists) into
+# /usr/local/bin, and (re)loads the app.hangar.server launchd agent for the current user.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -30,6 +30,14 @@ if [ ! -d "$INSTALL_DIR" ]; then
     as_installer mkdir -p "$INSTALL_DIR"
 fi
 as_installer install -m 755 "$BIN_DIR/hangar-server" "$INSTALL_DIR/hangar-server"
+# The web UI's files live in the SwiftPM resource bundle, which hangar-server looks for next to itself.
+WEB_BUNDLE="Hangar_HangarServer.bundle"
+if [ ! -d "$BIN_DIR/$WEB_BUNDLE" ]; then
+    echo "error: $BIN_DIR/$WEB_BUNDLE is missing from the build output" >&2
+    exit 1
+fi
+as_installer rm -rf "${INSTALL_DIR:?}/$WEB_BUNDLE"
+as_installer cp -R "$BIN_DIR/$WEB_BUNDLE" "$INSTALL_DIR/$WEB_BUNDLE"
 if [ -x "$BIN_DIR/hangar" ]; then
     as_installer install -m 755 "$BIN_DIR/hangar" "$INSTALL_DIR/hangar"
 else

@@ -15,8 +15,12 @@ function build(element, attrs, children) {
       element.setAttribute('class', Array.isArray(value) ? value.filter(Boolean).join(' ') : value);
     } else if (key === 'dataset') {
       Object.assign(element.dataset, value);
-    } else if (key === 'style' && typeof value === 'object') {
+    } else if (key === 'style') {
       // CSSOM writes are allowed by the CSP; a style="" attribute would not be.
+      if (typeof value !== 'object') {
+        console.warn('h(): style must be an object of properties; the CSP blocks a style string', value);
+        continue;
+      }
       for (const [name, v] of Object.entries(value)) element.style.setProperty(name, v);
     } else if (key === 'ref' && typeof value === 'function') {
       value(element);
@@ -114,7 +118,29 @@ export function spinner(label = 'Loading') {
 
 // MARK: Sheet
 
-const openSheets = [];
+const openSheets = []; // { handle, backdrop }, topmost last
+const inertBySheets = new Set();
+
+/**
+ * Makes everything in <body> but the topmost sheet inert, so it cannot be reached by Tab, pointer or assistive
+ * technology. Toasts stay live. Elements made inert here are released once no sheet needs them inert any more;
+ * elements that were already inert are left alone.
+ */
+function syncInert() {
+  const top = openSheets.at(-1)?.backdrop;
+  for (const element of [...inertBySheets]) {
+    if (!top || element === top || !element.isConnected) {
+      element.inert = false;
+      inertBySheets.delete(element);
+    }
+  }
+  if (!top) return;
+  for (const element of document.body.children) {
+    if (element === top || element.classList.contains('toasts') || element.inert) continue;
+    element.inert = true;
+    inertBySheets.add(element);
+  }
+}
 
 function focusable(root) {
   return [...root.querySelectorAll(
@@ -215,15 +241,11 @@ export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary'
     error.hidden = !message;
   }
 
-  // Everything behind the sheet becomes inert: unreachable by Tab, clicks and assistive technology.
-  const madeInert = [...document.body.children].filter((element) => !element.inert);
-  madeInert.forEach((element) => { element.inert = true; });
-
   function close() {
     if (closed) return;
     closed = true;
-    openSheets.splice(openSheets.indexOf(handle), 1);
-    madeInert.forEach((element) => { element.inert = false; });
+    openSheets.splice(openSheets.findIndex((entry) => entry.handle === handle), 1);
+    syncInert();
     backdrop.classList.add('closing');
     const remove = () => backdrop.remove();
     if (matchMedia('(prefers-reduced-motion: reduce)').matches) remove();
@@ -236,15 +258,16 @@ export function sheet({ title, body, actions = [{ label: 'Done', kind: 'primary'
   }
 
   const handle = { close, element: panel, setError };
-  openSheets.push(handle);
+  openSheets.push({ handle, backdrop });
   document.body.append(backdrop);
+  syncInert();
   (panel.querySelector('[autofocus]') ?? focusable(panel.querySelector('.sheet-body'))[0] ?? panel).focus();
   return handle;
 }
 
 /** Closes every open sheet (the router does this on navigation). */
 export function closeAllSheets() {
-  [...openSheets].reverse().forEach((s) => s.close());
+  [...openSheets].reverse().forEach((entry) => entry.handle.close());
 }
 
 /** Asks a yes/no question in a sheet. Resolves to true when confirmed. */

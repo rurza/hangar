@@ -13,9 +13,23 @@ export class ApiError extends Error {
   }
 }
 
-async function request(method, path, body) {
+/** A signal that aborts when any of `signals` does (AbortSignal.any where available). */
+function anySignal(signals) {
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(signals);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      break;
+    }
+    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+  }
+  return controller.signal;
+}
+
+async function request(method, path, body, { signal } = {}) {
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), TIMEOUT_MS);
   const headers = { Accept: 'application/json' };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   try {
@@ -23,7 +37,7 @@ async function request(method, path, body) {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
+      signal: signal ? anySignal([signal, timeout.signal]) : timeout.signal,
       credentials: 'same-origin',
     });
     const text = await response.text();
@@ -32,9 +46,9 @@ async function request(method, path, body) {
     return JSON.parse(text);
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    if (controller.signal.aborted) {
-      throw new ApiError(0, 'timeout', 'Hangar did not answer within 30 seconds.');
-    }
+    // The caller's abort wins over the timeout, so a page that was left never reports a timeout.
+    if (signal?.aborted) throw new ApiError(0, 'aborted', 'The request was cancelled.');
+    if (timeout.signal.aborted) throw new ApiError(0, 'timeout', 'Hangar did not answer within 30 seconds.');
     if (error instanceof SyntaxError) throw new ApiError(0, 'invalid_response', 'Hangar sent a response that is not JSON.');
     throw new ApiError(0, 'network_error', 'Hangar cannot be reached. Check that the server is running.');
   } finally {
@@ -55,12 +69,16 @@ function errorFrom(response, text) {
   return new ApiError(response.status, `http_${response.status}`, `The server answered ${response.status}${reason}.`);
 }
 
-/** JSON calls; `path` starts with `/` and is relative to `/api/v1`. Each resolves to the decoded body or null. */
+/**
+ * JSON calls; `path` starts with `/` and is relative to `/api/v1`. Each resolves to the decoded body or null.
+ * `options.signal` (e.g. the router's `context.signal`) cancels the call: it then rejects with code `aborted`,
+ * while a call that runs out of time rejects with code `timeout`.
+ */
 export const api = {
-  get: (path) => request('GET', path),
-  post: (path, body) => request('POST', path, body),
-  put: (path, body) => request('PUT', path, body),
-  del: (path) => request('DELETE', path),
+  get: (path, options) => request('GET', path, undefined, options),
+  post: (path, body, options) => request('POST', path, body, options),
+  put: (path, body, options) => request('PUT', path, body, options),
+  del: (path, options) => request('DELETE', path, undefined, options),
 };
 
 /** Encodes one path segment, e.g. `api.get(\`/apps/${seg(slug)}\`)`. */
@@ -75,13 +93,16 @@ const RECONNECT_MAX_MS = 15_000;
  * An EventSource that reconnects with backoff after any error (the browser gives up on some on its own) and is
  * closed for good by the returned function. `listeners` maps event names to `(data) => void`, with data parsed
  * from JSON. `onReopen` runs when a connection opens after an error, so callers can reload what they missed.
+ * With `onFailBeforeOpen`, a first connection that fails without ever opening (a 404, say) is not retried: the
+ * stream closes and `onFailBeforeOpen()` runs instead.
  */
-function stream(url, listeners, { onReopen, onConnect } = {}) {
+function stream(url, listeners, { onReopen, onConnect, onFailBeforeOpen } = {}) {
   let source = null;
   let timer = null;
   let closed = false;
   let delay = RECONNECT_MIN_MS;
   let failed = false;
+  let everOpened = false;
 
   function open() {
     timer = null;
@@ -89,6 +110,7 @@ function stream(url, listeners, { onReopen, onConnect } = {}) {
     onConnect?.();
     source = new EventSource(url);
     source.addEventListener('open', () => {
+      everOpened = true;
       delay = RECONNECT_MIN_MS;
       if (failed) {
         failed = false;
@@ -99,6 +121,11 @@ function stream(url, listeners, { onReopen, onConnect } = {}) {
       if (closed) return;
       source.close();
       source = null;
+      if (!everOpened && onFailBeforeOpen) {
+        closed = true;
+        onFailBeforeOpen();
+        return;
+      }
       failed = true;
       timer = setTimeout(open, delay);
       delay = Math.min(delay * 2, RECONNECT_MAX_MS);
@@ -140,16 +167,17 @@ export function events(onEvent, { onReconnect } = {}) {
 /**
  * Follows a job's log: `onEntries([LogEntry])` for the stored entries and then each new batch, `onEnd(job)` once
  * the job has finished, after which the stream is closed. `step` (optional) limits it to one step. After a
- * dropped connection the server replays the log from the start; entries already delivered are skipped. Returns
+ * dropped connection the server replays the log from the start; entries already delivered are skipped. When the
+ * stream cannot be opened at all (an unknown job, say) it is not retried and `onError(ApiError)` runs. Returns
  * the function that stops following.
  */
-export function followLog(jobID, step, onEntries, onEnd) {
+export function followLog(jobID, step, onEntries, onEnd, onError) {
   const query = new URLSearchParams({ follow: '1' });
   if (step) query.set('step', step);
   let delivered = 0;
   let toSkip = 0;
-  let close = null;
-  close = stream(`${BASE}/jobs/${seg(jobID)}/log?${query}`, {
+  let stopped = false;
+  const close = stream(`${BASE}/jobs/${seg(jobID)}/log?${query}`, {
     log: (entries) => {
       if (!Array.isArray(entries)) return;
       const skipped = Math.min(toSkip, entries.length);
@@ -159,12 +187,25 @@ export function followLog(jobID, step, onEntries, onEnd) {
       if (fresh.length) onEntries(fresh);
     },
     end: (job) => {
-      close();
+      stop();
       onEnd?.(job);
     },
   }, {
     // Every connection starts with the whole stored log again.
     onConnect: () => { toSkip = delivered; },
+    // EventSource does not expose the status, so ask for the job to learn why (job_not_found, for example).
+    onFailBeforeOpen: () => {
+      request('GET', `/jobs/${seg(jobID)}`).then(
+        () => new ApiError(0, 'stream_unavailable', 'The log stream could not be opened.'),
+        (error) => error,
+      ).then((error) => {
+        if (!stopped) onError?.(error);
+      });
+    },
   });
-  return close;
+  function stop() {
+    stopped = true;
+    close();
+  }
+  return stop;
 }

@@ -95,6 +95,26 @@ import Testing
         }
     }
 
+    /// Without the resource bundle the UI paths answer 503 and the API keeps working; nothing crashes.
+    @Test func missingWebRootServes503() async throws {
+        let fixture = try APIFixture()
+        try await Application(router: fixture.server.buildRouter(webRoot: nil)).test(.router) { client in
+            for path in ["/", "/apps/legilo", "/assets/app.js"] {
+                try await client.execute(uri: path, method: .get) { response in
+                    #expect(response.status == .serviceUnavailable, "\(path)")
+                    #expect(response.headers[.contentType] == "text/html; charset=utf-8")
+                    #expect(String(buffer: response.body).contains("Web UI not installed"))
+                }
+            }
+            try await client.execute(uri: "/api/v1/health", method: .get) { response in
+                #expect(response.status == .ok)
+            }
+            try await client.execute(uri: "/api/v1/nope", method: .get) { response in
+                #expect(response.status == .notFound)
+            }
+        }
+    }
+
     @Test func unknownAPIPathStaysJSON404() async throws {
         try await APIFixture().test { client in
             for path in ["/api/v1/nope", "/api/v1/apps/x/nope/deeper", "/api/other"] {
@@ -111,7 +131,8 @@ import Testing
     }
 
     @Test func htmlHasNoInlineScript() throws {
-        let html = try String(contentsOf: WebUI.root.appendingPathComponent("index.html"), encoding: .utf8)
+        let root = try #require(WebUI.root)
+        let html = try String(contentsOf: root.appendingPathComponent("index.html"), encoding: .utf8)
         let scripts = html.ranges(of: /<script\b[^>]*>/).map { String(html[$0]) }
         #expect(!scripts.isEmpty)
         for tag in scripts { #expect(tag.contains("src="), "\(tag)") }
