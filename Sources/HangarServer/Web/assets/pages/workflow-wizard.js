@@ -51,8 +51,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       destructive: true,
     }) : true),
   });
-  handle.element.classList.add('wf-wizard-sheet');
-  // Cancel on every step, on the left; it asks first once something was chosen.
+  // Cancel on every step, just before Back and Next as in the other sheets; it asks first once something was chosen.
   const cancel = { label: 'Cancel', kind: 'cancel', onClick: async () => (state.touched ? confirm({
     title: 'Discard This Workflow?',
     message: 'It has not been created yet.',

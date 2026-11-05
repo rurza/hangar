@@ -344,10 +344,9 @@ export function openDeploySheet(app) {
     const previous = selectedMachineID();
     const option = (value, title, detail, dot) => h('label', { class: 'where-option' },
       h('input', { type: 'radio', name: 'deploy-where', value, checked: value === previous, class: 'where-radio', onChange: () => update() }),
-      // Every row keeps the dot's column, so the titles line up.
-      h('span', { class: ['online-dot', dot ?? 'none'], 'aria-hidden': 'true' }),
+      // The title sits 12 px from the radio, as in the wizard; the online dot follows the Mac's name.
       h('span', { class: 'where-text' },
-        h('span', { class: 'where-title' }, title),
+        h('span', { class: 'where-title' }, title, dot ? h('span', { class: ['online-dot', dot], 'aria-hidden': 'true' }) : null),
         h('span', { class: 'where-detail' }, detail)));
     const machines = check?.machines ?? [];
     const able = machines.filter((machine) => machine.online && machine.problems.length === 0);

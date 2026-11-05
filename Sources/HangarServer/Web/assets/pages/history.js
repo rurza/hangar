@@ -23,7 +23,7 @@ export async function historyPage(params, context) {
   let appsRequest = null; // the reloadApps call in flight
 
   const select = h('select', {
-    class: 'popup-button history-filter', id: 'history-app', onChange: () => {
+    class: 'select history-filter', id: 'history-app', onChange: () => {
       filter = select.value;
       const url = filter ? `/builds?app=${seg(filter)}` : '/builds';
       history.replaceState(null, '', url);

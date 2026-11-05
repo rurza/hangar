@@ -323,6 +323,8 @@
   overflow-wrap: anywhere;
 }
 .wf-readonly a { overflow-wrap: anywhere; }
+/* A value that cannot be changed here: plain text, not a field it could be mistaken for. */
+.wf-readonly.wf-plain { min-height: 0; padding: 0; background: none; color: var(--text); }
 
 /* Radio cards: a choice and what it means. */
 .wf-choices { display: grid; gap: var(--space-1); margin: 0; padding: 0; border: 0; min-width: 0; }
@@ -559,8 +561,6 @@
 .wf-switch-list { display: grid; border-radius: var(--radius-sm); }
 .wf-switch-list .switch-field { padding: 12px; }
 
-/* The wizard's Cancel on the left of its footer, as on iOS. */
-.wf-wizard-sheet .sheet-actions > .button:first-child { margin-inline-end: auto; }
 
 /* MARK: YAML sheet */
 

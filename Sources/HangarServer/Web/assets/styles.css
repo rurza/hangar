@@ -1355,6 +1355,16 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 }
 
 .select { appearance: auto; padding-block: 0; cursor: pointer; }
+/* A text field with suggestions (the Deploy sheet's branch): the chevron of a pop-up, not the browser's ▼. */
+.input[list] {
+  padding-right: 32px;
+  /* A stroked chevron in the grey that reads on both appearances (a data: image, which the CSP allows). */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 9px center;
+  background-size: 10px 6px;
+  background-repeat: no-repeat;
+}
+.input[list]::-webkit-calendar-picker-indicator { opacity: 0; cursor: pointer; }
 
 /* MARK: Deploy sheet */
 
@@ -1388,14 +1398,14 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
   content: "";
   position: absolute;
   top: 0;
-  left: 62px;
+  left: 42px;
   right: 0;
   border-top: 0.5px solid var(--separator);
 }
 .where-option:has(.where-radio:checked) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .where-radio { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
 .where-text { flex: 1; min-width: 0; display: grid; }
-.where-title { font: var(--callout); font-weight: 500; overflow-wrap: anywhere; }
+.where-title { display: flex; align-items: center; gap: 6px; font: var(--callout); font-weight: 500; overflow-wrap: anywhere; }
 .where-detail { color: var(--secondary); font: var(--footnote); }
 .where-options > .field-hint { padding: 8px 12px; }
 .online-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--neutral); }
@@ -1585,30 +1595,9 @@ li + li > .artifact-link::before {
 
 /* MARK: History */
 
-/* A compact pop-up button, as in a toolbar: 32 px, the value and a chevron. */
-.popup-button {
-  appearance: none;
-  -webkit-appearance: none;
-  min-width: 140px;
-  max-width: 100%;
-  height: 32px;
-  padding: 0 32px 0 14px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
-  background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%), linear-gradient(135deg, var(--accent) 50%, transparent 50%);
-  background-position: right 17px center, right 12px center;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  color: var(--accent);
-  font: var(--headline);
-  font-size: 15px;
-  letter-spacing: -0.24px;
-  cursor: pointer;
-}
-.page-actions .popup-button { max-width: 50vw; text-overflow: ellipsis; }
+/* The app filter: a grey pop-up like the editor's workflow picker, sized to its value. */
+.history-filter { width: auto; max-width: 50vw; min-height: 36px; padding-inline: 12px 8px; font: var(--subhead); font-weight: 500; }
 .key-id-line .link-button { font: inherit; }
-.popup-button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 /* MARK: Machines */
 

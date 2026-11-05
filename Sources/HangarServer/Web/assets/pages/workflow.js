@@ -654,7 +654,7 @@ function workflowEditor({ app, stored: initial, context }) {
       header: header({ icon: 'general', title: 'General', subtitle: 'What this workflow is called and what it builds.' }),
       body: h('div', { class: 'wf-form' },
         wfField({ label: 'Name', control: nameInput }),
-        wfField({ label: 'Repository', control: h('div', { class: 'wf-readonly' }, h('a', { href: repository, target: '_blank', rel: 'noopener' }, repository.replace(/^https:\/\//, ''), ' ↗')) }),
+        wfField({ label: 'Repository', control: h('div', { class: 'wf-readonly wf-plain' }, h('a', { href: repository, target: '_blank', rel: 'noopener' }, repository.replace(/^https:\/\//, ''), ' ↗')) }),
         project,
         wfField({
           label: 'As a file',
@@ -1012,7 +1012,7 @@ function workflowEditor({ app, stored: initial, context }) {
       });
     let destination;
     if (action.platform === 'macos') {
-      destination = wfField({ label: 'Destination', control: h('div', { class: 'wf-readonly' }, 'This Mac'), hint: 'macOS tests run on the Mac that builds them.' });
+      destination = wfField({ label: 'Destination', control: h('div', { class: 'wf-readonly wf-plain' }, 'The build Mac'), hint: 'macOS tests run on the Mac that builds them.' });
     } else {
       const device = testDestinationText({ platform: action.platform, destination: '' }).replace(/^the /, '');
       const runtimes = unique((machines ?? []).flatMap((machine) => machine.report?.simulatorRuntimes ?? [])
