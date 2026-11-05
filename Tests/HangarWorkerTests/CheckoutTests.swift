@@ -227,6 +227,24 @@ import Testing
         }
     }
 
+    /// The app's repository URL is user input: one shaped like an option must reach git as the repository.
+    @Test func aRepositoryURLIsNeverReadAsAnOption() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let marker = fixture.root + "/injected"
+        let url = "--upload-pack=touch \(marker)"
+        let runner = RecordingProcessRunner()
+        try await Checkout(runner: runner, layout: fixture.layout).run(repoURL: url, commit: "abc", token: nil) { _ in }
+        let clone = try #require(runner.commands.first { $0.arguments.first == "clone" })
+        #expect(clone.arguments == ["clone", "--", url, fixture.layout.repository])
+
+        // With the real git the clone just fails, and nothing ran.
+        await #expect(throws: CheckoutError.self) {
+            _ = try await Self.checkout(fixture, url: url, commit: String(repeating: "a", count: 40))
+        }
+        #expect(!FileManager.default.fileExists(atPath: marker))
+    }
+
     @Test func resetsAndSyncsSubmodules() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
