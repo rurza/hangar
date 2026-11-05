@@ -214,12 +214,15 @@ public struct VMImageBuilder: Sendable {
                 df -h /Volumes/workspace | tail -1
                 """, onLine: progress)
         }
-        // 3. Homebrew only when asked for: an image carries macOS, Xcode and the platforms, nothing a job did not ask for.
+        // 3. /opt/homebrew, empty and builder's: a job's script can put Homebrew there without sudo (from its tarball)
+        // and get bottles, as on Xcode Cloud. Homebrew itself goes in only when asked for.
+        try await step("give \(user) an empty /opt/homebrew") {
+            try await ssh.require(
+                "own /opt/homebrew", user: "admin", host: address,
+                "sudo -n mkdir -p /opt/homebrew && sudo -n chown -R \(user):admin /opt/homebrew")
+        }
         if homebrew {
-            try await step("install Homebrew into /opt/homebrew, owned by \(user)") {
-                try await ssh.require(
-                    "own /opt/homebrew", user: "admin", host: address,
-                    "sudo -n mkdir -p /opt/homebrew && sudo -n chown -R \(user):admin /opt/homebrew")
+            try await step("install Homebrew into /opt/homebrew") {
                 // `brew update` turns the tarball into a git checkout, so later updates work; its output is long.
                 try await ssh.require(
                     "install Homebrew", user: user, host: address,

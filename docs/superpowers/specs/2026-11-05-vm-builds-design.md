@@ -654,8 +654,9 @@ something open, the slice decided as follows.
 **Revised 2026-11-05: an image installs only what is necessary.** *(owner's call)* A job image carries macOS and
 Xcode (first launch done), and nothing else: no Homebrew, no Metal toolchain and no simulator runtime by default
 (archives use the SDKs inside Xcode; only test jobs need a runtime, and `--platform iOS` adds one). A job assumes only macOS and Xcode and installs what it needs itself, so no build depends
-on what the image happened to carry. `vm image build --homebrew` and `--metal-toolchain` add them for a Mac
-whose owner wants them. This supersedes the Homebrew parts of goal 2 and of the base image pipeline above.
+on what the image happened to carry. `/opt/homebrew` exists, empty and owned by
+`builder`, so a job's script can unpack Homebrew there without sudo and get bottles. `vm image build --homebrew`
+and `--metal-toolchain` add them ahead of time for a Mac whose owner wants them. This supersedes the Homebrew parts of goal 2 and of the base image pipeline above.
 
 ### Found while building it
 
