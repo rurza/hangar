@@ -37,8 +37,26 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                     runner: runner, locator: locator, dataDirectory: configuration.dataDirectory),
                 jobRunner: JobRunner(
                     connection: connection, runner: runner, locator: locator, dataDirectory: configuration.dataDirectory))
-            logger.info("worker started", metadata: ["server": "\(configuration.serverURL)"])
+            logger.info("worker started", metadata: ["server": "\(configuration.serverURL)", "version": "\(JobRunner.workerVersion)"])
+            let signals = Self.stopOnSignals(loop)
             await loop.run()
+            signals.forEach { $0.cancel() }
+            logger.info("worker stopped")
+        }
+
+        /// SIGTERM (launchd stopping the agent, `launchctl bootout`, an update) and SIGINT stop the worker
+        /// gracefully: running jobs are cancelled with the reason, report it and clean up before the process exits.
+        /// launchd sends SIGKILL if that takes longer than its exit timeout (20 s by default).
+        static func stopOnSignals(_ loop: WorkerLoop) -> [any DispatchSourceSignal] {
+            [(SIGTERM, "SIGTERM"), (SIGINT, "SIGINT")].map { number, name in
+                signal(number, SIG_IGN)
+                let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+                source.setEventHandler {
+                    Task { await loop.stop(reason: "hangar-worker on \(JobRunner.computerName) was stopped (\(name))") }
+                }
+                source.resume()
+                return source
+            }
         }
     }
 

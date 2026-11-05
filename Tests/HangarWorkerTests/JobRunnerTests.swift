@@ -160,7 +160,9 @@ private final class Shared<Value: Sendable>: Sendable {
             }
         }
 
-        func run(cancelled: @escaping @Sendable () -> Bool = { false }) async -> JobResult {
+        func run(
+            cancelled: @escaping @Sendable () -> Bool = { false }, stopReason: @escaping @Sendable () -> String? = { nil }
+        ) async -> JobResult {
             let jobRunner = JobRunner(
                 connection: connection, runner: runner,
                 locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: applications),
@@ -169,11 +171,13 @@ private final class Shared<Value: Sendable>: Sendable {
                     credentials.update { $0.append(received) }
                     return appStoreConnect
                 })
-            return await jobRunner.run(assignment, cancelled: cancelled)
+            return await jobRunner.run(assignment, cancelled: cancelled, stopReason: stopReason)
         }
 
         /// Runs while a ticker moves the test clock forward, for steps that wait on it.
-        func runTicking(cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
+        func runTicking(
+            cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String? = { nil }
+        ) async -> JobResult {
             let ticker = Task {
                 while !Task.isCancelled {
                     await clock.advance(by: .seconds(1))
@@ -181,7 +185,7 @@ private final class Shared<Value: Sendable>: Sendable {
                 }
             }
             defer { ticker.cancel() }
-            return await run(cancelled: cancelled)
+            return await run(cancelled: cancelled, stopReason: stopReason)
         }
 
         func command(_ match: (ProcessCommand) -> Bool) -> ProcessCommand? { runner.commands.first(where: match) }
@@ -596,6 +600,27 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.hook(.postXcodebuild) == nil)
         #expect(fixture.connection.status(of: "upload-artifacts") == .succeeded)
         #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+    }
+
+    @Test func aWorkerStopCancelsTheStepWithItsReasonAndSkipsTheUpload() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.runner.recording.scriptHang(Self.isArchive)
+        let archiveStarted = Shared(false)
+        fixture.runner.whenRunning { if Self.isArchive($0) { archiveStarted.update { $0 = true } } }
+        let reason = "hangar-worker on Studio was stopped (SIGTERM)"
+
+        let result = await fixture.runTicking(
+            cancelled: { archiveStarted.get() }, stopReason: { archiveStarted.get() ? reason : nil })
+
+        #expect(result == JobResult(status: .cancelled, failureReason: reason + " during archive"))
+        #expect(fixture.connection.result == result)
+        #expect(fixture.connection.status(of: "archive") == .cancelled)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == "Stopped: " + reason)
+        #expect(fixture.connection.status(of: "upload-artifacts") == .skipped)
+        #expect(fixture.connection.uploads.isEmpty)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+        #expect(fixture.connection.logLines.contains("job stopped: \(reason); stopped archive"))
     }
 
     @Test func failureReasonAndOutputsAreMasked() async throws {
