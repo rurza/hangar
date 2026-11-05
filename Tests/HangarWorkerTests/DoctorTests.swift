@@ -132,4 +132,39 @@ import Testing
         #expect(report.tools == ["git": "/usr/bin/git"])
         #expect(!runner.commands.contains { $0.arguments.last?.contains("rm -rf") == true })
     }
+
+    @Test func reportsSigningIdentityNamesOnceEach() async {
+        let runner = Self.scriptedRunner()
+        runner.script(
+            { $0.executable.hasSuffix("security") },
+            lines: [
+                Self.identityLine,
+                "  2) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \"Developer ID Application: Someone (X)\"",
+                "  3) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB \"Apple Development: Adam (TEAM123456)\"",
+                "     3 valid identities found",
+            ])
+        let report = await Self.doctor(runner).report(runningJobIDs: [])
+        #expect(report.signingIdentities == ["Apple Development: Adam (TEAM123456)", "Developer ID Application: Someone (X)"])
+        #expect(runner.commands.filter { $0.executable.hasSuffix("security") }.count == 1)
+    }
+
+    @Test func xcodeAccountSignedInWhenXcodeListsAnAppleID() async {
+        let runner = Self.scriptedRunner()
+        runner.script(
+            { $0.executable.hasSuffix("defaults") && $0.arguments.last == "DVTDeveloperAccountManagerAppleIDLists" },
+            lines: ["{", "    \"IDE.Identifiers.Prod\" = (", "        { identifier = \"7E13918F\"; }", "    );", "}"])
+        #expect(await Self.doctor(runner).report(runningJobIDs: []).xcodeAccountSignedIn == true)
+    }
+
+    @Test func xcodeAccountNotSignedInWhenXcodeHasNoAccounts() async {
+        let runner = Self.scriptedRunner()
+        runner.script(
+            { $0.executable.hasSuffix("defaults") },
+            lines: ["The domain/default pair of (com.apple.dt.Xcode, DVTDeveloperAccountManagerAppleIDLists) does not exist"],
+            exitCode: 1)
+        #expect(await Self.doctor(runner).report(runningJobIDs: []).xcodeAccountSignedIn == false)
+        let empty = Self.scriptedRunner()
+        empty.script({ $0.executable.hasSuffix("defaults") }, lines: ["{", "    \"IDE.Identifiers.Prod\" = (", "    );", "}"])
+        #expect(await Self.doctor(empty).report(runningJobIDs: []).xcodeAccountSignedIn == false)
+    }
 }
