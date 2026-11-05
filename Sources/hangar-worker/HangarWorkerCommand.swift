@@ -4,14 +4,14 @@ import HangarCore
 import HangarWorker
 import Logging
 
-private let defaultSupportDirectory = NSHomeDirectory() + "/Library/Application Support/Hangar/worker"
-private let defaultConfigPath = defaultSupportDirectory + "/config.json"
+let defaultSupportDirectory = NSHomeDirectory() + "/Library/Application Support/Hangar/worker"
+let defaultConfigPath = defaultSupportDirectory + "/config.json"
 
 @main
 struct HangarWorkerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "hangar-worker", abstract: "The Hangar build worker.",
-        subcommands: [Run.self, Doctor.self, Setup.self, Check.self, Isolate.self])
+        subcommands: [Run.self, Doctor.self, Setup.self, Check.self, Isolate.self, VMCommand.self])
 
     struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Runs the worker: heartbeats and builds assigned jobs.")
@@ -45,11 +45,41 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             let work = configuration.resolvedWorkDirectory
             // Headless (the hangar user's LaunchDaemon, set up by isolate): signs with its own CI keychain.
             let keychain = CIKeychain.installed()
+            var loopConfiguration = configuration
+            var vmDoctor: VMDoctor?
+            let jobRunner: any JobRunning
+            if let settings = configuration.vm {
+                // VM builds: every job in a fresh VM, as many at once as there are slots.
+                let host = VMHost(settings: settings, runner: runner)
+                for line in VMMaintenance.sweep(storage: host.storage) { logger.info("\(line)") }
+                do { try await GuestKeys.ensure(storage: host.storage, runner: runner) } catch {
+                    logger.error("could not create the key for VM guests: \(error)")
+                }
+                let identity = VMIdentityStore(dataDirectory: configuration.dataDirectory)
+                let doctor = VMDoctor(host: host, identity: identity)
+                let pool = VMSlotPool(count: settings.slots)
+                vmDoctor = doctor
+                loopConfiguration.maxConcurrentJobs = settings.slots
+                jobRunner = VMJobRunner(
+                    host: host, connection: connection, serverURL: configuration.serverURL, identity: identity, slots: pool,
+                    workerBinary: Bundle.main.executablePath ?? CommandLine.arguments[0],
+                    readiness: { doctor.readinessProblem() })
+                if doctor.readinessProblem() == nil {
+                    Task { await VMMaintenance.prepareSlots(host: host, pool: pool) { logger.info("\($0)") } }
+                }
+                logger.info("VM builds on", metadata: [
+                    "storage": "\(settings.storage)", "slots": "\(settings.slots)",
+                    "ready": "\(doctor.readinessProblem() ?? "yes")",
+                ])
+            } else {
+                jobRunner = JobRunner(
+                    connection: connection, runner: runner, locator: locator, dataDirectory: work, keychain: keychain)
+            }
             let loop = WorkerLoop(
-                configuration: configuration, connection: connection,
-                doctor: HangarWorker.Doctor(runner: runner, locator: locator, dataDirectory: work, keychain: keychain),
-                jobRunner: JobRunner(
-                    connection: connection, runner: runner, locator: locator, dataDirectory: work, keychain: keychain))
+                configuration: loopConfiguration, connection: connection,
+                doctor: HangarWorker.Doctor(
+                    runner: runner, locator: locator, dataDirectory: work, keychain: keychain, vm: vmDoctor),
+                jobRunner: jobRunner)
             logger.info("worker started", metadata: [
                 "server": "\(configuration.serverURL)", "version": "\(JobRunner.workerVersion)", "work": "\(work)",
                 "keychain": "\(keychain?.path ?? "login")",
@@ -79,10 +109,19 @@ struct HangarWorkerCommand: AsyncParsableCommand {
     struct Doctor: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Prints this machine's health report as JSON.")
 
+        @Option(help: "Worker configuration file; with VM builds on, the report has a vm section.")
+        var config: String = defaultConfigPath
+
         func run() async throws {
             let runner = LiveProcessRunner()
+            let configuration = try? WorkerConfiguration.load(from: config)
+            let vm = configuration?.vm.map { settings in
+                VMDoctor(
+                    host: VMHost(settings: settings, runner: runner),
+                    identity: VMIdentityStore(dataDirectory: configuration!.dataDirectory))
+            }
             let doctor = HangarWorker.Doctor(
-                runner: runner, locator: XcodeLocator(runner: runner), keychain: CIKeychain.installed())
+                runner: runner, locator: XcodeLocator(runner: runner), keychain: CIKeychain.installed(), vm: vm)
             let encoder = JSONCoding.encoder
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(await doctor.report(runningJobIDs: []))

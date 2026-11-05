@@ -96,6 +96,9 @@ if [ ! -x "$WORKER_BIN_DIR/hangar-worker" ]; then
     echo "error: $WORKER_BIN_DIR/hangar-worker is missing from the build output" >&2
     exit 1
 fi
+# VM builds need the virtualization entitlement; an ad hoc signature carries it. Signed before it is hashed
+# or copied, so the SHA-256 the server announces and the self-update compares is the signed binary's.
+codesign --force --sign - --entitlements "$ROOT/scripts/worker/hangar-worker.entitlements" "$WORKER_BIN_DIR/hangar-worker"
 as_installer install -S -m 755 "$WORKER_BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
 if [ -x "$BIN_DIR/hangar" ]; then
     as_installer install -m 755 "$BIN_DIR/hangar" "$INSTALL_DIR/hangar"

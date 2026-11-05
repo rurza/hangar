@@ -93,6 +93,9 @@ swift build -c release --product hangar-worker
 BIN_DIR="$(swift build -c release --show-bin-path)"
 
 ensure_install_dir
+# VM builds need the virtualization entitlement; an ad hoc signature carries it. Signed before it is hashed
+# or copied, so the SHA-256 the server announces and the self-update compares is the signed binary's.
+codesign --force --sign - --entitlements "$ROOT/scripts/worker/hangar-worker.entitlements" "$BIN_DIR/hangar-worker"
 as_installer install -m 755 "$BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
 
 # The token goes through the environment, never the argument list.
