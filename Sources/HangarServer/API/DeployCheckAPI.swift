@@ -37,8 +37,8 @@ extension HangarServerApp {
             guard let workflow = file.workflows[name] else {
                 throw DeployError.workflowNotFound(name: name, available: file.workflows.keys.sorted())
             }
-            var check = try deployCheck(workflow: workflow, pinned: pinned)
             let entries = try variables.resolvedEntries(appID: app.id)
+            var check = try deployCheck(workflow: workflow, pinned: pinned, teamKey: SchedulerLoop.hasTeamKey(entries))
             check.notices = await preflight.notices(
                 app: app, workflow: workflow, commit: resolved,
                 token: entries.first { $0.name == BuildService.tokenVariable }?.value,
@@ -55,7 +55,7 @@ extension HangarServerApp {
         }
     }
 
-    func deployCheck(workflow: Workflow, pinned: Machine?) throws -> DeployCheck {
+    func deployCheck(workflow: Workflow, pinned: Machine?, teamKey: Bool = true) throws -> DeployCheck {
         let now = now()
         let running = try SchedulerLoop.runningCounts(builds)
         let all = try machines.all().sorted { $0.name < $1.name }
@@ -70,7 +70,8 @@ extension HangarServerApp {
         }
         for action in workflow.actions {
             let job = SchedulerLoop.queuedJob(
-                id: UUID(), buildID: UUID(), createdAt: now, action: action, workflow: workflow, pinned: pinned?.id)
+                id: UUID(), buildID: UUID(), createdAt: now, action: action, workflow: workflow, pinned: pinned?.id,
+                teamKey: teamKey)
             var reasons: [String: [String]] = [:]
             var runnable = false
             var free = false

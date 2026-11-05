@@ -221,7 +221,7 @@ function reportView(machine, jobInfo) {
       fact('Free disk', `${formatGB(report.freeDiskGB)} GB`),
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
       fact('macOS', report.macOSVersion || '–'),
-      fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn)),
+      fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn, report.headless)),
       fact('Runs as', report.runningUser || '–')),
     runningUserWarning(report.runningUser),
     chipGroup('Xcode', xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
@@ -231,15 +231,28 @@ function reportView(machine, jobInfo) {
     report.canSignWithoutPrompt
       ? h('p', { class: 'signing signing-ok' },
         checkBadge('signing-icon'),
-        'Can sign without a prompt')
+        report.headless ? 'Can sign with its CI keychain' : 'Can sign without a prompt')
       : h('div', { class: 'signing signing-warning' },
         h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
         h('div', null,
           h('p', { class: 'signing-title' }, 'Cannot sign without a prompt'),
-          h('p', { class: 'card-note' },
-            'Signing jobs skip this Mac until it can sign. As the hangar user, open Keychain Access, find the '
-            + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.'))),
+          h('p', { class: 'card-note' }, cannotSignAdvice(report)))),
+    report.headless
+      ? h('p', { class: 'card-note' },
+        'Runs without a login, so it has no Xcode account: archives here need a team App Store Connect key '
+        + '(with an issuer ID).')
+      : null,
   ];
+}
+
+/** What to do about a machine that cannot sign: headless, the keychain's own problem; otherwise Keychain Access. */
+function cannotSignAdvice(report) {
+  if (report.headless) {
+    return `Signing jobs skip this Mac until it can sign: ${report.keychainProblem || 'its CI keychain is not ready'}. `
+      + 'In Terminal on this Mac, as an administrator, run hangar-worker isolate again.';
+  }
+  return 'Signing jobs skip this Mac until it can sign. As the hangar user, open Keychain Access, find the '
+    + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.';
 }
 
 /**
@@ -257,8 +270,9 @@ function runningUserWarning(user) {
         + 'hangar-worker isolate to move the worker to its own hangar user.')));
 }
 
-/** "Signed in", "Not signed in" or "–" (an older worker does not report it). */
-export function xcodeAccountText(signedIn) {
+/** "Signed in", "Not signed in", "None (no login)" for a headless worker, or "–" (an older worker does not say). */
+export function xcodeAccountText(signedIn, headless = false) {
+  if (headless) return 'None (no login)';
   if (signedIn === true) return 'Signed in';
   if (signedIn === false) return 'Not signed in';
   return '–';

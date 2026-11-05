@@ -30,14 +30,18 @@ public actor SchedulerLoop {
     let config: SchedulerConfig
     let clock: any Clock<Duration>
     let now: @Sendable () -> Date
+    /// Whether the App Store Connect key a build of this app gets is a team key (it has an issuer ID).
+    let teamKey: @Sendable (_ appID: UUID) -> Bool
     private let logger = Logger(label: "app.hangar.server.scheduler")
     private let wakes: AsyncStream<Void>
     private let wake: AsyncStream<Void>.Continuation
 
     public init(
         builds: BuildRepository, machines: MachineRepository, events: EventBus, config: SchedulerConfig = .init(),
-        clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = Date.init
+        clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = Date.init,
+        teamKey: @escaping @Sendable (_ appID: UUID) -> Bool = { _ in true }
     ) {
+        self.teamKey = teamKey
         self.builds = builds
         self.machines = machines
         self.events = events
@@ -110,15 +114,16 @@ public actor SchedulerLoop {
         let snapshots = machines.map { Self.snapshot($0, runningJobs: running[$0.id] ?? 0, now: now) }
 
         let queued = try builds.jobs(status: [.queued])
-        var requirements: [UUID: (workflow: Workflow?, pinned: UUID?)] = [:]
+        var requirements: [UUID: (workflow: Workflow?, pinned: UUID?, teamKey: Bool)] = [:]
         var candidates: [QueuedJob] = []
         for job in queued {
             if requirements[job.buildID] == nil {
+                let build = try builds.build(id: job.buildID)
                 requirements[job.buildID] = (
-                    try builds.workflow(buildID: job.buildID), try builds.build(id: job.buildID)?.pinnedMachineID
+                    try builds.workflow(buildID: job.buildID), build?.pinnedMachineID, build.map { teamKey($0.appID) } ?? true
                 )
             }
-            guard let (workflow, pinned) = requirements[job.buildID], let workflow else {
+            guard let (workflow, pinned, teamKey) = requirements[job.buildID], let workflow else {
                 // Only builds inserted before workflows were stored lack one; they can never be matched.
                 if try builds.transitionJob(
                     id: job.id, from: [.queued], to: .failed, at: now, failureReason: "build has no stored workflow")
@@ -130,7 +135,7 @@ public actor SchedulerLoop {
             candidates.append(
                 Self.queuedJob(
                     id: job.id, buildID: job.buildID, createdAt: job.createdAt, action: job.action, workflow: workflow,
-                    pinned: pinned))
+                    pinned: pinned, teamKey: teamKey))
         }
 
         let plan = Scheduler.plan(jobs: candidates, machines: snapshots, minFreeDiskGB: config.minFreeDiskGB)
@@ -157,14 +162,23 @@ public actor SchedulerLoop {
     }
 
     /// The job as the scheduler judges it: what its action needs of a machine. Shared with the deploy dry run.
+    /// `teamKey`: the app's App Store Connect key has an issuer ID.
     static func queuedJob(
-        id: UUID, buildID: UUID, createdAt: Date, action: WorkflowAction, workflow: Workflow, pinned: UUID?
+        id: UUID, buildID: UUID, createdAt: Date, action: WorkflowAction, workflow: Workflow, pinned: UUID?,
+        teamKey: Bool
     ) -> QueuedJob {
         QueuedJob(
             id: id, buildID: buildID, createdAt: createdAt, xcode: workflow.xcode, tools: workflow.tools,
             pinnedMachineID: pinned,
             simulatorPlatform: action.kind == .test && action.platform != .macOS ? action.platform : nil,
-            requiredCapabilities: workflow.needsCapabilities(for: action))
+            requiredCapabilities: workflow.needsCapabilities(for: action),
+            needsXcodeAccount: action.kind == .archive && !teamKey)
+    }
+
+    /// Whether `entries` (an app's resolved variables) hold a team key: a non-empty `HANGAR_ASC_ISSUER_ID`, as the
+    /// worker reads it (`ASCKeyArguments`).
+    static func hasTeamKey(_ entries: [EnvEntry]) -> Bool {
+        entries.contains { $0.name == "HANGAR_ASC_ISSUER_ID" && !$0.value.isEmpty }
     }
 
     /// Machine id → its assigned and running jobs, as a tick counts them.
@@ -186,6 +200,6 @@ public actor SchedulerLoop {
             runningJobs: runningJobs, xcodeVersions: report.xcodes.map(\.version), tools: Set(report.tools.keys),
             freeDiskGB: report.freeDiskGB, performanceCores: report.performanceCores, onACPower: report.onACPower,
             canSign: report.canSignWithoutPrompt, simulatorRuntimes: report.simulatorRuntimes,
-            capabilities: Set(report.capabilities))
+            capabilities: Set(report.capabilities), headless: report.headless ?? false)
     }
 }

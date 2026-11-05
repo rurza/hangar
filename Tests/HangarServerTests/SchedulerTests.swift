@@ -9,24 +9,59 @@ import Testing
 
     func job(
         _ offset: TimeInterval = 0, xcode: String = "27.2", tools: [String] = [], pinned: UUID? = nil,
-        simulator: Platform? = nil, capabilities: Set<String> = []
+        simulator: Platform? = nil, capabilities: Set<String> = [], needsXcodeAccount: Bool = false
     ) -> QueuedJob {
         QueuedJob(
             id: UUID(), buildID: UUID(), createdAt: Self.start.addingTimeInterval(offset), xcode: xcode, tools: tools,
-            pinnedMachineID: pinned, simulatorPlatform: simulator, requiredCapabilities: capabilities)
+            pinnedMachineID: pinned, simulatorPlatform: simulator, requiredCapabilities: capabilities,
+            needsXcodeAccount: needsXcodeAccount)
     }
 
     func machine(
         _ name: String, isOnline: Bool = true, freeSlots: Int = 1, runningJobs: Int = 0,
         xcodeVersions: [String] = ["27.2.1"], tools: Set<String> = ["git"], freeDiskGB: Double = 100,
         performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = [],
-        capabilities: Set<String> = [WorkerCapability.testActions]
+        capabilities: Set<String> = [WorkerCapability.testActions], headless: Bool = false
     ) -> MachineSnapshot {
         MachineSnapshot(
             id: UUID(), name: name, isOnline: isOnline, freeSlots: freeSlots, runningJobs: runningJobs,
             xcodeVersions: xcodeVersions, tools: tools, freeDiskGB: freeDiskGB, performanceCores: performanceCores,
             onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes,
-            capabilities: capabilities)
+            capabilities: capabilities, headless: headless)
+    }
+
+    @Test func anArchiveWithAnIndividualKeySkipsAHeadlessMac() throws {
+        let queued = job(needsXcodeAccount: true)
+        let headless = machine("Mini", performanceCores: 12, headless: true)
+        let plan = Scheduler.plan(jobs: [queued], machines: [headless], minFreeDiskGB: 20)
+        #expect(plan.assignments.isEmpty)
+        let reasons = try #require(plan.waiting[queued.id])
+        #expect(reasons == ["Mini": [.needsTeamKey]])
+        #expect(Scheduler.queueNote(reasons)
+            == "Mini: needs a team App Store Connect key (with an issuer ID): this Mac's worker runs without an Xcode account")
+        // A Mac in a login session signs with its Xcode account; a team key signs anywhere.
+        let laptop = machine("MacBook", performanceCores: 4)
+        #expect(Scheduler.plan(jobs: [queued], machines: [headless, laptop], minFreeDiskGB: 20).assignments
+            == [Assignment(jobID: queued.id, machineID: laptop.id)])
+        #expect(Scheduler.plan(jobs: [job()], machines: [headless], minFreeDiskGB: 20).assignments.count == 1)
+    }
+
+    @Test func onlyArchivesWithoutATeamKeyNeedTheXcodeAccount() {
+        let workflow = Workflow(
+            project: "Demo.xcodeproj", xcode: "27.2", teamID: "TEAM",
+            actions: [WorkflowAction(scheme: "Demo", platform: .iOS, export: .appStoreConnect), .test(scheme: "Tests", platform: .iOS)])
+        func needs(_ action: WorkflowAction, teamKey: Bool) -> Bool {
+            SchedulerLoop.queuedJob(
+                id: UUID(), buildID: UUID(), createdAt: Self.start, action: action, workflow: workflow, pinned: nil,
+                teamKey: teamKey
+            ).needsXcodeAccount
+        }
+        #expect(needs(workflow.actions[0], teamKey: false))
+        #expect(!needs(workflow.actions[0], teamKey: true))
+        #expect(!needs(workflow.actions[1], teamKey: false), "a test signs with the key when there is one, but needs none")
+        #expect(SchedulerLoop.hasTeamKey([EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: "issuer")]))
+        #expect(!SchedulerLoop.hasTeamKey([EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: "")]))
+        #expect(!SchedulerLoop.hasTeamKey([EnvEntry(name: "HANGAR_ASC_KEY_ID", value: "KEY")]))
     }
 
     @Test func aJobNeedingACapabilityWaitsForAnUpdatedWorker() throws {

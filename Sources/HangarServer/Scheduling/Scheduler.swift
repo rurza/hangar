@@ -13,13 +13,17 @@ public struct QueuedJob: Sendable {
     public var simulatorPlatform: Platform?
     /// `WorkerCapability` names the worker must report.
     public var requiredCapabilities: Set<String>
+    /// An archive whose App Store Connect key has no issuer ID: xcodebuild then signs with the Xcode account on the
+    /// machine, which a headless worker does not have.
+    public var needsXcodeAccount: Bool
 
     public init(
         id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?,
-        simulatorPlatform: Platform? = nil, requiredCapabilities: Set<String> = []
+        simulatorPlatform: Platform? = nil, requiredCapabilities: Set<String> = [], needsXcodeAccount: Bool = false
     ) {
         self.simulatorPlatform = simulatorPlatform
         self.requiredCapabilities = requiredCapabilities
+        self.needsXcodeAccount = needsXcodeAccount
         self.id = id
         self.buildID = buildID
         self.createdAt = createdAt
@@ -45,14 +49,17 @@ public struct MachineSnapshot: Sendable {
     /// "iOS 27.2"…, as the machine reports them.
     public var simulatorRuntimes: [String]
     public var capabilities: Set<String>
+    /// The worker runs without a login session (`MachineReport.headless`), so it has no Xcode account.
+    public var headless: Bool
 
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
         tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
-        simulatorRuntimes: [String] = [], capabilities: Set<String> = []
+        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false
     ) {
         self.simulatorRuntimes = simulatorRuntimes
         self.capabilities = capabilities
+        self.headless = headless
         self.id = id
         self.name = name
         self.isOnline = isOnline
@@ -80,6 +87,8 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case simulatorMissing(String)
     /// The worker lacks a capability the job needs: it predates the feature.
     case workerOutdated
+    /// An archive with an individual App Store Connect key, on a headless worker: there is no Xcode account to sign with.
+    case needsTeamKey
 
     public var description: String {
         switch self {
@@ -92,6 +101,8 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
         case .notPinned: "job is pinned to another machine"
         case .simulatorMissing(let platform): "no \(platform) simulator"
         case .workerOutdated: "update the worker (run the install command again)"
+        case .needsTeamKey:
+            "needs a team App Store Connect key (with an issuer ID): this Mac's worker runs without an Xcode account"
         }
     }
 
@@ -171,6 +182,7 @@ public enum Scheduler {
         }
         reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing)
         if !machine.canSign { reasons.append(.cannotSign) }
+        if job.needsXcodeAccount, machine.headless { reasons.append(.needsTeamKey) }
         if let platform = job.simulatorPlatform,
             !machine.simulatorRuntimes.contains(where: { $0.hasPrefix(platform.ciName + " ") })
         {

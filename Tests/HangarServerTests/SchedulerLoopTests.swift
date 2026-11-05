@@ -56,13 +56,13 @@ private struct FixedSource: KnownNumberSource {
         await clock.advance(by: .seconds(seconds))
     }
 
-    func report(_ machine: Machine, freeDiskGB: Double = 100) throws {
+    func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil) throws {
         try machines.updateReport(
             id: machine.id,
             report: MachineReport(
                 macOSVersion: "26.0", xcodes: [InstalledXcode(version: "27.2", build: "A1", path: "/Applications/Xcode.app")],
                 chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: freeDiskGB, onACPower: true, tools: ["git": "2.45"],
-                canSignWithoutPrompt: true, runningJobIDs: []),
+                canSignWithoutPrompt: true, runningJobIDs: [], headless: headless),
             seenAt: now)
     }
 
@@ -136,6 +136,27 @@ private struct FixedSource: KnownNumberSource {
         defer { ticking.cancel() }
         let third = try #require(await next(&iterator) { $0.id == thirdID && $0.status == .assigned })
         #expect(third.machineID == studio.id)
+    }
+
+    @Test func anIndividualKeysArchiveWaitsForAMacWithAnXcodeAccount() async throws {
+        let asked = Mutex<[UUID]>([])
+        let current = current
+        let loop = SchedulerLoop(
+            builds: builds, machines: machines, events: events, config: SchedulerConfig(), clock: clock,
+            now: { current.date }, teamKey: { appID in asked.withLock { $0.append(appID) }; return false })
+        try report(macBook, headless: true)
+        let (_, jobID) = try await deploy()
+        try await loop.tick()
+        let waiting = try #require(try builds.job(id: jobID))
+        #expect(waiting.status == .queued)
+        #expect(waiting.queueNote
+            == "MacBook Pro: needs a team App Store Connect key (with an issuer ID): this Mac's worker runs without an Xcode account")
+        #expect(asked.withLock { $0 } == [app.id])
+
+        let laptop = try machines.create(name: "Laptop").0
+        try report(laptop)
+        try await loop.tick()
+        #expect(try builds.job(id: jobID)?.machineID == laptop.id)
     }
 
     @Test func failsRunningJobWhenMachineSilentFor120s() async throws {
