@@ -8,6 +8,8 @@ public struct HangarRequestContext: RemoteAddressRequestContext {
     public var coreContext: CoreRequestContextStorage
     /// The authenticated worker machine; set by `MachineAuth` on the worker routes, nil on the public ones.
     public var machine: Machine?
+    /// The API token of the request, set by `APITokenAuth`; nil for the web UI, the CLI and the worker routes.
+    public var apiToken: APIToken?
     /// The connected peer; the pairing rate limit counts failures per address.
     public let remoteAddress: SocketAddress?
 
@@ -33,7 +35,9 @@ extension HangarServerApp {
         // Every route, the UI's included: a DNS-rebinding page arrives under a Host that is not this server's.
         router.add(middleware: HostCheck(policy: configuration.hostPolicy))
         // The cross-site guard skips the worker routes, which a machine token authenticates.
+        // API tokens are checked after it: a token never makes a cross-site request acceptable.
         let api = router.group("api/v1").add(middleware: CrossSiteGuard())
+            .add(middleware: APITokenAuth(tokens: apiTokens, now: now))
         api.get("health") { _, _ in try Response.json(HealthResponse(ok: true, version: HangarVersion.current)) }
         addAppRoutes(to: api)
         addVariableRoutes(to: api)
@@ -47,6 +51,7 @@ extension HangarServerApp {
         addMachineRoutes(to: api)
         addGitHubRoutes(to: api)
         addBetaGroupRoutes(to: api)
+        addAPITokenRoutes(to: api)
         addWorkerRoutes(to: api)
         api.get("events") { _, _ in eventsResponse() }
         // The worker install script and binary: outside /api/v1, GETs only, so no cross-site guard; Host-checked.
