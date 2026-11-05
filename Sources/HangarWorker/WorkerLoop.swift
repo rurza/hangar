@@ -83,11 +83,11 @@ public actor WorkerLoop {
 
     public init(
         configuration: WorkerConfiguration, connection: any ServerConnection, doctor: Doctor, jobRunner: any JobRunning,
-        clock: any Clock<Duration> = ContinuousClock(), temporaryRoot: String = WorkspaceLayout.systemTemporaryRoot,
+        clock: any Clock<Duration> = ContinuousClock(), temporaryRoot: String? = nil,
         updater: any WorkerUpdating = LiveWorkerUpdater()
     ) {
         self.updater = updater
-        self.temporaryRoot = temporaryRoot
+        self.temporaryRoot = temporaryRoot ?? WorkspaceLayout.temporaryRoot(dataDirectory: configuration.resolvedWorkDirectory)
         self.configuration = configuration
         self.connection = connection
         self.doctor = doctor
@@ -122,17 +122,31 @@ public actor WorkerLoop {
 
     // MARK: Start-up
 
-    /// Creates the data directory and removes what a crashed run left in `jobs/`: each job's secrets are wiped first.
+    /// Creates the work directory, moves the workspaces into it from the data directory the first time they differ,
+    /// and removes what a crashed run left in `jobs/` (of either): each job's secrets are wiped first.
     private func prepareDataDirectory() {
-        let root = URL(fileURLWithPath: configuration.dataDirectory).standardizedFileURL.path
-        let jobsDirectory = root + "/jobs"
+        let data = URL(fileURLWithPath: configuration.dataDirectory).standardizedFileURL.path
+        let work = configuration.resolvedWorkDirectory
         do {
-            try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                atPath: work, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         } catch {
-            logger.error("could not create the data directory \(root): \(error)")
+            logger.error("could not create the work directory \(work): \(error)")
             return
         }
+        if work.contains(where: \.isWhitespace) {
+            logger.warning("the work directory \(work) has a space in its path; scripts written for Xcode Cloud may break")
+        }
+        do {
+            for line in try WorkDirectoryMigration.run(from: data, to: work) { logger.info("\(line)") }
+        } catch {
+            logger.error("could not move the workspaces from \(data) to \(work): \(error); the next builds start cold")
+        }
         sweepTemporaryDirectories()
+        for root in Set([work, data]).sorted() { sweepJobDirectories(in: root + "/jobs") }
+    }
+
+    private func sweepJobDirectories(in jobsDirectory: String) {
         guard let leftovers = try? FileManager.default.contentsOfDirectory(atPath: jobsDirectory) else { return }
         for name in leftovers.sorted() {
             let path = jobsDirectory + "/" + name
@@ -146,7 +160,7 @@ public actor WorkerLoop {
         }
     }
 
-    /// Removes the `TMPDIR`s of jobs a crashed run left in the system temp directory.
+    /// Removes the `TMPDIR`s of jobs a crashed run left in `<work directory>/tmp`.
     private func sweepTemporaryDirectories() {
         let root = URL(fileURLWithPath: temporaryRoot).standardizedFileURL.path
         guard let leftovers = try? FileManager.default.contentsOfDirectory(atPath: root) else { return }

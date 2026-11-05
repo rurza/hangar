@@ -65,6 +65,12 @@ Do these steps on every build Mac.
    ```
    (If the variable is unset and you are at a terminal, the script prompts for the token itself.) `--token <token>` also works, but the token is then visible in `ps` for the whole release build and stays in your shell history.
    The script builds in release mode, installs `hangar-worker` into `/usr/local/bin` (using `sudo` only if needed), runs `hangar-worker setup` (the configuration is written to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600; the token is never printed), renders `~/Library/LaunchAgents/app.hangar.worker.plist` and loads it with `launchctl bootstrap gui/$(id -u)`. Run it again to upgrade. Logs go to `~/Library/Logs/Hangar/worker.log`.
+
+### Where builds happen
+
+Checkouts, DerivedData, job folders and each job's `TMPDIR` go to the worker's work directory, which never has a space in its path: projects written for Xcode Cloud (`/Volumes/workspace/repository`) often use `$CI_PRIMARY_REPOSITORY_PATH` unquoted. By default it is `~/.hangar/worker` for the usual configuration under `~/Library/Application Support/Hangar/worker` (the data directory itself when its path has no spaces). Set another with `hangar-worker setup --work-dir <path>` or `"workDirectory"` in `config.json`. The first time a worker starts with a new work directory it moves the cached workspaces there (a rename, instant on the same volume), so the next build fetches instead of cloning; Xcode rebuilds what it keyed to the old path once.
+
+On SIGTERM (`launchctl bootout`, a restart) the worker stops asking for jobs, cancels a running build with the reason ("hangar-worker on <Mac> was stopped (SIGTERM) during archive"), cleans up and exits. Check the Machines page for running jobs before restarting a worker by hand.
    To install without `sudo`, add `--bin-dir ~/.local/bin` (any directory you own; it is created if missing and the launchd plist points at the binary there). `--render-only <file>` just writes the plist, for testing. The `INSTALL_DIR` environment variable is no longer read; use `--bin-dir`.
 8. **Run the doctor** as `hangar` (the one-command install already printed a summary of it; its binary is in `~/.local/bin`):
    ```sh

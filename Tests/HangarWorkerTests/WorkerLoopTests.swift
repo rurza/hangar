@@ -200,13 +200,14 @@ private final class FakeUpdater: WorkerUpdating {
 
     fileprivate static func loop(
         connection: some ServerConnection, runner: some JobRunning, clock: ManualClock, dataDirectory: String,
-        maxConcurrentJobs: Int = 1, temporaryRoot: String? = nil, updater: FakeUpdater = FakeUpdater()
+        maxConcurrentJobs: Int = 1, temporaryRoot: String? = nil, updater: FakeUpdater = FakeUpdater(),
+        workDirectory: String? = nil
     ) -> WorkerLoop {
         let processes = DoctorTests.scriptedRunner()
         return WorkerLoop(
             configuration: WorkerConfiguration(
                 serverURL: URL(string: "http://hangar.test")!, token: "t", maxConcurrentJobs: maxConcurrentJobs,
-                dataDirectory: dataDirectory),
+                dataDirectory: dataDirectory, workDirectory: workDirectory),
             connection: connection,
             doctor: DoctorTests.doctor(processes),
             jobRunner: runner, clock: clock,
@@ -397,6 +398,35 @@ private final class FakeUpdater: WorkerUpdating {
 
         #expect(try FileManager.default.contentsOfDirectory(atPath: jobs).isEmpty)
         #expect(FileManager.default.fileExists(atPath: directory + "/workspaces/demo"))
+    }
+
+    @Test func movesTheWorkspacesToTheWorkDirectoryAndSweepsBothJobFolders() async throws {
+        let directory = Self.dataDirectory()
+        let work = directory + "-work"
+        defer {
+            try? FileManager.default.removeItem(atPath: directory)
+            try? FileManager.default.removeItem(atPath: work)
+        }
+        try FileManager.default.createDirectory(atPath: directory + "/workspaces/demo/DerivedData", withIntermediateDirectories: true)
+        for jobs in [directory + "/jobs", work + "/jobs"] {
+            try FileManager.default.createDirectory(atPath: jobs + "/" + UUID().uuidString, withIntermediateDirectories: true)
+        }
+
+        let connection = ScriptedConnection()
+        let task = Task {
+            await Self.loop(
+                connection: connection, runner: BlockingJobRunner(), clock: ManualClock(), dataDirectory: directory,
+                temporaryRoot: work + "/tmp", workDirectory: work
+            ).run()
+        }
+        await Self.eventually { connection.heartbeats.count >= 1 }
+        task.cancel()
+        await task.value
+
+        #expect(FileManager.default.fileExists(atPath: work + "/workspaces/demo/DerivedData"))
+        #expect(!FileManager.default.fileExists(atPath: directory + "/workspaces"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory + "/jobs").isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: work + "/jobs").isEmpty)
     }
 
     @Test func sweepsTemporaryDirectoriesLeftByACrash() async throws {

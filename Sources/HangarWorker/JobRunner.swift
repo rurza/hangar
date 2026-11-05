@@ -38,7 +38,7 @@ public struct JobRunner: Sendable {
 
     public init(
         connection: any ServerConnection, runner: any ProcessRunner, locator: XcodeLocator, dataDirectory: String,
-        temporaryRoot: String = WorkspaceLayout.systemTemporaryRoot,
+        temporaryRoot: String? = nil,
         machineName: String = JobRunner.computerName,
         clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
@@ -49,7 +49,7 @@ public struct JobRunner: Sendable {
         self.runner = runner
         self.locator = locator
         self.dataDirectory = dataDirectory
-        self.temporaryRoot = temporaryRoot
+        self.temporaryRoot = temporaryRoot ?? WorkspaceLayout.temporaryRoot(dataDirectory: dataDirectory)
         self.machineName = machineName
         self.clock = clock
         self.appStoreConnectFactory = appStoreConnectFactory
@@ -234,8 +234,8 @@ public struct JobRunner: Sendable {
             teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH,
             testDestination: testDestination)
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
-        // TMPDIR must exist before the first hook; cleanup removes it. The root is created 0700 too: it is the user's
-        // temp directory, but nothing else has a reason to read another job's files.
+        // TMPDIR must exist before the first hook; cleanup removes it. The root is created 0700 too: nothing else has a
+        // reason to read another job's files.
         for directory in [layout.temporaryRoot, layout.temporary] {
             try FileManager.default.createDirectory(
                 atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

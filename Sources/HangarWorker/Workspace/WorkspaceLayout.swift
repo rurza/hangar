@@ -1,6 +1,6 @@
 import Foundation
 
-/// Where a job's files live under the worker data directory. Pure path computation; nothing here touches the disk.
+/// Where a job's files live under the worker's work directory. Pure path computation; nothing here touches the disk.
 public struct WorkspaceLayout: Sendable, Equatable {
     private let workspace: String
     public let jobDirectory: String
@@ -8,22 +8,15 @@ public struct WorkspaceLayout: Sendable, Equatable {
     public let temporaryRoot: String
     private let jobID: UUID
 
-    /// `hangar-jobs` in the per-user system temp directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`, e.g.
-    /// `/var/folders/xx/yyyy/T/`): short and without spaces, unlike the data directory under "Application Support",
-    /// where Xcode's universal archive fails to find the dSYM files it writes to `TMPDIR`.
-    public static var systemTemporaryRoot: String {
-        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-        var base = NSTemporaryDirectory()
-        if confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, buffer.count) > 0 {
-            base = String(cString: buffer)
-        }
-        while base.count > 1, base.hasSuffix("/") { base.removeLast() }
-        return base + "/hangar-jobs"
-    }
+    /// `<work directory>/tmp`: one folder per job, outside the job directory, and like the rest of the work
+    /// directory without spaces. Each worker has its own, so sweeping it at start never touches another worker's
+    /// running jobs (the per-user system temp directory is shared by every worker on the Mac).
+    public static func temporaryRoot(dataDirectory: String) -> String { dataDirectory + "/tmp" }
 
-    public init(dataDirectory: String, appSlug: String, jobID: UUID, temporaryRoot: String = systemTemporaryRoot) {
+    /// `dataDirectory` is the worker's work directory (`WorkerConfiguration.resolvedWorkDirectory`).
+    public init(dataDirectory: String, appSlug: String, jobID: UUID, temporaryRoot: String? = nil) {
         self.jobID = jobID
-        self.temporaryRoot = temporaryRoot
+        self.temporaryRoot = temporaryRoot ?? Self.temporaryRoot(dataDirectory: dataDirectory)
         workspace = "\(dataDirectory)/workspaces/\(appSlug)"
         jobDirectory = "\(dataDirectory)/jobs/\(jobID.uuidString)"
     }
