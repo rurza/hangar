@@ -1,6 +1,6 @@
 {
   "name": "hangar",
   "description": "Build, deploy and inspect Hangar builds from Claude Code, as thin skills over the hangar CLI.",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "author": { "name": "Adam Różyński" }
 }

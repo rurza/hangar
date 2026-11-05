@@ -1,4 +1,4 @@
 /// The version every Hangar binary reports.
 public enum HangarVersion {
-    public static let current = "0.7.3"
+    public static let current = "0.7.4"
 }
