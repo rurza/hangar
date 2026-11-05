@@ -282,6 +282,7 @@ export async function buildPage(params, context) {
   section({ title: build.jobs.length === 1 ? 'Job' : 'Jobs' }, jobsElement),
   section({ title: 'Log' }, log.element));
   view.dataset.documentTitle = `Build ${build.buildNumber} · ${appName}`;
+  view.prepend(h('a', { href: '/builds', 'data-link': true, class: 'back-link' }, h('span', { 'aria-hidden': 'true' }, '‹ '), 'History'));
   return view;
 }
 

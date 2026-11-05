@@ -56,7 +56,7 @@ export async function appDetailPage(params, context) {
     icon = next;
   });
 
-  return page({
+  const element = page({
     title: app.name,
     subtitle: /^https:\/\//i.test(app.repoURL)
       ? h('a', { href: app.repoURL, target: '_blank', rel: 'noopener noreferrer' }, app.repoURL.replace(/^https:\/\//i, ''))
@@ -74,6 +74,8 @@ export async function appDetailPage(params, context) {
     footer: 'Every job of this app gets these variables. One with the same name as a global variable replaces it.',
   }, variablesEditor({ scope: { app: app.slug }, signal })),
   section({ title: 'Remove App' }, removeCard(app)));
+  element.prepend(h('a', { href: '/', 'data-link': true, class: 'back-link' }, h('span', { 'aria-hidden': 'true' }, '‹ '), 'Apps'));
+  return element;
 }
 
 // MARK: Machines

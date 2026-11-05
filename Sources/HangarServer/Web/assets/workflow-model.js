@@ -316,12 +316,20 @@ function allProblems(found) {
 // The detector leaves a scheme's platform out (`platform: null`) when it couldn't tell. Such a scheme is offered under
 // every platform, marked `unverified`, so a platform it may build for is never greyed out.
 
+/** Platforms a detected scheme builds for. A scheme with several (`platforms`) is offered once per platform. One
+ * whose platform could not be worked out — neither `platforms` nor `platform` — is offered under every platform. */
+function schemePlatforms(scheme) {
+  if (Array.isArray(scheme?.platforms) && scheme.platforms.length) return scheme.platforms;
+  return scheme?.platform ? [scheme.platform] : [];
+}
+
 /** Detected schemes for `platform`: those that build for it, then those of unknown platform (`unverified: true`); for
  * archives, apps first within each. */
 function schemesFor(schemes, platform, kind) {
   const order = (list) => (kind === 'test' ? list : [...list.filter((s) => s.isApplication), ...list.filter((s) => !s.isApplication)]);
-  const verified = (schemes ?? []).filter((scheme) => scheme.platform === platform);
-  const unverified = (schemes ?? []).filter((scheme) => !scheme.platform).map((scheme) => ({ ...scheme, unverified: true }));
+  const verified = (schemes ?? []).filter((scheme) => schemePlatforms(scheme).includes(platform));
+  const unverified = (schemes ?? []).filter((scheme) => schemePlatforms(scheme).length === 0)
+    .map((scheme) => ({ ...scheme, unverified: true }));
   return [...order(verified), ...order(unverified)];
 }
 
@@ -365,7 +373,7 @@ function detectionNotes(notes) {
  * tools; `choices` are `[{scheme, platform, archive, test}]`; `distribution` is `testflight`, `developer-id` or
  * `keep`; `groups` the TestFlight group names. Tests come first: they report quickest.
  */
-function wizardModel({ name, base, choices, distribution, groups = [], branches = null }) {
+function wizardModel({ name, base, choices, distribution, groups = [], externalReview = false, branches = null }) {
   const model = fromWorkflow(name, { ...(base ?? {}), actions: [], postActions: [] });
   model.branches = branches === null ? null : Array.isArray(branches) ? [...branches] : 'any';
   for (const choice of choices) {
@@ -379,6 +387,8 @@ function wizardModel({ name, base, choices, distribution, groups = [], branches 
   }
   model.testflightOn = distribution === 'testflight' && archives(model).length > 0;
   model.testflight.groups = [...groups];
+  // External groups receive the build only after Beta App Review.
+  model.testflight.submitForExternalReview = Boolean(externalReview) && model.testflightOn;
   return model;
 }
 
@@ -390,4 +400,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };
+export { ACTION_KINDS, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };

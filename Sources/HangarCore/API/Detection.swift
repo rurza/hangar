@@ -34,23 +34,31 @@ public struct DetectedScheme: Codable, Equatable, Sendable {
     public var isApplication: Bool
     /// It has tests to run: its scheme lists test targets, or a test target is named after it (`<Name>Tests`).
     public var hasTests: Bool
+    /// Every platform the scheme builds for. Empty when none could be worked out. One scheme that archives for
+    /// iOS and macOS lists both, so each can be its own build. `platform` stays the single one when there is
+    /// exactly one, and is nil when there are several.
+    public var platforms: [Platform]
 
-    public init(name: String, platform: Platform?, isApplication: Bool, hasTests: Bool = false) {
+    public init(
+        name: String, platform: Platform?, isApplication: Bool, hasTests: Bool = false, platforms: [Platform]? = nil
+    ) {
         self.name = name
         self.platform = platform
         self.isApplication = isApplication
         self.hasTests = hasTests
+        self.platforms = platforms ?? platform.map { [$0] } ?? []
     }
 
-    private enum CodingKeys: String, CodingKey { case name, platform, isApplication, hasTests }
+    private enum CodingKeys: String, CodingKey { case name, platform, isApplication, hasTests, platforms }
 
-    /// A scheme from a server before `hasTests` reads it as false.
+    /// A scheme from a server before `hasTests` reads it as false, and before `platforms` reads it as `platform`.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
         platform = try container.decodeIfPresent(Platform.self, forKey: .platform)
         isApplication = try container.decode(Bool.self, forKey: .isApplication)
         hasTests = try container.decodeIfPresent(Bool.self, forKey: .hasTests) ?? false
+        platforms = try container.decodeIfPresent([Platform].self, forKey: .platforms) ?? platform.map { [$0] } ?? []
     }
 }
 

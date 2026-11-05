@@ -146,8 +146,8 @@ export function branchesStore(base) {
 
 /**
  * The app's TestFlight groups, loaded once and shared by whoever asks: `load()` resolves to
- * `{ groups: [{id, name, isInternal}] }`, `{ notConfigured: true }` or `{ error }`; `create(name)` makes an
- * internal group and adds it to the list.
+ * `{ groups: [{id, name, isInternal}] }`, `{ notConfigured: true }` or `{ error }`; `create(name, { internal })`
+ * makes a group (internal unless `internal` is false) and adds it to the list.
  */
 export function betaGroupsStore(base) {
   let pending = null;
@@ -166,8 +166,8 @@ export function betaGroupsStore(base) {
       ).finally(() => { pending = null; });
       return pending;
     },
-    async create(name) {
-      const group = await api.post(`${base}/beta-groups`, { name });
+    async create(name, { internal: isInternal = true } = {}) {
+      const group = await api.post(`${base}/beta-groups`, { name, isInternal });
       if (state?.groups) state = { groups: [...state.groups.filter((g) => g.id !== group.id), group] };
       return group;
     },
@@ -183,6 +183,7 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
   let adding = false;
   let addError = null;
   let draft = '';
+  let external = false;
 
   function draw() {
     const state = store.state;
@@ -225,10 +226,19 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       })),
     ];
     const list = h('ul', { class: 'wf-checklist', 'aria-label': 'TestFlight groups' }, rows, addRow());
-    replaceChildren(element, list,
-      h('p', { class: 'wf-field-hint' }, known.length || missing.length
-        ? 'Internal groups contain people on your App Store Connect team.'
-        : 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.'));
+    const selectedExternal = known.filter((group) => !group.isInternal && selected.includes(group.name));
+    let hint;
+    if (!(known.length || missing.length)) {
+      hint = 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.';
+    } else if (selectedExternal.length) {
+      const names = selectedExternal.map((group) => group.name);
+      hint = `${names.length === 1 ? `${names[0]} is an external group` : `${names.join(', ')} are external groups`}. The build goes to Apple’s beta review before those testers get it.`;
+    } else if (internalOnly || known.every((group) => group.isInternal)) {
+      hint = 'Internal groups contain people on your App Store Connect team.';
+    } else {
+      hint = 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
+    }
+    replaceChildren(element, list, h('p', { class: 'wf-field-hint' }, hint));
   }
 
   function addRow() {
@@ -246,7 +256,7 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
     }
     const input = h('input', {
       class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Group name',
-      'aria-label': 'New internal group name', value: draft, 'aria-invalid': addError ? 'true' : null,
+      'aria-label': 'New group name', value: draft, 'aria-invalid': addError ? 'true' : null,
       onInput: (event) => { draft = event.target.value; },
       onKeydown: (event) => {
         if (event.key === 'Enter' && !event.isComposing) {
@@ -272,10 +282,11 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       input.disabled = true;
       replaceChildren(createButton, 'Creating…');
       try {
-        const group = await store.create(name);
+        const group = await store.create(name, { internal: internalOnly || !external });
         if (!selected.includes(group.name)) selected.push(group.name);
         adding = false;
         draft = '';
+        external = false;
         addError = null;
         onChange?.();
       } catch (error) {
@@ -287,14 +298,26 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
     function cancel() {
       adding = false;
       draft = '';
+      external = false;
       addError = null;
       draw();
       element.querySelector('.wf-add-row')?.focus();
     }
+    const kind = (value, label) => {
+      const inputKind = h('input', {
+        type: 'radio', name: 'new-group-kind', value, checked: external === (value === 'external'),
+        onChange: () => { external = value === 'external'; draw(); element.querySelector('.wf-new-group input.input')?.focus(); },
+      });
+      return h('label', { class: 'wf-pill' }, inputKind, label);
+    };
     return h('li', { class: 'wf-new-group' },
       input,
+      internalOnly ? null : h('div', { class: 'wf-new-group-kind', role: 'radiogroup', 'aria-label': 'Who the group is for' },
+        kind('internal', 'Internal'), kind('external', 'External')),
       addError ? h('p', { class: 'wf-field-error', role: 'alert' }, addError) : null,
-      h('p', { class: 'wf-field-hint' }, 'An internal group. Add testers to it in App Store Connect.'),
+      h('p', { class: 'wf-field-hint' }, external && !internalOnly
+        ? 'An external group. Testers get the build after Apple’s beta review.'
+        : 'An internal group. Add testers to it in App Store Connect.'),
       h('div', { class: 'wf-new-group-actions' },
         h('button', { type: 'button', class: 'button button-plain button-small', onClick: cancel }, 'Cancel'),
         createButton));

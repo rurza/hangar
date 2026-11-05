@@ -423,7 +423,7 @@ function workflowEditor({ app, stored: initial, context }) {
       problems: found.actions[index],
     }));
     const postRows = target.testflightOn ? [row({ kind: 'testflight' }, {
-      icon: 'testflight', title: 'TestFlight Internal Testing',
+      icon: 'testflight', title: 'TestFlight',
       detail: target.testflight.groups.length ? target.testflight.groups.join(', ') : 'No groups',
       problems: found.testflight,
     })] : [];
@@ -487,7 +487,7 @@ function workflowEditor({ app, stored: initial, context }) {
     const target = model();
     const hasArchive = target.actions.some((action) => action.kind !== 'test');
     return [{
-      icon: 'testflight', label: 'TestFlight Internal Testing',
+      icon: 'testflight', label: 'TestFlight',
       disabled: target.testflightOn || !hasArchive,
       detail: target.testflightOn ? 'Already added' : hasArchive ? null : 'Add an archive action first',
       onSelect: () => {
@@ -1090,7 +1090,7 @@ function workflowEditor({ app, stored: initial, context }) {
     }
     draw();
     return {
-      header: header({ icon: 'testflight', title: 'TestFlight Internal Testing' }),
+      header: header({ icon: 'testflight', title: 'TestFlight' }),
       body: h('div', { class: 'wf-form' }, explainBox, box,
         t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step waits for approval (requires-approval in the file).') : null,
         h('div', { class: 'wf-danger-zone' },
@@ -1100,7 +1100,7 @@ function workflowEditor({ app, stored: initial, context }) {
 
   async function removeTestFlight() {
     const confirmed = await confirm({
-      title: 'Delete TestFlight Internal Testing?',
+      title: 'Delete TestFlight?',
       message: 'Archives stay on the build page and are no longer uploaded once you save.',
       confirmLabel: 'Delete',
       destructive: true,

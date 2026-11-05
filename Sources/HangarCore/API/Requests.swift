@@ -279,11 +279,15 @@ public struct BetaGroup: Codable, Equatable, Sendable {
     }
 }
 
-/// `POST /apps/{id}/beta-groups`: creates an internal TestFlight group named `name`.
+/// `POST /apps/{id}/beta-groups`: creates a TestFlight group named `name`. `isInternal` nil means an internal group,
+/// the one a request from before external groups could be created sends.
 public struct CreateBetaGroupRequest: Codable, Equatable, Sendable {
     public var name: String
+    /// False creates an external group, which needs Beta App Review before its testers get a build.
+    public var isInternal: Bool?
 
-    public init(name: String) {
+    public init(name: String, isInternal: Bool? = nil) {
         self.name = name
+        self.isInternal = isInternal
     }
 }

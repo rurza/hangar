@@ -158,6 +158,9 @@ extension WorkflowDetector {
         /// XcodeGen `type` or the pbxproj product type (without `com.apple.product-type.`).
         var type: String?
         var platform: Platform?
+        /// Every platform the target builds for. Empty when none could be worked out. `platform` is the only one
+        /// when there is exactly one, and nil when there are several.
+        var platforms: [Platform] = []
         var sources: [String] = []
         var iconName: String?
         var hasScheme = false
@@ -324,22 +327,29 @@ extension WorkflowDetector {
                 let names = [scheme.name, scheme.target?.name].compactMap { $0 }
                 let hasTests = withTests.contains(scheme.name)
                     || names.contains { testTargetNames.contains("\($0)Tests") || testTargetNames.contains("\($0)UITests") }
+                let platforms = scheme.target?.platforms ?? []
                 return DetectedScheme(
-                    name: scheme.name, platform: scheme.target?.platform, isApplication: isApplication, hasTests: hasTests)
+                    name: scheme.name, platform: platforms.count == 1 ? platforms[0] : nil, isApplication: isApplication,
+                    hasTests: hasTests, platforms: platforms)
             }
             if let spec {
                 let specNames = Set(spec.targets.map(\.name))
-                platformsFromSpec = found.contains { $0.target.map { specNames.contains($0.name) && $0.platform != nil } ?? false }
+                platformsFromSpec = found.contains { $0.target.map { specNames.contains($0.name) && !$0.platforms.isEmpty } ?? false }
             }
             if platformsFromSpec { notes.append("Scheme platforms guessed from project.yml.") }
 
             let applications = schemes.filter(\.isApplication)
             let chosen = applications.isEmpty ? schemes : applications
-            actions = chosen.map { scheme in
-                if scheme.platform == nil {
+            actions = chosen.flatMap { (scheme: DetectedScheme) -> [WorkflowAction] in
+                if scheme.platforms.isEmpty {
                     notes.append("Couldn't tell which platform \(scheme.name) builds for, so it is set to macOS.")
+                    return [WorkflowAction(scheme: scheme.name, platform: .macOS, export: .appStoreConnect)]
                 }
-                return WorkflowAction(scheme: scheme.name, platform: scheme.platform ?? .macOS, export: .appStoreConnect)
+                if scheme.platforms.count > 1 {
+                    notes.append(
+                        "Scheme \(scheme.name) builds for \(WorkflowDetector.platformList(scheme.platforms)), so each platform is its own build.")
+                }
+                return scheme.platforms.map { WorkflowAction(scheme: scheme.name, platform: $0, export: .appStoreConnect) }
             }
 
             let primary = chosen.first.flatMap { scheme in found.first { $0.name == scheme.name }?.target }
@@ -397,7 +407,7 @@ extension WorkflowDetector {
                 let names = Set(group.map(\.name))
                 let groupSchemes = zip(found, schemes).filter { $0.0.target.map { names.contains($0.name) } ?? false }.map(\.1)
                 var platforms: [Platform] = []
-                for platform in group.compactMap(\.platform) where !platforms.contains(platform) { platforms.append(platform) }
+                for platform in group.flatMap(\.platforms) where !platforms.contains(platform) { platforms.append(platform) }
                 var bundleIDs: [String] = []
                 for bundleID in group.compactMap(\.bundleID) where !bundleIDs.contains(bundleID) { bundleIDs.append(bundleID) }
                 let appIcon = group.lazy.compactMap { member in
@@ -593,6 +603,27 @@ extension WorkflowDetector {
         Platform(rawValue: name.lowercased())
     }
 
+    /// Every platform named by SDK tokens (`iphoneos`, `macosx`) or platform names (`iOS`, `macOS`), in order, with
+    /// simulator variants collapsed onto the same platform.
+    static func platforms(from tokens: [String]) -> [Platform] {
+        var found: [Platform] = []
+        for token in tokens {
+            let trimmed = token.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, let platform = Self.platform(sdk: trimmed) ?? Self.platform(named: trimmed),
+                !found.contains(platform)
+            else { continue }
+            found.append(platform)
+        }
+        return found
+    }
+
+    /// "iOS and macOS", "iOS, macOS and visionOS".
+    static func platformList(_ platforms: [Platform]) -> String {
+        let names = platforms.map(\.ciName)
+        if names.count <= 1 { return names.joined() }
+        return names.dropLast().joined(separator: ", ") + " and " + (names.last ?? "")
+    }
+
     static func platform(sdk: String) -> Platform? {
         let sdk = sdk.lowercased()
         if sdk.hasPrefix("iphone") { return .iOS }
@@ -629,13 +660,19 @@ extension WorkflowDetector {
         var targets: [Target] = []
         for (key, value) in root["targets"]?.mapping ?? [:] {
             guard let name = key.string, let map = value.mapping else { continue }
-            var platform: Platform?
+            var tokens: [String] = []
             if let platformNode = map["platform"] {
-                platform = (platformNode.string ?? platformNode.sequence?.first?.string).flatMap(Self.platform(named:))
+                if let name = platformNode.string { tokens.append(name) }
+                for item in platformNode.sequence ?? [] {
+                    if let name = item.string { tokens.append(name) }
+                }
             }
-            if platform == nil, let destinations = map["supportedDestinations"]?.sequence {
-                platform = destinations.compactMap { $0.string.flatMap(Self.platform(named:)) }.first
+            if let destinations = map["supportedDestinations"]?.sequence {
+                for item in destinations {
+                    if let name = item.string { tokens.append(name) }
+                }
             }
+            let foundPlatforms = Self.platforms(from: tokens)
             var sources: [String] = []
             if let node = map["sources"] {
                 if let single = node.string { sources = [single] }
@@ -649,7 +686,8 @@ extension WorkflowDetector {
             let bundleID = all["PRODUCT_BUNDLE_IDENTIFIER"].map { resolve($0, settings: all) }
                 ?? bundleIDPrefix.map { resolve("\($0).\(name)", settings: all) }
             var target = Target(
-                name: name, type: map["type"]?.string, platform: platform, sources: sources.map(Self.trimmedPath),
+                name: name, type: map["type"]?.string, platform: foundPlatforms.count == 1 ? foundPlatforms[0] : nil,
+                platforms: foundPlatforms, sources: sources.map(Self.trimmedPath),
                 iconName: all["ASSETCATALOG_COMPILER_APPICON_NAME"], hasScheme: map["scheme"] != nil)
             target.team = all["DEVELOPMENT_TEAM"]
             target.bundleID = bundleID ?? nil
@@ -853,13 +891,16 @@ extension WorkflowDetector {
             guard let target = object(id), target["isa"] as? String == "PBXNativeTarget", let name = target["name"] as? String
             else { continue }
             let settings = buildSettings(list: target["buildConfigurationList"])
-            var platform = setting("SDKROOT", settings).flatMap(Self.platform(sdk:))
-            if platform == nil, let supported = setting("SUPPORTED_PLATFORMS", settings) {
-                platform = supported.split(separator: " ").lazy.compactMap { Self.platform(sdk: String($0)) }.first
+            var tokens: [String] = []
+            if let supported = setting("SUPPORTED_PLATFORMS", settings) {
+                tokens += supported.split(whereSeparator: \.isWhitespace).map(String.init)
             }
+            if let sdk = setting("SDKROOT", settings) { tokens.append(sdk) }
+            let foundPlatforms = Self.platforms(from: tokens)
             let type = (target["productType"] as? String).map { $0.replacingOccurrences(of: "com.apple.product-type.", with: "") }
             var entry = Target(
-                name: name, type: type, platform: platform, iconName: setting("ASSETCATALOG_COMPILER_APPICON_NAME", settings))
+                name: name, type: type, platform: foundPlatforms.count == 1 ? foundPlatforms[0] : nil,
+                platforms: foundPlatforms, iconName: setting("ASSETCATALOG_COMPILER_APPICON_NAME", settings))
             entry.team = setting("DEVELOPMENT_TEAM", settings)
             entry.settings = strings(settings.first)
             entry.settings["TARGET_NAME"] = entry.settings["TARGET_NAME"] ?? name

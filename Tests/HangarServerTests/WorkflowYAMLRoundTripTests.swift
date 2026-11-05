@@ -349,6 +349,50 @@ import Testing
             """)
     }
 
+    /// A scheme that builds for several platforms is offered under each of them, and under no other.
+    @Test func multiplatformSchemeIsOfferedPerPlatform() throws {
+        let schemes = #"[{"name":"Velum","platform":null,"platforms":["ios","macos"],"isApplication":true,"hasTests":false}]"#
+        let output = try Self.runJXA(
+            json: schemes,
+            """
+            (() => {
+              return [
+                PLATFORMS.map(([platform]) => platformHasSchemes(input, platform)).join(','),
+                schemesFor(input, 'ios', 'archive').map((s) => s.name + (s.unverified ? '?' : '')).join(','),
+                schemesFor(input, 'macos', 'archive').map((s) => s.name).join(','),
+                schemesFor(input, 'tvos', 'archive').map((s) => s.name).join(','),
+                schemePlatforms(input[0]).join(','),
+              ].join('\\n');
+            })()
+            """)
+        #expect(output == """
+            true,true,false,false,false
+            Velum
+            Velum
+            
+            ios,macos
+            """)
+    }
+
+    /// An external group turns on Beta App Review; an internal one does not.
+    @Test func wizardSubmitsExternalGroupsForReview() throws {
+        let output = try Self.runJXA(
+            json: String(decoding: try JSONEncoder().encode(Self.legilo), as: UTF8.self), files: Self.editorFiles,
+            """
+            (() => {
+              const base = input.workflows.testflight;
+              const choices = [{ scheme: 'LegiloMobile', platform: 'ios', archive: true, test: false }];
+              const external = wizardModel({ name: 'External', base, choices, distribution: 'testflight', groups: ['Public'], externalReview: true });
+              const internal = wizardModel({ name: 'Internal', base, choices, distribution: 'testflight', groups: ['Internal'] });
+              return [external, internal].map((model) => workflowSteps(toWorkflow(model)).join(' ')).join('\\n');
+            })()
+            """)
+        #expect(output == """
+            Archives LegiloMobile (iOS) with Xcode 27.2. Uploads it to TestFlight for Public. Submits it for external beta review.
+            Archives LegiloMobile (iOS) with Xcode 27.2. Uploads it to TestFlight for Internal.
+            """)
+    }
+
     /// The detector's notes are filed under the field each concerns; advice the editor gives another way is dropped.
     @Test func detectionNotesAreFiledByField() throws {
         let notes = """

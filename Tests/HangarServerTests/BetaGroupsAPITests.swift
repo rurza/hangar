@@ -105,6 +105,25 @@ import Testing
         #expect((app["data"] as? [String: String]) == ["type": "apps", "id": "42"])
     }
 
+    @Test func createsAnExternalGroup() async throws {
+        let transport = StubTransport(responses: [StubTransport.Response(status: 201, body: Self.created)])
+        let fixture = try fixture(transport)
+        try await fixture.test { client in
+            try await client.execute(
+                uri: "/api/v1/apps/legilo/beta-groups", method: .post, headers: jsonHeaders,
+                body: try body(CreateBetaGroupRequest(name: "Public", isInternal: false))
+            ) { response in
+                #expect(response.status == .created)
+            }
+        }
+        let request = try #require(transport.requests.first)
+        let httpBody = try #require(request.httpBody)
+        let json = try #require(try JSONSerialization.jsonObject(with: httpBody) as? [String: Any])
+        let attributes = try #require((json["data"] as? [String: Any])?["attributes"] as? [String: Any])
+        #expect(attributes["name"] as? String == "Public")
+        #expect(attributes["isInternalGroup"] as? Bool == false)
+    }
+
     @Test func refusesAnEmptyName() async throws {
         let transport = StubTransport()
         let fixture = try fixture(transport)

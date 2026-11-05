@@ -5,7 +5,7 @@
 
 import { confirm, field, h, replaceChildren, sheet, spinner, svg } from '../ui.js';
 import {
-  detectionNotes, platformName, testDestinationText, toWorkflow, uniqueName, wizardModel,
+  detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, uniqueName, wizardModel,
 } from '../workflow-model.js';
 import { workflowSteps } from '../workflow-summary.js';
 import { choiceCards, groupPicker, guessNotes, tile } from './workflow-parts.js';
@@ -157,7 +157,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
     const update = () => {
       state.touched = true;
       render();
-      content.querySelector(`[data-scheme="${CSS.escape(choice.scheme)}"] input[data-kind="${lastKind}"]`)?.focus();
+      content.querySelector(`[data-choice="${CSS.escape(choiceKey(choice))}"] input[data-kind="${lastKind}"]`)?.focus();
     };
     let lastKind = '';
     const pill = (kind, label, disabled) => {
@@ -172,7 +172,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       : choice.group === 'not-app' ? 'Not an app: it can only run tests'
         : choice.alternative ? `Another ${platformName(platform)} scheme in this repository`
           : null;
-    return h('li', { class: 'wf-target', dataset: { scheme: choice.scheme } },
+    return h('li', { class: 'wf-target', dataset: { choice: choiceKey(choice) } },
       tile(platform, 'platform'),
       h('span', { class: 'wf-target-text' },
         h('span', { class: 'wf-target-title' }, `${choice.scheme} · ${platformName(platform)}`),
@@ -225,7 +225,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
           : 'Each build goes to App Store Connect and to the people in the groups you pick. They install it with the TestFlight app.',
         disabled: ascMissing,
         extra: groupPicker({
-          store: groups, selected: state.groups, internalOnly: true,
+          store: groups, selected: state.groups,
           onChange: () => { state.groupsTouched = true; state.touched = true; },
         }),
       },
@@ -260,11 +260,18 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
 
   // MARK: 3. Review
 
+  /** Selected TestFlight groups that are external, so the build needs Beta App Review. */
+  function externalSelected() {
+    const known = groups.state?.groups ?? [];
+    return state.groups.some((name) => known.some((group) => group.name === name && group.isInternal === false));
+  }
+
   function model() {
     const base = firstWorkflow(state.suggestion);
     return wizardModel({
       name: state.name.trim(), base, choices: chosen(), distribution: archived().length ? state.distribution : 'keep',
       groups: state.distribution === 'testflight' ? state.groups : [],
+      externalReview: state.distribution === 'testflight' && externalSelected(),
       branches: state.sourceBranches ?? null,
     });
   }
@@ -355,18 +362,26 @@ function firstWorkflow(suggestion) {
   return workflows[Object.keys(workflows)[0]] ?? {};
 }
 
-/** Each detected scheme as a choice: the suggested ones archived, and tested when they have tests. */
+/** One row per platform a scheme builds for, so a multiplatform app can be archived for each. */
+function choiceKey(choice) {
+  return `${choice.scheme}\u001f${choice.platform ?? ''}`;
+}
+
+/** Each detected scheme as a choice: the suggested ones archived, and tested when they have tests. A scheme that
+ * builds for several platforms is one choice per platform. */
 function initialChoices(suggestion, appName) {
   const suggested = firstWorkflow(suggestion).actions ?? [];
   const mine = new Set(suggested.map((action) => action.scheme));
   const schemes = suggestion.schemes?.length
     ? suggestion.schemes
     : suggested.map((action) => ({ name: action.scheme, platform: action.platform, isApplication: true, hasTests: false }));
-  const choices = schemes.map((scheme) => {
+  const choices = schemes.flatMap((scheme) => {
     const action = suggested.find((item) => item.scheme === scheme.name);
-    return {
+    const listed = schemePlatforms(scheme);
+    const platforms = listed.length ? listed : [scheme.platform ?? action?.platform ?? 'macos'];
+    return platforms.map((platform) => ({
       scheme: scheme.name,
-      platform: scheme.platform ?? action?.platform ?? 'macos',
+      platform,
       isApplication: scheme.isApplication,
       hasTests: Boolean(scheme.hasTests),
       // app: this app's; other-app: an app with another bundle ID; not-app: tests, a framework...
@@ -374,7 +389,7 @@ function initialChoices(suggestion, appName) {
       alternative: false,
       archive: false,
       test: false,
-    };
+    }));
   });
   // One archive per platform by default: the scheme named like the app, else the shortest name. The others (a
   // "Beta" scheme, say) start off, since two archives for one platform would upload the same build number twice.

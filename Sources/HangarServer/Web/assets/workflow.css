@@ -458,6 +458,7 @@
 .wf-plus-circle { display: block; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-text); }
 .wf-new-group { display: grid; gap: var(--space-1); padding: 8px 12px 12px 46px; }
 .wf-new-group .input { background: var(--card); }
+.wf-new-group-kind { display: flex; gap: 8px; }
 .wf-new-group-actions { display: flex; justify-content: flex-end; gap: var(--space-1); }
 
 .wf-status-line { display: flex; align-items: center; gap: var(--space-1); color: var(--secondary); font: var(--footnote); }

@@ -21,7 +21,8 @@ extension HangarServerApp {
             let name = input.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { throw APIError(code: "invalid_request", message: "Name the group.") }
             let group = try await Self.relayingRefusal {
-                try await client.createBetaGroup(appID: app.appStoreConnectAppID, name: name, internal: true)
+                try await client.createBetaGroup(
+                    appID: app.appStoreConnectAppID, name: name, internal: input.isInternal ?? true)
             }
             return try Response.json(BetaGroup(id: group.id, name: group.name, isInternal: group.isInternal), status: .created)
         }

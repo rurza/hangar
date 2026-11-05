@@ -58,7 +58,7 @@ private struct Fixture {
 
 private func pbxproj(
     targets: [(id: String, name: String, type: String, sdk: String, team: String?)], bundleIDs: [String: String] = [:],
-    configFiles: [String: String] = [:]
+    configFiles: [String: String] = [:], supportedPlatforms: [String: String] = [:]
 ) -> String {
     var objects = ""
     for (name, file) in configFiles {
@@ -86,7 +86,7 @@ private func pbxproj(
                 \(configFiles[target.name].map { _ in "\t\t\tbaseConfigurationReference = F\(target.name);\n" } ?? "")                \t\t\tbuildSettings = {
                 \t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
                 \(bundleIDs[target.name].map { "\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = \"\($0)\";\n" } ?? "")                \(target.team.map { "\t\t\t\tDEVELOPMENT_TEAM = \($0);\n" } ?? "")\t\t\t\tPRODUCT_NAME = "$(TARGET_NAME)";
-                \t\t\t\tSDKROOT = \(target.sdk);
+                \t\t\t\tSDKROOT = \(target.sdk);\(supportedPlatforms[target.name].map { "\n\t\t\t\tSUPPORTED_PLATFORMS = \"\($0)\";" } ?? "")
                 \t\t\t};
                 \t\t\tname = \(config == "D" ? "Debug" : "Release");
                 \t\t};
@@ -689,6 +689,29 @@ private let batFi = Fixture(
     func resolvesBuildSettingReferences(value: String, settings: [String: String], expected: String?) {
         #expect(WorkflowDetector.resolve(value, settings: settings) == expected)
     }
+}
+
+@Test func multiplatformSchemeIsOneBuildPerPlatform() throws {
+    let fixture = Fixture(files: [
+        "Velum.xcodeproj/project.pbxproj": pbxproj(
+            targets: [("T1", "Velum", "application", "auto", nil)],
+            supportedPlatforms: ["Velum": "iphoneos iphonesimulator macosx"]),
+        "Velum.xcodeproj/xcshareddata/xcschemes/Velum.xcscheme": xcscheme(blueprint: "Velum"),
+    ])
+    let suggestion = try fixture.detect()
+    let scheme = try #require(suggestion.schemes.first { $0.name == "Velum" })
+    #expect(scheme.platforms == [.iOS, .macOS])
+    #expect(scheme.platform == nil)
+    #expect(scheme.isApplication)
+    let actions = try #require(suggestion.workflows.workflows["release"]?.actions)
+    #expect(actions == [
+        WorkflowAction(scheme: "Velum", platform: .iOS, export: .appStoreConnect),
+        WorkflowAction(scheme: "Velum", platform: .macOS, export: .appStoreConnect),
+    ])
+    #expect(suggestion.notes.contains { $0.contains("Scheme Velum builds for iOS and macOS") })
+    let data = try JSONEncoder().encode(scheme)
+    let decoded = try JSONDecoder().decode(DetectedScheme.self, from: data)
+    #expect(decoded.platforms == [.iOS, .macOS])
 }
 
 extension Fixture {
