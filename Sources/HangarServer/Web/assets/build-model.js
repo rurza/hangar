@@ -22,12 +22,14 @@ function stepStatusWords(status) {
 }
 
 /**
- * The line under a step's name: why it failed (the first error in its log), its warnings, or why it was stopped.
- * Nothing for a step that went fine or has not ended.
+ * The line under a step's name: why it failed (the first error in its log), its warnings (unless its stages show
+ * them), or why it was stopped. Nothing for a step that went fine or has not ended.
  */
 function stepDetail(step, job) {
   const status = stepDisplayStatus(step, job);
   if (!['failed', 'warning', 'cancelled'].includes(status)) return null;
+  // A step's warnings are its stages' details, which are listed under it already.
+  if (status === 'warning' && stepStages(step, job).some((stage) => stage.detail)) return null;
   const detail = typeof step.detail === 'string' ? step.detail.trim() : '';
   return detail || null;
 }

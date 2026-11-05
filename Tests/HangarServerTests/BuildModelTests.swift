@@ -39,11 +39,12 @@ import Testing
                          {"name": "Groups", "status": "warning", "detail": "Internal gets every build automatically; could not add the build to QA: refused"}]}]}
             """#
         let output = try Self.run(job, """
-            [stepDetail(input.steps[0], input), stepStatusWords('warning'),
+            [String(stepDetail(input.steps[0], input)), stepStatusWords('warning'),
              ...stepStages(input.steps[0], input).map((s) => `${s.name}:${s.status}:${s.detail}`)].join('\\n')
             """)
+        // The stages carry the warnings, so the step adds no line of its own.
         #expect(output == """
-            Groups: could not add the build to QA: refused
+            null
             succeeded with warnings
             Upload:succeeded:null
             Processing:succeeded:VALID
