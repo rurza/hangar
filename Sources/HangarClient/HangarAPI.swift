@@ -26,11 +26,14 @@ public struct HangarAPI: Sendable {
     public let baseURL: URL
     private let transport: any HTTPTransport
     let openLines: LineStreamOpener
+    /// An API token (`hgr_…`) sent as `Authorization: Bearer` on every request; nil sends none.
+    private let token: String?
 
     /// `baseURL` is the server's root, such as `http://mac-mini:8787`.
-    public init(baseURL: URL, transport: any HTTPTransport, openLines: LineStreamOpener? = nil) {
+    public init(baseURL: URL, transport: any HTTPTransport, token: String? = nil, openLines: LineStreamOpener? = nil) {
         self.baseURL = baseURL
         self.transport = transport
+        self.token = token
         self.openLines = openLines ?? Self.liveLines
     }
 
@@ -68,10 +71,6 @@ public struct HangarAPI: Sendable {
         try await send("PUT", "apps/\(segment(app))/numbers/next", body: BumpNumberRequest(next: next))
     }
 
-    public func workflows(app: String, ref: String) async throws -> WorkflowsResponse {
-        try await get("apps/\(segment(app))/workflows", query: ["ref": ref])
-    }
-
     public func workflowFile(app: String) async throws -> StoredWorkflowFile {
         try await get("apps/\(segment(app))/workflow-file")
     }
@@ -105,6 +104,56 @@ public struct HangarAPI: Sendable {
     public func artifact(jobID: UUID, name: String) async throws -> Data {
         try await perform(request("GET", "jobs/\(jobID.uuidString)/artifacts/\(segment(name))"))
     }
+
+    // MARK: - Repositories, App Store Connect and deploy checks
+
+    public func settings() async throws -> SettingsStatus { try await get("settings") }
+    public func githubRepositories() async throws -> [GitHubRepo] { try await get("github/repos") }
+
+    /// `repository` is `owner/name`.
+    public func inspectRepository(_ repository: String, ref: String? = nil) async throws -> RepositoryInspection {
+        let parts = repository.split(separator: "/", maxSplits: 1).map(String.init)
+        let path = "github/repos/\(segment(parts.first ?? ""))/\(segment(parts.count > 1 ? parts[1] : ""))/inspect"
+        return try await get(path, query: ["ref": ref])
+    }
+
+    public func appStoreConnectApps() async throws -> [ASCAppSummary] { try await get("asc/apps") }
+
+    public func workflowSuggestion(app: String, ref: String? = nil, bundleID: String? = nil) async throws -> WorkflowSuggestion {
+        try await get("apps/\(segment(app))/workflow-suggestion", query: ["ref": ref, "bundleID": bundleID])
+    }
+
+    /// The workflows in effect at `ref`, nil meaning the default branch.
+    public func workflows(app: String, ref: String?) async throws -> WorkflowsResponse {
+        try await get("apps/\(segment(app))/workflows", query: ["ref": ref])
+    }
+
+    public func branches(app: String) async throws -> RepositoryBranches { try await get("apps/\(segment(app))/branches") }
+
+    public func deployCheck(app: String, workflow: String, ref: String? = nil, commit: String? = nil, machine: String? = nil)
+        async throws -> DeployCheck
+    {
+        try await get(
+            "apps/\(segment(app))/deploy-check",
+            query: ["workflow": workflow, "ref": ref, "commit": commit, "machine": machine])
+    }
+
+    public func betaGroups(app: String) async throws -> [BetaGroup] { try await get("apps/\(segment(app))/beta-groups") }
+
+    public func createBetaGroup(app: String, _ request: CreateBetaGroupRequest) async throws -> BetaGroup {
+        try await send("POST", "apps/\(segment(app))/beta-groups", body: request)
+    }
+
+    // MARK: - API tokens
+
+    public func apiTokens() async throws -> [APIToken] { try await get("api-tokens") }
+
+    public func createAPIToken(_ request: CreateAPITokenRequest) async throws -> CreateAPITokenResponse {
+        try await send("POST", "api-tokens", body: request)
+    }
+
+    public func revokeAPIToken(_ token: String) async throws { try await sendEmpty("DELETE", "api-tokens/\(segment(token))") }
+    public func currentAPIToken() async throws -> APIToken { try await get("api-tokens/current") }
 
     // MARK: - Machines
 
@@ -182,12 +231,13 @@ public struct HangarAPI: Sendable {
         var request = URLRequest(url: components.url ?? baseURL)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return request
     }
 
     /// A fixed order keeps URLs stable (dictionaries are unordered): follow, app, ref, step, then the rest.
     private static func queryOrder(_ key: String) -> String {
-        let order = ["follow", "app", "ref", "step", "limit", "tail"]
+        let order = ["follow", "app", "workflow", "ref", "commit", "step", "limit", "tail"]
         return order.firstIndex(of: key).map { "\($0)" } ?? "9\(key)"
     }
 
