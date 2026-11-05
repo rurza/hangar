@@ -219,6 +219,16 @@ public struct BuildRepository: Sendable {
         }
     }
 
+    /// Merges `info` into the job's run info (fields it leaves nil keep their value).
+    public func mergeRunInfo(jobID: UUID, _ info: JobRunInfo) throws {
+        try database.write { db in
+            guard let job = try Self.job(db, id: jobID) else { return }
+            let merged = (job.runInfo ?? JobRunInfo()).merging(info)
+            try db.execute(
+                sql: "UPDATE jobs SET run_info_json = ? WHERE id = ?", arguments: [try Self.json(merged), jobID.uuidString])
+        }
+    }
+
     public func setOutputs(jobID: UUID, _ outputs: [String: String]) throws {
         try database.write { db in
             try db.execute(
@@ -307,6 +317,7 @@ public struct BuildRepository: Sendable {
             steps: try decode([StepRecord].self, row["steps_json"]), queueNote: row["queue_note"],
             failureReason: row["failure_reason"], outputs: try decode([String: String].self, row["outputs_json"]),
             createdAt: dbDate(row["created_at"] as Double), assignedAt: dbDate(row["assigned_at"] as Double?),
-            startedAt: dbDate(row["started_at"] as Double?), finishedAt: dbDate(row["finished_at"] as Double?))
+            startedAt: dbDate(row["started_at"] as Double?), finishedAt: dbDate(row["finished_at"] as Double?),
+            runInfo: try (row["run_info_json"] as String?).map { try decode(JobRunInfo.self, $0) })
     }
 }

@@ -119,6 +119,7 @@ private final class ScriptedConnection: ServerConnection {
 
     func start(jobID: UUID) async throws {}
     func step(jobID: UUID, _ update: StepUpdate) async throws {}
+    func info(jobID: UUID, _ info: JobRunInfo) async throws {}
     func log(jobID: UUID, _ batch: LogBatch) async throws {}
     func uploadArtifact(jobID: UUID, name: String, fileURL: URL) async throws {}
     func finish(jobID: UUID, _ result: JobResult) async throws {}

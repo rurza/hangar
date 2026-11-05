@@ -90,6 +90,32 @@ public struct StepRecord: Codable, Equatable, Sendable {
     }
 }
 
+/// Who ran a job, for its header: the machine (kept by name, so it survives the machine's removal), the worker build
+/// and the Xcode the job picked. Every field is filled in as it becomes known.
+public struct JobRunInfo: Codable, Equatable, Sendable {
+    public var machineName: String?
+    /// `HangarVersion.current` and the start of the worker binary's SHA-256: "0.5.0 (a1c9b45d)".
+    public var workerVersion: String?
+    /// "27.2".
+    public var xcodeVersion: String?
+    /// "27B48".
+    public var xcodeBuild: String?
+
+    public init(machineName: String? = nil, workerVersion: String? = nil, xcodeVersion: String? = nil, xcodeBuild: String? = nil) {
+        self.machineName = machineName
+        self.workerVersion = workerVersion
+        self.xcodeVersion = xcodeVersion
+        self.xcodeBuild = xcodeBuild
+    }
+
+    /// `self` with every field `other` sets taken from it.
+    public func merging(_ other: JobRunInfo) -> JobRunInfo {
+        JobRunInfo(
+            machineName: other.machineName ?? machineName, workerVersion: other.workerVersion ?? workerVersion,
+            xcodeVersion: other.xcodeVersion ?? xcodeVersion, xcodeBuild: other.xcodeBuild ?? xcodeBuild)
+    }
+}
+
 public struct Job: Codable, Equatable, Sendable, Identifiable {
     public var id: UUID
     public var buildID: UUID
@@ -104,12 +130,14 @@ public struct Job: Codable, Equatable, Sendable, Identifiable {
     public var assignedAt: Date?
     public var startedAt: Date?
     public var finishedAt: Date?
+    /// Nil until a machine starts the job.
+    public var runInfo: JobRunInfo?
 
     public init(
         id: UUID, buildID: UUID, action: WorkflowAction, status: JobStatus, machineID: UUID? = nil,
         steps: [StepRecord] = [], queueNote: String? = nil, failureReason: String? = nil,
         outputs: [String: String] = [:], createdAt: Date, assignedAt: Date? = nil,
-        startedAt: Date? = nil, finishedAt: Date? = nil
+        startedAt: Date? = nil, finishedAt: Date? = nil, runInfo: JobRunInfo? = nil
     ) {
         self.id = id
         self.buildID = buildID
@@ -124,5 +152,6 @@ public struct Job: Codable, Equatable, Sendable, Identifiable {
         self.assignedAt = assignedAt
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+        self.runInfo = runInfo
     }
 }

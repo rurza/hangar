@@ -215,6 +215,11 @@ private final class Shared<Value: Sendable>: Sendable {
             outputs: ["testflight.buildID": "asc-build", "testflight.processingState": "VALID"]))
         #expect(fixture.connection.events.first == .start)
         #expect(fixture.connection.events.last == .finish(result))
+        // The worker build first, then the Xcode the job picked.
+        #expect(fixture.connection.infos.count == 2)
+        #expect(fixture.connection.infos.first?.workerVersion?.hasPrefix(HangarVersion.current) == true)
+        #expect(fixture.connection.infos.last?.xcodeVersion == "27.2")
+        #expect(fixture.connection.infos.last?.xcodeBuild?.isEmpty == false)
         #expect(fixture.connection.steps.map(\.name) == Self.allSteps.flatMap { [$0, $0] })
         #expect(fixture.connection.steps.map(\.status) == Self.allSteps.flatMap { _ in [.running, .succeeded] })
 

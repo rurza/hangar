@@ -11,6 +11,7 @@ final class FakeServerConnection: ServerConnection {
     enum Event: Equatable {
         case start
         case step(String, StepStatus)
+        case info(JobRunInfo)
         case log(LogBatch)
         case upload(name: String, path: String)
         case finish(JobResult)
@@ -91,6 +92,12 @@ final class FakeServerConnection: ServerConnection {
     func lastUpdate(of step: String) -> StepUpdate? {
         updates.last { $0.name == step && !($0.status == .running && $0.stages != nil) }
     }
+
+    func info(jobID: UUID, _ info: JobRunInfo) async throws {
+        state.withLock { $0.events.append(.info(info)) }
+    }
+
+    var infos: [JobRunInfo] { events.compactMap { if case .info(let info) = $0 { info } else { nil } } }
 
     func log(jobID: UUID, _ batch: LogBatch) async throws {
         try state.withLock {

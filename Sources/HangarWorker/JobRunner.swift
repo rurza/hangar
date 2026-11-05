@@ -90,6 +90,8 @@ public struct JobRunner: Sendable {
             return result
         }
 
+        await reportInfo(jobID: jobID, JobRunInfo(workerVersion: Self.workerVersion))
+
         var pipeline = JobPipeline(
             jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason)
         let prepared = await pipeline.step(StepName.checkout) { [self] in
@@ -161,6 +163,22 @@ public struct JobRunner: Sendable {
         return "this Mac"
     }()
 
+    /// "0.5.0 (a1c9b45d)": the release and the start of this binary's SHA-256, which tells apart two builds of one
+    /// release.
+    public static let workerVersion: String = {
+        guard let hash = WorkerSelfUpdate.executableSHA256 else { return HangarVersion.current }
+        return "\(HangarVersion.current) (\(hash.prefix(8)))"
+    }()
+
+    /// Best effort: a server that predates `jobs/{id}/info` answers 404, and the job runs on regardless.
+    private func reportInfo(jobID: UUID, _ info: JobRunInfo) async {
+        do {
+            try await connection.info(jobID: jobID, info)
+        } catch {
+            logger.info("could not report the job's worker and Xcode: \(error)", metadata: ["job": "\(jobID)"])
+        }
+    }
+
     /// Delays between attempts to report a job's result; five attempts in all.
     static let finishRetryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
 
@@ -199,6 +217,7 @@ public struct JobRunner: Sendable {
             throw PreparationError.xcodeNotInstalled(workflow.xcode)
         }
         log("using Xcode \(xcode.version) (\(xcode.build)) at \(xcode.path)")
+        await reportInfo(jobID: assignment.job.id, JobRunInfo(xcodeVersion: xcode.version, xcodeBuild: xcode.build))
         let developerDir = xcode.path + "/Contents/Developer"
         let testDestination = action.kind == .test ? try await destination(for: action, developerDir: developerDir) : nil
         if let testDestination {
