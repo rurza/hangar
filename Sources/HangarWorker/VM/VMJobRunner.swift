@@ -17,6 +17,8 @@ public struct VMJobRunner: JobRunning {
     public var jobTimeout: Duration
     /// How long a job waits for a slot that is busy (its state being saved again) before it fails.
     public var slotWait: Duration = .seconds(900)
+    /// How often a job whose VM could not start because two VMs already run tries again.
+    public var roomRetry: Duration = .seconds(30)
     /// The guest's end of the relay.
     public static let guestServerPort = 8787
     static let guestBinary = ".hangar/bin/hangar-worker"
@@ -119,7 +121,7 @@ public struct VMJobRunner: JobRunning {
             relay = try GuestRelay(rule: rule, server: serverURL)
             let port = try await relay!.start()
             let user = image.metadata.buildUser ?? "builder"
-            let vm = try await launcher.bootJob(image: image, slot: slot, job: job, user: user)
+            let vm = try await bootWaitingForRoom(image: image, slot: slot, job: job, user: user, cancelled: cancelled)
             machine = vm.machine
             stale = vm.slotIsStale
             logger.info("job VM up at \(vm.address): \(vm.note)", metadata: metadata)
@@ -156,6 +158,23 @@ public struct VMJobRunner: JobRunning {
         }
         slots.release(slot)
         return result
+    }
+
+    /// Boots the job's VM. While this Mac already runs two macOS VMs (one of them perhaps the owner's), the slot
+    /// counts as busy: it tries again every `roomRetry` until `slotWait` has passed or the job is cancelled.
+    func bootWaitingForRoom(
+        image: VMImage, slot: Int, job: VMJobDirectory, user: String, cancelled: @Sendable () -> Bool
+    ) async throws -> RunningVM {
+        let deadline = ContinuousClock.now + slotWait
+        while true {
+            do {
+                return try await launcher.bootJob(image: image, slot: slot, job: job, user: user)
+            } catch VMError.tooManyVMs where ContinuousClock.now < deadline && !cancelled() {
+                logger.notice("this Mac already runs two macOS VMs; trying again in \(roomRetry)", metadata: ["job": "\(job.path)"])
+                for file in [job.disk, job.nvram] { try? FileManager.default.removeItem(atPath: file) }
+                try await host.clock.sleep(for: roomRetry)
+            }
+        }
     }
 
     enum Outcome {

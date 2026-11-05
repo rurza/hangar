@@ -221,7 +221,8 @@ struct VMFixture {
     }
 
     func host(_ engine: FakeEngine, runner: some ProcessRunner = RecordingProcessRunner(), settings: VMSettings? = nil) -> VMHost {
-        var settings = settings ?? VMSettings(storage: storage.root)
+        // No floor: the tests must not depend on this Mac's free space.
+        var settings = settings ?? VMSettings(storage: storage.root, floorGB: 0, jobReserveGB: 0)
         settings.storage = storage.root
         return VMHost(
             settings: settings, engine: engine, runner: runner, machineName: machineName, hostBuild: "25G83",

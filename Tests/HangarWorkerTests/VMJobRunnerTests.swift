@@ -321,6 +321,23 @@ struct ImmediateClock: Clock {
         #expect(FileManager.default.fileExists(atPath: try setup.fixture.image().directory.slot(0).state))
     }
 
+    @Test func aMacAlreadyRunningTwoVMsMakesTheJobWaitNotFail() async throws {
+        let setup = try Setup(saved: false, script: Self.succeeding)
+        defer { setup.fixture.cleanUp() }
+        let engine = FakeEngine(startErrors: [.tooManyVMs, .tooManyVMs])
+        var launcher = VMLauncher(host: setup.fixture.host(engine, runner: setup.runner))
+        launcher.pollInterval = .milliseconds(10)
+        launcher.host.clock = ImmediateClock()
+        var jobRunner = VMJobRunner(
+            launcher: launcher, connection: setup.connection, serverURL: URL(string: "http://mini:8787")!,
+            identity: setup.identity, slots: setup.pool, workerBinary: "/bin/true", sessions: setup.launcher,
+            cancelGrace: .seconds(1))
+        jobRunner.roomRetry = .milliseconds(10)
+        let result = await jobRunner.run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+        #expect(result.status == .succeeded)
+        #expect(engine.machines.prefix(3).map { $0.calls.first } == [.start, .start, .start])
+    }
+
     @Test func slotsAreTakenLowestFirstAndGivenBack() {
         let pool = VMSlotPool(count: 2)
         #expect(pool.acquire() == 0)
