@@ -12,7 +12,11 @@ import { buildDuration } from './build.js';
 import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
 import { variablesEditor } from './variables.js';
+import { toWorkflow } from '../workflow-model.js';
+import { workflowToYAML } from '../yaml.js';
 import { workflowSummary } from '../workflow-summary.js';
+import { betaGroupsStore, branchesStore } from './workflow-parts.js';
+import { openWorkflowWizard } from './workflow-wizard.js';
 
 const RECENT_BUILDS = 20;
 
@@ -264,14 +268,41 @@ function workflowCard(app, signal) {
   replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Loading workflow')));
 
   // The workflow stored in Hangar; only without one is GitHub asked whether the repository has a .hangar.yml.
-  api.get(`/apps/${seg(app.slug)}/workflow-file`, { signal }).then((stored) => {
+  /** The same wizard as the editor's New Workflow, without opening the editor first. Create saves it here. */
+  function createWorkflow(stored) {
+    const base = `/apps/${seg(app.slug)}`;
+    const groups = betaGroupsStore(base);
+    const branches = branchesStore(base);
+    openWorkflowWizard({
+      app,
+      loadSuggestion: () => api.get(`${base}/workflow-suggestion`, { signal }),
+      groups,
+      branches,
+      takenNames: Object.keys(stored.workflows?.workflows ?? {}),
+      onCreate: async (created) => {
+        const name = created.name.trim();
+        const file = stored.workflows ?? { version: 1, workflows: {} };
+        const next = await api.put(`${base}/workflow-file`, {
+          yaml: workflowToYAML({ ...file, workflows: { ...file.workflows, [name]: toWorkflow(created) } }),
+        });
+        showStored(next);
+        toast(`Created “${name}”`, 'success');
+      },
+      onBlank: () => navigate(`${base}/workflow?blank=1`),
+    });
+  }
+
+  function showStored(stored) {
     replaceChildren(element,
       cardTitle('Workflow'),
       workflowList(stored.workflows),
       h('p', { class: 'card-note' }, `Defined in Hangar · updated ${relativeTime(stored.updatedAt)}`),
       h('div', { class: 'card-actions' },
+        button('New Workflow…', { kind: 'secondary', onClick: () => createWorkflow(stored) }),
         h('a', { href: editor, 'data-link': true, class: 'button button-secondary' }, 'Edit Workflow')));
-  }, (error) => {
+  }
+
+  api.get(`/apps/${seg(app.slug)}/workflow-file`, { signal }).then(showStored, (error) => {
     if (error.code === 'aborted') return;
     if (error.code === 'workflow_file_not_found') {
       // No workflow in Hangar: does the repository have its own .hangar.yml (at its default branch)?

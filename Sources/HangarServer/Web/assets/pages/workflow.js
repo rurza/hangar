@@ -58,6 +58,7 @@ function workflowEditor({ app, stored: initial, context }) {
   const base = `/apps/${seg(app.slug)}`;
   let stored = initial; // the StoredWorkflowFile, null while the app has none
   let models = stored ? modelsFromFile(stored.workflows) : []; // every workflow of the file
+  for (const workflow of models) workflow.savedName = workflow.name.trim();
   let saved = stored ? snapshot() : null; // the file as last loaded or saved
   let current = 0; // index of the workflow on screen
   let selection = { kind: 'general' }; // the sidebar item: general, environment, start, action (with index), testflight
@@ -282,7 +283,9 @@ function workflowEditor({ app, stored: initial, context }) {
           yaml: workflowToYAML({ ...file, workflows: { ...file.workflows, [name]: toWorkflow(created) } }),
         });
         const fresh = modelsFromFile(stored.workflows);
-        models = [...models, fresh.find((other) => other.name === name) ?? created];
+        const added = fresh.find((other) => other.name === name) ?? created;
+        added.savedName = name;
+        models = [...models, added];
         saved = snapshotOf(fresh);
         current = models.length - 1;
         selection = { kind: 'general' };
@@ -1190,6 +1193,7 @@ function workflowEditor({ app, stored: initial, context }) {
       stored = await api.put(`${base}/workflow-file`, { yaml: workflowToYAML(fileFromModels(models)) });
       const name = model().name.trim();
       models = modelsFromFile(stored.workflows);
+      for (const workflow of models) workflow.savedName = workflow.name.trim();
       current = Math.max(0, models.findIndex((other) => other.name === name));
       saved = snapshot();
       busy = false;
@@ -1238,10 +1242,40 @@ function workflowEditor({ app, stored: initial, context }) {
 
   async function removeWorkflow() {
     const name = model().name.trim() || 'this workflow';
-    if (models.length > 1) {
+    const savedKey = model().savedName;
+    const savedKeys = Object.keys(stored?.workflows?.workflows ?? {});
+    const removingSaved = Boolean(savedKey && savedKeys.includes(savedKey));
+    let repositoryHasFile = repoFile;
+    async function confirmDeleteLast() {
+      if (repositoryHasFile === undefined || repositoryHasFile === null) {
+        repositoryHasFile = await api.get(`${base}/workflow-source?repository=1`)
+          .then((status) => status?.repositoryHasWorkflowFile ?? null, () => null);
+      }
+      return confirm({
+        title: `Delete “${name}”?`,
+        message: repositoryHasFile === true
+          ? `${app.name} builds with the .hangar.yml in its repository again.`
+          : repositoryHasFile === false
+            ? `${app.name}’s repository has no .hangar.yml, so deploys fail until you set up a workflow again.`
+            : `${app.name} then builds with a .hangar.yml in its repository. Builds fail if it has none.`,
+        confirmLabel: repositoryHasFile === false ? 'Delete and Disable Builds' : 'Delete',
+        destructive: true,
+      });
+    }
+    async function deleteStoredFile() {
+      try {
+        await api.del(`${base}/workflow-file`);
+        return true;
+      } catch (error) {
+        if (error.code !== 'aborted') toast(error.message, 'error');
+        return false;
+      }
+    }
+    // An unsaved workflow is only on this page. A saved one is removed from Hangar now: confirming is the save.
+    if (!removingSaved && models.length > 1) {
       const confirmed = await confirm({
         title: `Delete “${name}”?`,
-        message: 'The other workflows stay. It is gone once you save.',
+        message: 'It has not been saved, so this only discards it. The other workflows stay.',
         confirmLabel: 'Delete',
         destructive: true,
       });
@@ -1250,7 +1284,54 @@ function workflowEditor({ app, stored: initial, context }) {
       current = 0;
       selection = { kind: 'general' };
       view = 'list';
+      banner = null;
       renderEditor();
+      return;
+    }
+    if (removingSaved && savedKeys.some((key) => key !== savedKey)) {
+      const confirmed = await confirm({
+        title: `Delete “${name}”?`,
+        message: 'The other workflows stay.',
+        confirmLabel: 'Delete',
+        destructive: true,
+      });
+      if (!confirmed) return;
+      const file = { version: stored.workflows.version ?? 1, workflows: { ...stored.workflows.workflows } };
+      delete file.workflows[savedKey];
+      try {
+        stored = await api.put(`${base}/workflow-file`, { yaml: workflowToYAML(file) });
+      } catch (error) {
+        if (error.code !== 'aborted') toast(error.message, 'error');
+        return;
+      }
+      models.splice(current, 1);
+      if (saved) {
+        const remembered = JSON.parse(saved);
+        delete remembered.workflows[savedKey];
+        saved = JSON.stringify(remembered);
+      }
+      current = 0;
+      selection = { kind: 'general' };
+      view = 'list';
+      banner = null;
+      renderEditor();
+      toast(`Deleted “${name}”`, 'success');
+      return;
+    }
+    // The last workflow Hangar has saved, while an unsaved draft is still on screen. Deploys fall back to the
+    // repository until that draft is saved; the draft itself stays.
+    if (models.length > 1) {
+      if (!(await confirmDeleteLast())) return;
+      if (!(await deleteStoredFile())) return;
+      models.splice(current, 1);
+      stored = null;
+      saved = null;
+      current = 0;
+      selection = { kind: 'general' };
+      view = 'list';
+      banner = null;
+      renderEditor();
+      toast(`Deleted “${name}”`, 'success');
       return;
     }
     if (!stored) {
@@ -1260,26 +1341,8 @@ function workflowEditor({ app, stored: initial, context }) {
       renderStart();
       return;
     }
-    const repositoryHasFile = repoFile === undefined || repoFile === null
-      ? await api.get(`${base}/workflow-source?repository=1`).then((s) => s?.repositoryHasWorkflowFile ?? null, () => null)
-      : repoFile;
-    const confirmed = await confirm({
-      title: `Delete “${name}”?`,
-      message: repositoryHasFile === true
-        ? `${app.name} builds with the .hangar.yml in its repository again.`
-        : repositoryHasFile === false
-          ? `${app.name}’s repository has no .hangar.yml, so deploys fail until you set up a workflow again.`
-          : `${app.name} then builds with a .hangar.yml in its repository. Builds fail if it has none.`,
-      confirmLabel: repositoryHasFile === false ? 'Delete and Disable Builds' : 'Delete',
-      destructive: true,
-    });
-    if (!confirmed) return;
-    try {
-      await api.del(`${base}/workflow-file`);
-    } catch (error) {
-      toast(error.message, 'error');
-      return;
-    }
+    if (!(await confirmDeleteLast())) return;
+    if (!(await deleteStoredFile())) return;
     stored = null;
     models = [];
     saved = null;
@@ -1420,6 +1483,13 @@ function workflowEditor({ app, stored: initial, context }) {
     return element;
   }
 
+  if (context.query?.get('blank') === '1') {
+    const name = uniqueName('Default', takenNames());
+    models = [...models, scratchWorkflow(name)];
+    current = models.length - 1;
+    selection = { kind: 'general' };
+    banner = { kind: 'info', text: 'A blank workflow: fill in each item, then Save.' };
+  }
   renderEditor();
   return element;
 }
