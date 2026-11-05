@@ -102,6 +102,45 @@ Checkouts, DerivedData, job folders and each job's `TMPDIR` go to the worker's w
 
 On SIGTERM (`launchctl bootout`, a restart, an update run by an administrator) the worker stops asking for jobs, cancels a running build with the reason ("hangar-worker on <Mac> was stopped (SIGTERM) during archive"), cleans up and exits. Check the Machines page for running jobs before restarting a worker by hand. As an administrator, the `hangar` user's worker is restarted with `sudo launchctl kill SIGTERM system/app.hangar.worker` (launchd starts it again) and stopped until the next boot with `sudo launchctl bootout system/app.hangar.worker`. Its log is `/Users/hangar/Library/Logs/Hangar/worker.log` (`sudo tail` it).
 
+## VM builds
+
+With VM builds on, a Mac runs **every** job in a fresh macOS VM and none on the host: a clone of a prepared image, restored from a saved state in a few seconds, thrown away when the job ends. In the VM the job runs as a standard user `builder` that owns `/opt/homebrew`, as on Xcode Cloud, so `ci_post_clone.sh` can `brew install` without sudo. The VM sees none of your files, cannot reach this Mac's services, the LAN or the tailnet (a pf filter), and never gets the machine token: it talks to the server through the worker with a token that works only for its own job. Why, and what was measured: [the VM builds design](superpowers/specs/2026-11-05-vm-builds-design.md).
+
+A Mac with VM builds on but not ready (no network filter, no image, a worker without the virtualization entitlement) takes **no** jobs, rather than building on the host; its card on the Machines page says what is missing. A Mac without VM builds builds on the host as before.
+
+What it needs: Apple silicon, an up-to-date worker (the install scripts sign it with the `com.apple.security.virtualization` entitlement), and room on one APFS volume: about 26 GB for the vanilla macOS image, 6 GB more for an image with Xcode and Homebrew (plus 8 to 17 GB per simulator runtime and 3 GB for the Metal toolchain), a few GB per slot's saved state, and up to `jobReserveGB` (25) per running job, above a floor of `floorGB` (40) that the worker never goes below. A Mac whose internal disk cannot hold that uses an external APFS SSD.
+
+The image and slot commands run as `hangar`, which owns the VM storage and saves and restores the states. As an administrator, in Terminal (`hw` is short for the `hangar` user's worker):
+
+```sh
+hw() { sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker "$@"; }
+```
+
+1. **Update the worker** (run the install command from the Machines page again), so it carries the entitlement.
+2. **Storage on an external SSD** (skip it to use `/Users/hangar/.hangar/vm`): format the SSD as APFS, then
+   ```sh
+   sudo diskutil enableOwnership /Volumes/<SSD>
+   sudo mkdir /Volumes/<SSD>/hangar-vm && sudo chown hangar:staff /Volumes/<SSD>/hangar-vm && sudo chmod 700 /Volumes/<SSD>/hangar-vm
+   ```
+   An external volume ignores ownership by default, which would let every user of the Mac read a running job's clone; the worker refuses such a volume. FileVault or an encrypted volume is recommended: a deleted clone is not scrubbed.
+3. **Turn VM builds on**: `hw vm enable` (add `--storage /Volumes/<SSD>/hangar-vm`, `--slots 2` on a Mac with the memory for two, `--memory-gb`, `--cpus`, `--timeout-minutes`). This writes the `vm` section of the worker's `config.json`.
+4. **Install the network filter** (it needs root; `sudo` here only because `hangar`'s home is closed to you, and `--dry-run` changes nothing):
+   ```sh
+   sudo /Users/hangar/.local/bin/hangar-worker vm network install --dry-run   # the rules, files and commands
+   sudo /Users/hangar/.local/bin/hangar-worker vm network install
+   ```
+   It writes the pf anchor `com.apple/250.HangarVM` (`/etc/pf.anchors/app.hangar.vm`) and a LaunchDaemon, `app.hangar.pf`, that loads it and enables pf at every boot; `/etc/pf.conf` is not changed. The rules let this Mac open connections into the VMs (SSH) and let the VMs use DNS and the internet; everything from a VM to this Mac, private ranges (10/8, 172.16/12, 192.168/16), the tailnet (100.64/10), link-local, multicast and IPv6 is dropped. `hw vm network check` says whether the worker sees it loaded. `vm network uninstall` removes it (VM builds then stop).
+5. **Import the vanilla macOS image** (about 5 minutes and 26 GB; pinned by digest): `hw vm image import`. It is Cirrus Labs' public `macos-tahoe-vanilla:26.6.2`, which has Setup Assistant done and an `admin` user whose published password the next step replaces.
+6. **Build the job image** from it with this Mac's Xcode (about 5 minutes for Xcode 27.2, plus downloads): `hw vm image build`. It replaces `admin`'s password and turns off password logins, creates `builder` (not an administrator, no sudo, logged in automatically), installs Homebrew into `/opt/homebrew` owned by `builder`, streams `/Applications/Xcode.app` in, accepts its license, runs `xcodebuild -runFirstLaunch`, downloads the Metal toolchain and the iOS simulator platform (`--platform` for others, `--no-platforms` and `--no-metal-toolchain` to skip them), turns off Spotlight, sleep and software update, and then saves each slot's state. `--xcode /Applications/Xcode_27.2.app` picks another Xcode; each image holds one.
+7. **The signing identity.** VM jobs sign with one Apple Development identity per worker, kept on the host and injected into each job's VM; a VM never creates certificates of its own. Use the one the host's archives created in the CI keychain, `hw vm identity from-keychain`, or store a `.p12`: `HANGAR_P12_PASSWORD=… hw vm identity import <file.p12>` (export it from Keychain Access). Archives in VMs fail until there is one; tests do not need it.
+8. **Restart the worker**: `sudo launchctl kill SIGTERM system/app.hangar.worker`. On the Machines page the Mac shows its VM slots and images. `hw vm status` prints the same report as JSON, and `hw vm smoke` boots a job's VM from slot 0, runs a command in it and deletes it, printing how long it took.
+
+`hw vm disable` turns VM builds off (images and states stay; `hw vm image remove <name>` deletes one). `hw vm image list` lists images and slot states; `hw vm slots prepare` saves the states again (stop the worker first).
+
+**What a job sees in its VM.** The same steps and `CI_*` variables as on the host, with the workspace in `/Users/builder/hangar`, `HOMEBREW_NO_AUTO_UPDATE=1` set, and Xcode at `/Applications/Xcode.app`. The job log's first line says how the VM came up ("VM: restored slot 0's saved state in 4.5 s"). `tools:` in `.hangar.yml` is not checked on a VM Mac: a `ci_post_clone.sh` installs what it needs, as on Xcode Cloud. The workflow's `xcode:` is matched against the images.
+
+**When things go wrong.** A job that runs longer than `vm.jobTimeoutMinutes` (default 120) is cancelled and its VM stopped. A cancelled job's VM gets a minute to report, then is stopped. A VM that stops or stops answering fails its job with the reason. The worker deletes every leftover clone when it starts, and a crashed worker's VMs end with it. When macOS on the Mac is updated, a saved state may no longer restore: the next job cold-boots (about 20 s more) and the slot is saved again afterwards.
+
 ## Move an existing worker to the `hangar` user
 
 A worker installed as your own user moves without a new pairing code: same machine in Hangar, same token, and its build cache (checkouts and DerivedData) moves too, so the next build fetches instead of cloning. Run the install command again as that administrator, or, with the worker already on your `PATH`:
