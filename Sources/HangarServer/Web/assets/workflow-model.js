@@ -187,9 +187,10 @@ function actionTitle(action) {
   return `${action.kind === 'test' ? 'Test' : 'Archive'} – ${platformName(action.platform)}`;
 }
 
-/** Where a test action runs: "this Mac", "iPhone 17 Pro" or "the newest iPhone simulator". */
+/** Where a test action runs: "a build Mac" (the one that builds it, not the viewer's), "the iPhone 17 Pro simulator" or
+ * "the newest iPhone simulator". */
 function testDestinationText(action) {
-  if (action.platform === 'macos') return 'this Mac';
+  if (action.platform === 'macos') return 'a build Mac';
   const destination = (action.destination ?? '').trim();
   if (destination && destination.toLowerCase() !== 'recommended') return `the ${destination} simulator`;
   return `the newest ${SIMULATOR_DEVICES[action.platform] ?? platformName(action.platform)} simulator`;

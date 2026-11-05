@@ -551,7 +551,8 @@
 
 /* Settings nested under a switch, indented to its label. */
 .wf-nested { display: grid; gap: var(--space-2); margin: 0 12px 12px 28px; }
-.wf-nested.wf-dependent-note { padding: 0; }
+/* The note stands in for the settings, so it lines up with the switch's label, not indented under it. */
+.wf-nested.wf-dependent-note { padding: 0; margin-left: 12px; }
 .wf-inline-field { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .wf-inline-field .select { width: auto; min-width: 140px; }
 .wf-nested .wf-checklist, .wf-switch-list { background: var(--card); }

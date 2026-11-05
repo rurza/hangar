@@ -177,6 +177,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       h('span', { class: 'wf-target-text' },
         h('span', { class: 'wf-target-title' }, `${choice.scheme} · ${platformName(platform)}`),
         what ? h('span', { class: 'wf-target-detail' }, what) : null,
+        choice.guessed ? h('span', { class: 'wf-target-detail' }, `Platform not detected, so ${platformName(platform)} is a guess`) : null,
         notes().platforms[choice.scheme] ? h('span', { class: 'wf-target-detail' }, notes().platforms[choice.scheme]) : null),
       h('div', { class: 'wf-target-options', role: 'group', 'aria-label': `What to do with ${choice.scheme}` },
         pill('test', 'Run Tests', false),
@@ -206,7 +207,9 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
   function renderDistribute() {
     const groupState = groups.state;
     const macOnly = archived().every((choice) => choice.platform === 'macos');
-    const notMac = archived().filter((choice) => choice.platform !== 'macos').map((choice) => choice.scheme);
+    // With the platform: Velum archives for iOS and macOS, and only "Velum (iOS)" is not a Mac app.
+    const notMac = archived().filter((choice) => choice.platform !== 'macos')
+      .map((choice) => `${choice.scheme} (${platformName(choice.platform)})`);
     if (state.distribution === null && groupState) {
       state.distribution = groupState.notConfigured ? 'keep' : 'testflight';
       // One internal group: it is the obvious recipient.
@@ -384,6 +387,8 @@ function initialChoices(suggestion, appName) {
       platform,
       isApplication: scheme.isApplication,
       hasTests: Boolean(scheme.hasTests),
+      // No platform found in the project: this one is a guess, and the row says so.
+      guessed: listed.length === 0,
       // app: this app's; other-app: an app with another bundle ID; not-app: tests, a framework...
       group: !scheme.isApplication ? 'not-app' : mine.has(scheme.name) || mine.size === 0 ? 'app' : 'other-app',
       alternative: false,

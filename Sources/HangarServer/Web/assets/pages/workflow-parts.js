@@ -208,15 +208,21 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
     const known = state.groups.filter((group) => !internalOnly || group.isInternal);
     const names = new Set(state.groups.map((group) => group.name));
     const missing = selected.filter((name) => !names.has(name));
+    const hintElement = h('p', { class: 'wf-field-hint' });
+    // The hint follows the ticks (an external group adds Apple's review), without redrawing the focused row.
     const toggle = (name, on) => {
       const index = selected.indexOf(name);
       if (on && index < 0) selected.push(name);
       if (!on && index >= 0) selected.splice(index, 1);
+      hintElement.textContent = hint();
       onChange?.();
     };
+    const kind = (group) => group.isInternal ? 'Internal' : 'External';
     const rows = [
       ...known.map((group) => checkRow({
-        title: group.name, tag: internalOnly ? null : group.isInternal ? 'Internal' : 'External', checked: selected.includes(group.name), disabled,
+        // No "Internal" tag on a group named Internal.
+        title: group.name, tag: internalOnly || group.name.toLowerCase() === kind(group).toLowerCase() ? null : kind(group),
+        checked: selected.includes(group.name), disabled,
         onChange: (on) => toggle(group.name, on),
       })),
       // A name in the workflow that App Store Connect does not have: shown, so it can be unticked.
@@ -226,19 +232,20 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       })),
     ];
     const list = h('ul', { class: 'wf-checklist', 'aria-label': 'TestFlight groups' }, rows, addRow());
-    const selectedExternal = known.filter((group) => !group.isInternal && selected.includes(group.name));
-    let hint;
-    if (!(known.length || missing.length)) {
-      hint = 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.';
-    } else if (selectedExternal.length) {
-      const names = selectedExternal.map((group) => group.name);
-      hint = `${names.length === 1 ? `${names[0]} is an external group` : `${names.join(', ')} are external groups`}. The build goes to Apple’s beta review before those testers get it.`;
-    } else if (internalOnly || known.every((group) => group.isInternal)) {
-      hint = 'Internal groups contain people on your App Store Connect team.';
-    } else {
-      hint = 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
+    function hint() {
+      const selectedExternal = known.filter((group) => !group.isInternal && selected.includes(group.name));
+      if (!(known.length || missing.length)) {
+        return 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.';
+      }
+      if (selectedExternal.length) {
+        const names = selectedExternal.map((group) => group.name);
+        return `${names.length === 1 ? `${names[0]} is an external group` : `${names.join(', ')} are external groups`}. The build goes to Apple’s beta review before those testers get it.`;
+      }
+      if (internalOnly || known.every((group) => group.isInternal)) return 'Internal groups contain people on your App Store Connect team.';
+      return 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
     }
-    replaceChildren(element, list, h('p', { class: 'wf-field-hint' }, hint));
+    hintElement.textContent = hint();
+    replaceChildren(element, list, hintElement);
   }
 
   function addRow() {

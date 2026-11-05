@@ -58,7 +58,7 @@ function workflowSteps(workflow) {
     } else {
       steps.push(`Uploads ${what} to TestFlight, where App Store Connect users with access can install ${uploadable.length === 1 ? 'it' : 'them'}.`);
     }
-    if (flight['submit-for-external-review'] && waits) steps.push('Submits it for external beta review.');
+    if (flight['submit-for-external-review'] && waits) steps.push(`Submits ${what} for external beta review.`);
   } else if (archives.length) {
     const developerID = archives.every((action) => action.export === 'developer-id');
     steps.push(developerID

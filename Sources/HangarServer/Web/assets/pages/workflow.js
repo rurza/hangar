@@ -427,7 +427,9 @@ function workflowEditor({ app, stored: initial, context }) {
     }));
     const postRows = target.testflightOn ? [row({ kind: 'testflight' }, {
       icon: 'testflight', title: 'TestFlight',
-      detail: target.testflight.groups.length ? target.testflight.groups.join(', ') : 'No groups',
+      // Without the processing wait no group is added, whatever the file lists.
+      detail: !target.testflight.waitForProcessing ? 'Upload only'
+        : target.testflight.groups.length ? target.testflight.groups.join(', ') : 'No groups',
       problems: found.testflight,
     })] : [];
     const focused = sidebar.contains(document.activeElement) ? document.activeElement.dataset.item : null;
@@ -675,6 +677,8 @@ function workflowEditor({ app, stored: initial, context }) {
   function environmentPane(target) {
     const versions = xcodeVersions();
     const value = target.xcode.trim();
+    // The prefix example uses the version in the field, so "27" does not sit next to 27.2.
+    const example = /^\d+(\.\d+)*$/.test(value) ? value : '27';
     const options = versions.map(({ version, names }, index) => [version, `Xcode ${version}${index === 0 ? ' (newest)' : ''} · on ${listText(names)}`]);
     const xcode = pickerWithOther({
       label: 'Xcode version',
@@ -682,7 +686,7 @@ function workflowEditor({ app, stored: initial, context }) {
       options,
       unknownLabel: (text) => `Xcode ${text} · no Mac has it`,
       placeholder: '27.2',
-      hint: 'Matched as a prefix: 27 picks any installed 27.x.',
+      hint: `Matched as a prefix: ${example} picks any installed ${example}.x.`,
       note: [
         machines !== null && versions.length === 0
           ? h('p', { class: 'wf-note wf-note-warning' }, 'No Mac has reported Xcode yet. ', h('a', { href: '/machines', 'data-link': true }, 'Add a Mac'))
@@ -1070,7 +1074,7 @@ function workflowEditor({ app, stored: initial, context }) {
           hint: suggestion
             ? files.length
               ? `From TestFlight/WhatToTest.<locale>.txt next to the project: found ${listText(locales)}.`
-              : 'From TestFlight/WhatToTest.<locale>.txt next to the project. The repository has none yet, so nothing is set.'
+              : 'From TestFlight/WhatToTest.<locale>.txt next to the project. The repository has none yet: until it does, testers see no notes.'
             : 'From TestFlight/WhatToTest.<locale>.txt next to the project.',
           checked: t.whatToTest,
           onChange: (on) => { t.whatToTest = on; changed(); },
