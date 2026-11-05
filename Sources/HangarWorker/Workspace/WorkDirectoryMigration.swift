@@ -56,16 +56,23 @@ public enum WorkDirectoryMigration {
         "DerivedData/SourcePackages/checkouts",
     ]
 
-    /// Drops the path-bound caches when SwiftPM's state names a DerivedData other than this workspace's: a workspace
-    /// moved by a worker without the drop above (0.6.0), or by hand. Returns whether it dropped anything.
+    /// The file in DerivedData naming the workspace it was built in.
+    static let ownerFile = "DerivedData/.hangar-workspace"
+
+    /// Drops the path-bound caches unless DerivedData records that it belongs to this workspace: a workspace moved by
+    /// a worker without the drop above (0.6.0), or by hand. SwiftPM's state alone can't tell, since a package
+    /// resolution rewrites it while the build's PIF cache keeps the old paths. Then records this workspace. Returns
+    /// whether it dropped anything.
     @discardableResult
     public static func dropStaleCaches(inWorkspace workspace: String) -> Bool {
-        let state = workspace + "/DerivedData/SourcePackages/workspace-state.json"
-        guard let text = try? String(contentsOfFile: state, encoding: .utf8),
-              text.contains("/DerivedData/SourcePackages/"),
-              !text.contains(workspace + "/DerivedData/SourcePackages/") else { return false }
-        dropPathBoundCaches(inWorkspace: workspace)
-        return true
+        let fileManager = FileManager.default
+        let owner = workspace + "/" + ownerFile
+        if (try? String(contentsOfFile: owner, encoding: .utf8)) == workspace { return false }
+        let stale = pathBoundCaches.contains { fileManager.fileExists(atPath: workspace + "/" + $0) }
+        if stale { dropPathBoundCaches(inWorkspace: workspace) }
+        try? fileManager.createDirectory(atPath: workspace + "/DerivedData", withIntermediateDirectories: true)
+        try? workspace.write(toFile: owner, atomically: true, encoding: .utf8)
+        return stale
     }
 
     static func dropPathBoundCaches(inWorkspace workspace: String) {

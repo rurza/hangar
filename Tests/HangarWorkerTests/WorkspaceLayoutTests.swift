@@ -80,24 +80,40 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: data + "/workspaces/legilo/repository/old"))
     }
 
-    @Test func dropsCachesThatNameAnotherFolderBeforeABuild() throws {
+    @Test func dropsCachesNotRecordedAsThisWorkspacesBeforeABuild() throws {
         let root = try Self.makeRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let workspace = root + "/work/workspaces/legilo"
-        let state = workspace + "/DerivedData/SourcePackages/workspace-state.json"
-        try Self.write(workspace + "/DerivedData/SourcePackages/repositories/x-1/HEAD")
-        try Self.write(workspace + "/DerivedData/Build/x")
+        let derived = workspace + "/DerivedData"
+        // A moved workspace whose package state was already rewritten, but whose build cache still names the old path.
+        try Self.write(derived + "/SourcePackages/repositories/x-1/HEAD")
+        try Self.write(derived + "/SourcePackages/workspace-state.json", workspace)
+        try Self.write(derived + "/Build/Intermediates.noindex/XCBuildData/PIFCache/t-json", "/old/path")
 
-        try Self.write(state, #"{"path":"\#(workspace)/DerivedData/SourcePackages/artifacts/x"}"#)
-        #expect(!WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
-        #expect(FileManager.default.fileExists(atPath: workspace + "/DerivedData/Build/x"))
-
-        try Self.write(state, #"{"path":"/old/Application Support/workspaces/legilo/DerivedData/SourcePackages/artifacts/x"}"#)
         #expect(WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
-        #expect(!FileManager.default.fileExists(atPath: state))
-        #expect(!FileManager.default.fileExists(atPath: workspace + "/DerivedData/Build"))
-        #expect(FileManager.default.fileExists(atPath: workspace + "/DerivedData/SourcePackages/repositories/x-1/HEAD"))
+        #expect(!FileManager.default.fileExists(atPath: derived + "/Build"))
+        #expect(!FileManager.default.fileExists(atPath: derived + "/SourcePackages/workspace-state.json"))
+        #expect(FileManager.default.fileExists(atPath: derived + "/SourcePackages/repositories/x-1/HEAD"))
+
+        // Recorded now: the caches the next build makes are kept.
+        try Self.write(derived + "/Build/x")
         #expect(!WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
+        #expect(FileManager.default.fileExists(atPath: derived + "/Build/x"))
+
+        // Moved again: the record names the old folder, so the caches go.
+        let moved = root + "/elsewhere/legilo"
+        try FileManager.default.createDirectory(atPath: root + "/elsewhere", withIntermediateDirectories: true)
+        try FileManager.default.moveItem(atPath: workspace, toPath: moved)
+        #expect(WorkDirectoryMigration.dropStaleCaches(inWorkspace: moved))
+        #expect(!FileManager.default.fileExists(atPath: moved + "/DerivedData/Build"))
+    }
+
+    @Test func aFreshWorkspaceIsRecordedWithoutDroppingAnything() throws {
+        let root = try Self.makeRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = root + "/work/workspaces/new"
+        #expect(!WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
+        #expect(try String(contentsOfFile: workspace + "/DerivedData/.hangar-workspace", encoding: .utf8) == workspace)
     }
 
     @Test func nothingToDoWhenTheyAreTheSameOrThereIsNothing() throws {
