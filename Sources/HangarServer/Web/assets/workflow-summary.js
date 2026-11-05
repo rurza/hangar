@@ -1,22 +1,22 @@
-// What a workflow does, in plain words, and whether a machine can run it. Shared by the app page and the Deploy
-// sheet so both say the same thing. Reads the server's `Workflow` JSON, not the editor's model.
+// What a workflow does, in plain words. Shared by the app page and the Deploy sheet so both say the same thing.
+// Reads the server's `Workflow` JSON, not the editor's model. Whether a Mac can run it is the server's call
+// (`deploy-check`), never judged here.
 
 const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
-const ONLINE_WINDOW_MS = 90_000;
 
-export function platformName(platform) {
+function platformName(platform) {
   return PLATFORM_NAMES[platform] ?? platform ?? '?';
 }
 
 /** "a", "a and b", "a, b and c". */
-export function listText(items) {
+function listText(items) {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} and ${items.at(-1)}`;
 }
 
-/** Whether the action runs tests rather than archiving (for workflows that have such actions). */
+/** Whether the action runs tests rather than archiving. */
 function isTest(action) {
-  return action?.kind === 'test' || action?.type === 'test';
+  return action?.kind === 'test';
 }
 
 function actionText(action) {
@@ -37,7 +37,7 @@ function groupsOf(settings) {
  * The workflow as the steps a deploy runs, each a short sentence:
  * ["Archives Legilo (macOS) and LegiloMobile (iOS) with Xcode 27.2.", "Uploads both to TestFlight for Internal."].
  */
-export function workflowSteps(workflow) {
+function workflowSteps(workflow) {
   const actions = workflow?.actions ?? [];
   const tests = actions.filter(isTest);
   const archives = actions.filter((action) => !isTest(action));
@@ -72,7 +72,7 @@ export function workflowSteps(workflow) {
 }
 
 /** One line for a list: "Archives Legilo (macOS) and LegiloMobile (iOS) · TestFlight: Internal". */
-export function workflowSummary(workflow) {
+function workflowSummary(workflow) {
   const actions = workflow?.actions ?? [];
   const parts = [];
   const tests = actions.filter(isTest);
@@ -90,37 +90,4 @@ export function workflowSummary(workflow) {
   return parts.join(' · ');
 }
 
-// MARK: Machines
-
-/** A machine is online when it was seen within the last 90 seconds (as the server counts it). */
-export function machineOnline(machine, now = new Date()) {
-  if (!machine?.lastSeenAt) return false;
-  const seen = new Date(machine.lastSeenAt);
-  return !Number.isNaN(seen.getTime()) && now - seen <= ONLINE_WINDOW_MS;
-}
-
-/** "27.2" matches "27.2" and "27.2.1", not "27.20" (the scheduler's rule). */
-function xcodeMatches(requested, installed) {
-  const wanted = String(requested).split('.');
-  const have = String(installed).split('.');
-  return wanted.length > 0 && wanted.length <= have.length && wanted.every((part, index) => part === have[index]);
-}
-
-/**
- * What keeps `machine` from running `workflow` for good, as the scheduler sees it: Xcode, tools and signing. Busy
- * and low disk pass with time, so they are not listed. An empty list means it can run the workflow once online.
- * A machine that never reported is unknown: it gets `['has not reported yet']`.
- */
-export function machineProblems(machine, workflow) {
-  const report = machine?.report;
-  if (!report) return ['has not reported yet'];
-  const problems = [];
-  if (workflow?.xcode && !(report.xcodes ?? []).some((xcode) => xcodeMatches(workflow.xcode, xcode.version))) {
-    problems.push(`no Xcode ${workflow.xcode}`);
-  }
-  for (const tool of workflow?.tools ?? []) {
-    if (!Object.hasOwn(report.tools ?? {}, tool)) problems.push(`no ${tool}`);
-  }
-  if (report.canSignWithoutPrompt === false) problems.push('cannot sign without a prompt');
-  return problems;
-}
+export { listText, platformName, workflowSteps, workflowSummary };
