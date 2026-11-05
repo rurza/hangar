@@ -40,6 +40,13 @@ final class FakeInstaller: LocalWorkerInstaller {
     }
 
     private let state = Mutex<(runs: [Run], handler: (@Sendable (Run) async throws -> Int32)?)>(([], nil))
+    private let extra = Mutex<(@Sendable (Run) -> [String])?>(nil)
+
+    /// More output lines for each run.
+    var lines: (@Sendable (Run) -> [String])? {
+        get { extra.withLock { $0 } }
+        set { extra.withLock { $0 = newValue } }
+    }
 
     var runs: [Run] { state.withLock { $0.runs } }
 
@@ -54,6 +61,7 @@ final class FakeInstaller: LocalWorkerInstaller {
             return state.handler
         }
         onLine("Installing the Hangar worker")
+        lines?(run).forEach(onLine)
         return try await handler?(run) ?? 0
     }
 }
@@ -86,14 +94,20 @@ private struct KeyHome {
     }
 }
 
+/// `agentLoaded`: what `launchctl print gui/<uid>/app.hangar.worker` says; `local`: whether every peer counts as
+/// this Mac (the router test client has no socket peer).
 private func setupEnvironment(
     _ keys: KeyHome, runner: RecordingProcessRunner = RecordingProcessRunner(), installer: FakeInstaller = FakeInstaller(),
-    environment: [String: String] = [:]
+    environment: [String: String] = [:], agentLoaded: Bool = false, local: Bool = true
 ) -> SetupEnvironment {
-    SetupEnvironment(
+    runner.script(
+        { $0.executable == "/bin/launchctl" && $0.arguments.first == "print" },
+        lines: agentLoaded ? ["gui/501/app.hangar.worker = {", "state = running"] : ["Could not find service"],
+        exitCode: agentLoaded ? 0 : 113)
+    return SetupEnvironment(
         homeDirectory: keys.home.path, currentDirectory: keys.cwd.path,
         environment: ["PATH": "/usr/bin:/bin", "HOME": keys.home.path].merging(environment) { $1 },
-        runner: runner, installer: installer)
+        runner: runner, installer: installer, isLocalPeer: { _ in local })
 }
 
 private func isGh(_ arguments: [String]) -> @Sendable (ProcessCommand) -> Bool {
@@ -116,7 +130,8 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
             try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
                 #expect(response.status == .ok)
                 #expect(try decode(SetupStatus.self, response) == SetupStatus(
-                    appStoreConnect: nil, github: nil, machines: 0, apps: 0, localWorker: false, localHostName: "studio"))
+                    appStoreConnect: nil, github: nil, machines: 0, apps: 0, localWorker: false, localHostName: "studio",
+                    viewerIsLocal: true))
             }
         }
     }
@@ -422,15 +437,16 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
 
     private func localWorkerFixture(
         runner: RecordingProcessRunner = RecordingProcessRunner(), installer: FakeInstaller = FakeInstaller(),
-        workerBinary: Bool = true, environment: [String: String] = [:]
+        workerBinary: Bool = true, environment: [String: String] = [:], agentLoaded: Bool = false,
+        keys: KeyHome? = nil, port: Int = 8787
     ) throws -> (APIFixture, KeyHome) {
-        let keys = try KeyHome()
+        let keys = try keys ?? KeyHome()
         scriptHostName(runner)
         var binary: String?
         if workerBinary { binary = try keys.write("bin/hangar-worker", in: keys.cwd, age: 0, contents: "#!/bin/sh\n") }
         let fixture = try APIFixture(
-            workerBinaryPath: binary,
-            setup: setupEnvironment(keys, runner: runner, installer: installer, environment: environment))
+            workerBinaryPath: binary, port: port,
+            setup: setupEnvironment(keys, runner: runner, installer: installer, environment: environment, agentLoaded: agentLoaded))
         return (fixture, keys)
     }
 
@@ -448,7 +464,8 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
 
     @Test func useThisMacRunsTheInstallScriptWithAFreshPairingCode() async throws {
         let installer = FakeInstaller()
-        let (fixture, keys) = try localWorkerFixture(installer: installer, environment: ["HANGAR_WORKER_TOKEN": "leaked"])
+        let (fixture, keys) = try localWorkerFixture(
+            installer: installer, environment: ["HANGAR_WORKER_TOKEN": "leaked", "SERVER_SECRET": "x", "HANGAR_MAX_JOBS": "4"])
         let server = fixture.server
         installer.handle { run in
             let code = try #require(run.environment["HANGAR_PAIRING_CODE"])
@@ -456,6 +473,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
             _ = try server.pairings.redeem(code, from: "127.0.0.1") { try server.createMachine(name: name, maxConcurrentJobs: 1) }
             return 0
         }
+        installer.lines = { run in ["Pairing code \(run.environment["HANGAR_PAIRING_CODE"] ?? "")"] }
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/setup/local-worker", method: .get) { response throws in
                 #expect(response.status == .notFound)
@@ -468,6 +486,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
             #expect(install.state == .succeeded)
             #expect(install.machine?.name == "studio")
             #expect(install.lines.contains("Installing the Hangar worker"))
+            #expect(install.lines.contains("Pairing code ••••"))
             try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
                 #expect(try decode(SetupStatus.self, response).localWorker)
             }
@@ -478,6 +497,9 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         #expect(run.environment["HANGAR_MACHINE_NAME"] == "studio")
         #expect(run.environment["HANGAR_WORKER_TOKEN"] == nil)
         #expect(run.environment["HOME"] == keys.home.path)
+        // Only what the script needs: not the server's other variables.
+        #expect(run.environment["SERVER_SECRET"] == nil)
+        #expect(run.environment["HANGAR_MAX_JOBS"] == nil)
     }
 
     @Test func aFailedInstallReportsWhy() async throws {
@@ -511,5 +533,215 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
             }
         }
         #expect(installer.runs.isEmpty)
+    }
+
+    @Test func anInstallThatEnrollsNothingFails() async throws {
+        let (fixture, _) = try localWorkerFixture()
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { #expect($0.status == .accepted) }
+            let install = try await waitForInstall(client)
+            #expect(install.state == .failed)
+            #expect(install.message?.contains("did not enroll") == true)
+        }
+    }
+
+    @Test func aWorkerConfiguredOnThisMacIsNeverReplaced() async throws {
+        let keys = try KeyHome()
+        try keys.write(
+            "Library/Application Support/Hangar/worker/config.json", age: 0,
+            contents: #"{"serverURL":"http://hangar.example.ts.net:8787","token":"t","maxConcurrentJobs":1}"#)
+        let installer = FakeInstaller()
+        let (fixture, _) = try localWorkerFixture(installer: installer, keys: keys)
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                let status = try decode(SetupStatus.self, response)
+                #expect(status.installedWorker == InstalledWorker(serverURL: "http://hangar.example.ts.net:8787", agentLoaded: false))
+                #expect(!String(buffer: response.body).contains(#""token""#))
+            }
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { response throws in
+                #expect(response.status == .conflict)
+                let error = try decode(APIError.self, response)
+                #expect(error.code == "worker_already_installed")
+                #expect(error.message.contains("http://hangar.example.ts.net:8787"))
+                #expect(error.message.contains("run the install command again"))
+            }
+        }
+        #expect(installer.runs.isEmpty)
+    }
+
+    @Test func aLoadedWorkerAgentIsNeverRestarted() async throws {
+        let runner = RecordingProcessRunner()
+        let installer = FakeInstaller()
+        let (fixture, _) = try localWorkerFixture(runner: runner, installer: installer, agentLoaded: true)
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { response throws in
+                #expect(response.status == .conflict)
+                #expect(try decode(APIError.self, response).code == "worker_already_installed")
+            }
+        }
+        #expect(installer.runs.isEmpty)
+        let probe = try #require(runner.commands.first { $0.executable == "/bin/launchctl" })
+        #expect(probe.arguments == ["print", "gui/\(getuid())/app.hangar.worker"])
+    }
+
+    @Test func installingOnAnEphemeralPortIsRefused() async throws {
+        let installer = FakeInstaller()
+        let (fixture, _) = try localWorkerFixture(installer: installer, port: 0)
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { response throws in
+                #expect(response.status == .serviceUnavailable)
+                #expect(try decode(APIError.self, response).code == "server_address_unusable")
+            }
+        }
+        #expect(installer.runs.isEmpty)
+    }
+
+    // MARK: Who may use this Mac
+
+    @Test func thisMacsActionsAreRefusedToOtherMachines() async throws {
+        let keys = try KeyHome()
+        try keys.write("Downloads/AuthKey_ZZ99YY88XX.p8", age: 10)
+        let runner = RecordingProcessRunner()
+        scriptHostName(runner)
+        runner.script(isGh(["auth", "token", "--hostname", "github.com"]), lines: [ghToken])
+        let installer = FakeInstaller()
+        let fixture = try APIFixture(
+            workerBinaryPath: try keys.write("bin/hangar-worker", in: keys.cwd, age: 0, contents: "#!/bin/sh\n"),
+            setup: setupEnvironment(keys, runner: runner, installer: installer, local: false))
+        try await fixture.test { client in
+            let calls: [(String, HTTPRequest.Method, ByteBuffer?)] = [
+                ("/api/v1/setup/asc-keys", .get, nil),
+                ("/api/v1/setup/asc-keys/use", .post, try body(UseASCKeyRequest(path: keys.home.path + "/Downloads/AuthKey_ZZ99YY88XX.p8"))),
+                ("/api/v1/setup/github", .get, nil),
+                ("/api/v1/setup/github/use-gh", .post, nil),
+                ("/api/v1/setup/local-worker", .post, nil),
+                ("/api/v1/setup/local-worker", .get, nil),
+            ]
+            for (uri, method, payload) in calls {
+                try await client.execute(uri: uri, method: method, headers: payload == nil ? [:] : jsonHeaders, body: payload) { response throws in
+                    #expect(response.status == .forbidden, "\(uri)")
+                    let error = try decode(APIError.self, response)
+                    #expect(error.code == "local_only")
+                    #expect(error.message == "Open Hangar on this Mac to use what's installed on it.")
+                }
+            }
+            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                let status = try decode(SetupStatus.self, response)
+                #expect(status.viewerIsLocal == false)
+                #expect(status.installedWorker == nil)
+            }
+        }
+        #expect(!runner.commands.contains { $0.arguments.contains("gh") })
+        #expect(installer.runs.isEmpty)
+        #expect(try fixture.server.variables.value(global: "HANGAR_GITHUB_TOKEN") == nil)
+    }
+
+    @Test func aCrossSitePageCannotUseThisMac() async throws {
+        let runner = RecordingProcessRunner()
+        runner.script(isGh(["auth", "token", "--hostname", "github.com"]), lines: [ghToken])
+        let fixture = try APIFixture(setup: setupEnvironment(try KeyHome(), runner: runner))
+        try await fixture.test { client in
+            try await client.execute(
+                uri: "/api/v1/setup/github/use-gh", method: .post, headers: [CrossSiteGuard.secFetchSite: "cross-site"]
+            ) { response throws in
+                #expect(response.status == .forbidden)
+                #expect(try decode(APIError.self, response).code == "cross_site_request")
+            }
+        }
+        #expect(try fixture.server.variables.value(global: "HANGAR_GITHUB_TOKEN") == nil)
+    }
+
+    @Test func aBrowserOnThisMacCountsAsLocalOverTheNetwork() async throws {
+        // A live server: the peer comes from the socket. 127.0.0.1 is loopback.
+        let keys = try KeyHome()
+        let fixture = try APIFixture(port: 0, setup: SetupEnvironment(
+            homeDirectory: keys.home.path, currentDirectory: keys.cwd.path, environment: [:],
+            runner: RecordingProcessRunner(), installer: FakeInstaller()))
+        try await fixture.server.build().test(.live) { client in
+            try await client.execute(uri: "/api/v1/setup/asc-keys", method: .get) { response in
+                #expect(response.status == .ok)
+            }
+            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                #expect(try decode(SetupStatus.self, response).viewerIsLocal)
+            }
+        }
+    }
+
+    @Test func localPeers() {
+        let interfaces: Set<String> = ["100.71.242.42", "192.168.1.20", "fe80::1"]
+        for peer in ["127.0.0.1", "127.8.0.1", "::1", "100.71.242.42", "::ffff:100.71.242.42", "192.168.1.20", "fe80::1%en0"] {
+            #expect(LocalPeer.isLocal(peer, boundHost: "100.71.242.42", interfaces: interfaces), "\(peer)")
+        }
+        #expect(LocalPeer.isLocal("10.0.0.9", boundHost: "10.0.0.9", interfaces: []))
+        for peer in ["100.71.242.43", "8.8.8.8", "unknown", "", nil] as [String?] {
+            #expect(!LocalPeer.isLocal(peer, boundHost: "100.71.242.42", interfaces: interfaces), "\(peer ?? "nil")")
+        }
+        #expect(!LocalPeer.interfaceAddresses().isEmpty)
+    }
+
+    // MARK: Review follow-ups
+
+    @Test func symlinkedKeyFilesAreIgnored() async throws {
+        let keys = try KeyHome()
+        let secret = try keys.write(".ssh/id_ecdsa", age: 10, contents: "-----BEGIN PRIVATE KEY-----\nssh\n-----END PRIVATE KEY-----\n")
+        try FileManager.default.createDirectory(at: keys.home.appendingPathComponent("Downloads"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: keys.home.path + "/Downloads/AuthKey_AAAAAAAAAA.p8", withDestinationPath: secret)
+        let fixture = try APIFixture(setup: setupEnvironment(keys))
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/asc-keys", method: .get) { response throws in
+                #expect(try decode([FoundASCKey].self, response) == [])
+            }
+            try await client.execute(
+                uri: "/api/v1/setup/asc-keys/use", method: .post, headers: jsonHeaders,
+                body: try body(UseASCKeyRequest(path: keys.home.path + "/Downloads/AuthKey_AAAAAAAAAA.p8"))
+            ) { response throws in
+                #expect(try decode(APIError.self, response).code == "asc_key_not_found")
+            }
+        }
+    }
+
+    @Test func downloadedDuplicatesAreFoundInDownloadsOnly() async throws {
+        let keys = try KeyHome()
+        try keys.write("Downloads/AuthKey_DUPE123456 (1).p8", age: 10)
+        try keys.write(".appstoreconnect/private_keys/AuthKey_NOTME12345 (1).p8", age: 10)
+        let fixture = try APIFixture(setup: setupEnvironment(keys))
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/asc-keys", method: .get) { response throws in
+                #expect(try decode([FoundASCKey].self, response).map(\.keyID) == ["DUPE123456"])
+            }
+        }
+    }
+
+    @Test func ghWarningsOnStderrDoNotHideTheToken() async throws {
+        let runner = RecordingProcessRunner()
+        runner.script(
+            isGh(["auth", "token", "--hostname", "github.com"]),
+            lines: ["warning: a newer version of gh is available", ghToken])
+        runner.script(isGh(["api", "user", "--jq", ".login"]), lines: ["warning: keyring locked", "rurza"])
+        let github = StubTransport(responses: [.init(body: #"{"login":"rurza"}"#)])
+        let fixture = try APIFixture(githubTransport: github, setup: setupEnvironment(try KeyHome(), runner: runner))
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/github", method: .get) { response throws in
+                #expect(try decode(GitHubCLIStatus.self, response).ghLogin == "rurza")
+            }
+            try await client.execute(uri: "/api/v1/setup/github/use-gh", method: .post) { #expect($0.status == .ok) }
+        }
+        #expect(try fixture.server.variables.value(global: "HANGAR_GITHUB_TOKEN") == ghToken)
+    }
+
+    @Test func aRejectedTokenIsNotAskedAboutOnEveryPageLoad() async throws {
+        let github = StubTransport(responses: [.init(status: 401, body: "{}")])
+        let fixture = try APIFixture(githubTransport: github, setup: setupEnvironment(try KeyHome()))
+        try fixture.server.variables.set(
+            scope: .global, name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: pastedToken, isSecret: true))
+        try await fixture.test { client in
+            for _ in 0..<2 {
+                try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                    #expect(try decode(SetupStatus.self, response).github == GitHubStatus(login: nil, source: .token))
+                }
+            }
+        }
+        #expect(github.requests.count == 1)
     }
 }

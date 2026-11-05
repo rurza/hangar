@@ -13,10 +13,17 @@ public struct SetupStatus: Codable, Equatable, Sendable {
     public var localHostName: String?
     /// The server has a `hangar-worker` to install (see `SettingsStatus.workerInstallAvailable`).
     public var workerInstallAvailable: Bool
+    /// The request comes from the server's own Mac: only then are its keys, its gh login and "Use This Mac"
+    /// offered.
+    public var viewerIsLocal: Bool
+    /// A worker already set up on this Mac (a worker configuration or a loaded launchd agent), whether or not
+    /// Hangar knows its machine; "Use This Mac" never replaces it. Nil for a remote viewer.
+    public var installedWorker: InstalledWorker?
 
     public init(
         appStoreConnect: ASCKeyStatus?, github: GitHubStatus?, machines: Int, apps: Int, localWorker: Bool,
-        localHostName: String? = nil, workerInstallAvailable: Bool = false
+        localHostName: String? = nil, workerInstallAvailable: Bool = false, viewerIsLocal: Bool = false,
+        installedWorker: InstalledWorker? = nil
     ) {
         self.appStoreConnect = appStoreConnect
         self.github = github
@@ -25,6 +32,21 @@ public struct SetupStatus: Codable, Equatable, Sendable {
         self.localWorker = localWorker
         self.localHostName = localHostName
         self.workerInstallAvailable = workerInstallAvailable
+        self.viewerIsLocal = viewerIsLocal
+        self.installedWorker = installedWorker
+    }
+}
+
+/// A worker found on the server's Mac: the server its configuration names and whether its agent is loaded.
+public struct InstalledWorker: Codable, Equatable, Sendable {
+    /// From the worker configuration; nil when there is none or it cannot be read.
+    public var serverURL: String?
+    /// `app.hangar.worker` is loaded in this user's launchd session.
+    public var agentLoaded: Bool
+
+    public init(serverURL: String?, agentLoaded: Bool) {
+        self.serverURL = serverURL
+        self.agentLoaded = agentLoaded
     }
 }
 

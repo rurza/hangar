@@ -67,7 +67,8 @@ struct APIFixture {
     static func inertSetup(_ directory: URL) -> SetupEnvironment {
         SetupEnvironment(
             homeDirectory: directory.appendingPathComponent("home").path, currentDirectory: directory.path,
-            environment: ["PATH": "/usr/bin:/bin"], runner: RecordingProcessRunner(), installer: FakeInstaller())
+            environment: ["PATH": "/usr/bin:/bin"], runner: RecordingProcessRunner(), installer: FakeInstaller(),
+            isLocalPeer: { _ in true })
     }
 
     func test(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {

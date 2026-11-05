@@ -82,21 +82,11 @@ export async function machinesPage(params, context) {
   }
 
   async function remove(machine) {
-    const confirmed = await confirm({
-      title: `Remove ${machine.name}?`,
-      message: 'Its token stops working at once, so the worker on that Mac can no longer take jobs. '
-        + 'To use the Mac again, add it as a new machine and install the worker with the new token.',
-      confirmLabel: 'Remove',
-      destructive: true,
-    });
-    if (!confirmed) return;
-    try {
-      await api.del(`/machines/${seg(machine.id)}`);
+    const removed = await removeMachine(machine);
+    if (removed) {
       machines = machines.filter((existing) => existing.id !== machine.id);
       render();
-      toast(`Removed ${machine.name}`, 'success');
-    } catch (error) {
-      toast(error.message, 'error');
+    } else if (removed === false) {
       reload();
     }
   }
@@ -118,6 +108,29 @@ export async function machinesPage(params, context) {
     title: 'Machines',
     actions: addButton,
   }, content);
+}
+
+/**
+ * Asks to remove `machine` and removes it. Resolves to true once it is gone, null when the user said no, false
+ * when it failed (the error is shown).
+ */
+export async function removeMachine(machine) {
+  const confirmed = await confirm({
+    title: `Remove ${machine.name}?`,
+    message: 'Its token stops working at once, so the worker on that Mac can no longer take jobs. '
+      + 'To use the Mac again, add it as a new machine and install the worker with the new token.',
+    confirmLabel: 'Remove',
+    destructive: true,
+  });
+  if (!confirmed) return null;
+  try {
+    await api.del(`/machines/${seg(machine.id)}`);
+    toast(`Removed ${machine.name}`, 'success');
+    return true;
+  } catch (error) {
+    toast(error.message, 'error');
+    return false;
+  }
 }
 
 // MARK: Widget

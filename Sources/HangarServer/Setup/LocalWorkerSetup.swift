@@ -28,25 +28,34 @@ final class LocalWorkerSetup: Sendable {
     static let maximumLines = 200
 
     private let state = Mutex<LocalWorkerInstall?>(nil)
+    let timeout: Duration
+
+    init(timeout: Duration = .seconds(600)) { self.timeout = timeout }
 
     var current: LocalWorkerInstall? { state.withLock { $0 } }
 
-    /// Starts `install` unless one is running; returns the install's state either way. `secret` is masked in
-    /// every output line; `finish` names the machine once the script has succeeded.
-    func start(
-        secret: String, install: @escaping @Sendable (@escaping @Sendable (String) -> Void) async throws -> Int32,
-        finish: @escaping @Sendable () throws -> Machine?
-    ) -> LocalWorkerInstall {
-        let started = state.withLock { state -> LocalWorkerInstall? in
+    /// Reserves the one install slot: nil when an install is running already.
+    func reserve() -> LocalWorkerInstall? {
+        state.withLock { state -> LocalWorkerInstall? in
             if let state, state.state == .running { return nil }
             state = LocalWorkerInstall(state: .running)
             return state
         }
-        guard let started else { return current ?? LocalWorkerInstall(state: .running) }
+    }
+
+    /// Runs `install` in the reserved slot. `secret` is masked in every output line; `finish` names the enrolled
+    /// machine once the script has succeeded (none is a failure). An install still running after `timeout` is
+    /// cancelled and fails.
+    func run(
+        secret: String, install: @escaping @Sendable (@escaping @Sendable (String) -> Void) async throws -> Int32,
+        finish: @escaping @Sendable () throws -> Machine?
+    ) {
+        let timeout = timeout
         Task {
             let onLine: @Sendable (String) -> Void = { [self] line in
                 let masked = line.replacingOccurrences(of: secret, with: "••••")
-                state.withLock { install in
+                    .replacingOccurrences(of: secret.replacingOccurrences(of: "-", with: ""), with: "••••")
+                self.state.withLock { install in
                     install?.lines.append(masked)
                     if let count = install?.lines.count, count > Self.maximumLines {
                         install?.lines.removeFirst(count - Self.maximumLines)
@@ -57,14 +66,29 @@ final class LocalWorkerSetup: Sendable {
             var machine: Machine?
             var message: String?
             do {
-                let status = try await install(onLine)
-                if status == 0 {
+                let status = try await withThrowingTaskGroup(of: Int32?.self) { group in
+                    group.addTask { try await install(onLine) }
+                    group.addTask {
+                        try await Task.sleep(for: timeout)
+                        return nil
+                    }
+                    let first = try await group.next() ?? nil
+                    group.cancelAll()
+                    return first
+                }
+                if let status, status == 0 {
                     machine = try finish()
-                    result = .succeeded
-                } else {
+                    if machine != nil {
+                        result = .succeeded
+                    } else {
+                        message = "The install script finished but did not enroll this Mac. See its output below."
+                    }
+                } else if let status {
                     let last = state.withLock { $0?.lines.last { $0.hasPrefix("error: ") } }
                     message = "The install script exited with status \(status)."
                         + (last.map { " " + $0.dropFirst("error: ".count) } ?? "")
+                } else {
+                    message = "The install script did not finish within \(timeout.components.seconds / 60) minutes and was stopped."
                 }
             } catch {
                 message = "The install script could not run: \(error.localizedDescription)"
@@ -75,6 +99,5 @@ final class LocalWorkerSetup: Sendable {
                 install?.message = message
             }
         }
-        return started
     }
 }

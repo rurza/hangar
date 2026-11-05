@@ -167,4 +167,26 @@ import Testing
         empty.script({ $0.executable.hasSuffix("defaults") }, lines: ["{", "    \"IDE.Identifiers.Prod\" = (", "    );", "}"])
         #expect(await Self.doctor(empty).report(runningJobIDs: []).xcodeAccountSignedIn == false)
     }
+
+    @Test func hangingSigningProbesTimeOut() async {
+        let runner = Self.scriptedRunner()
+        runner.scriptHang { $0.executable.hasSuffix("security") }
+        runner.scriptHang { $0.executable.hasSuffix("defaults") }
+        let clock = TestClock()
+        let doctor = Self.doctor(runner, clock: clock)
+        let finished = Mutex(false)
+        let task = Task {
+            let report = await doctor.report(runningJobIDs: [])
+            finished.withLock { $0 = true }
+            return report
+        }
+        while !finished.withLock({ $0 }) {
+            await Task.yield()
+            await clock.advance(by: .seconds(10))
+        }
+        let report = await task.value
+        #expect(report.signingIdentities == [])
+        #expect(report.xcodeAccountSignedIn == nil)
+        #expect(report.canSignWithoutPrompt == false)
+    }
 }

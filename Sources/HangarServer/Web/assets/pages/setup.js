@@ -8,7 +8,7 @@ import { navigate } from '../router.js';
 import {
   button, card, field, h, page, relativeTime, replaceChildren, spinner, toast,
 } from '../ui.js';
-import { machineWidget, openAddMacSheet, openAddMachineSheet } from './machines.js';
+import { machineWidget, openAddMacSheet, openAddMachineSheet, removeMachine } from './machines.js';
 
 export const ASC_KEYS_URL = 'https://appstoreconnect.apple.com/access/integrations/api';
 export const GITHUB_TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new?name=Hangar&description=Hangar%20builds&contents=read';
@@ -297,6 +297,8 @@ function ascStep(getStatus, onChange, signal) {
         })));
       return;
     }
+    // Only a browser on the server's Mac may use the keys found there; anyone else chooses the file.
+    if (!getStatus().viewerIsLocal) found = [];
     if (found === null) {
       replaceChildren(step.body, h('p', { class: 'setup-looking' }, spinner('Looking'), 'Looking for API keys on this Mac…'));
       scan();
@@ -526,6 +528,8 @@ function githubStep(getStatus, onChange, signal) {
         })));
       return;
     }
+    // The GitHub CLI login is offered only to a browser on the server's Mac.
+    if (!getStatus().viewerIsLocal) ghLogin = null;
     if (ghLogin === undefined) {
       replaceChildren(step.body, h('p', { class: 'setup-looking' }, spinner('Looking'), 'Looking for the GitHub CLI…'));
       detect();
@@ -611,7 +615,15 @@ function machinesStep(getStatus, onChange, context) {
     replaceChildren(list, machines.map((machine) => {
       let widget = widgets.get(machine.id);
       if (!widget) {
-        widget = machineWidget(machine, { onRemove: () => navigate('/machines') });
+        widget = machineWidget(machine, {
+          onRemove: async (target) => {
+            if (await removeMachine(target)) {
+              machines = machines.filter((existing) => existing.id !== target.id);
+              renderMachines();
+              onChange();
+            }
+          },
+        });
         widgets.set(machine.id, widget);
       } else {
         widget.update(machine);
@@ -639,6 +651,22 @@ function machinesStep(getStatus, onChange, context) {
       replaceChildren(local, head, log,
         install.state === 'failed' ? h('div', { class: 'card-actions' }, useThisMacButton('Try Again')) : null);
       queueMicrotask(() => { log.scrollTop = log.scrollHeight; });
+      return;
+    }
+    if (!status.viewerIsLocal) {
+      replaceChildren(local, h('p', { class: 'card-detail' },
+        `To build on ${status.localHostName ?? 'the Mac Hangar runs on'} with one click, open Hangar on that Mac. `
+        + 'Or add any Mac with one command in its Terminal.'));
+      return;
+    }
+    if (status.installedWorker) {
+      const worker = status.installedWorker;
+      replaceChildren(local, h('p', { class: 'card-detail' },
+        `A worker is already set up on ${status.localHostName ?? 'this Mac'}`
+        + (worker.serverURL ? ` for ${worker.serverURL}` : '')
+        + '. Hangar leaves it alone; to update it, run the install command again in Terminal.'),
+      worker.serverURL ? h('pre', { class: 'code-block install-log', tabindex: '0', 'aria-label': 'Update command' },
+        h('code', null, `curl -fsSL ${worker.serverURL}/install | sh`)) : null);
       return;
     }
     if (!status.localHostName) {
@@ -719,7 +747,12 @@ function machinesStep(getStatus, onChange, context) {
   }
 
   function update() {
-    step.setDone(getStatus().machines > 0);
+    const status = getStatus();
+    step.setDone(status.machines > 0);
+    // Without a one-click install here, adding a Mac by command is the way: make it the step's button.
+    const primary = status.machines === 0 && (!status.viewerIsLocal || status.installedWorker || !status.workerInstallAvailable);
+    addButton.textContent = status.machines === 0 ? 'Add a Mac…' : 'Add Another Mac…';
+    addButton.className = primary ? 'button button-primary' : 'button button-plain button-small';
     renderLocal();
     renderSigning();
   }
@@ -735,13 +768,8 @@ function machinesStep(getStatus, onChange, context) {
     });
   }
 
-  replaceChildren(step.body,
-    local,
-    list,
-    signing,
-    h('div', { class: 'card-actions' }, button('Add Another Mac…', {
-      kind: 'plain', class: 'button button-plain button-small', onClick: addMac,
-    })));
+  const addButton = button('Add Another Mac…', { kind: 'plain', class: 'button button-plain button-small', onClick: addMac });
+  replaceChildren(step.body, local, list, signing, h('div', { class: 'card-actions' }, addButton));
   list.hidden = true;
   loadMachines();
 

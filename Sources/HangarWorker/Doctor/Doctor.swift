@@ -120,9 +120,11 @@ public struct Doctor: Sendable {
 
     /// The valid code signing identities, in `security find-identity` order; empty when it fails.
     private func signingIdentities() async -> [SigningIdentity] {
-        guard let text = await output("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning"]) else {
-            return []
-        }
+        let command = ProcessCommand(
+            executable: "/usr/bin/security", arguments: ["find-identity", "-v", "-p", "codesigning"],
+            environment: Self.environment)
+        guard let outcome = await bounded(command), outcome.exitCode == 0 else { return [] }
+        let text = outcome.output
         return text.split(separator: "\n").compactMap { line in
             line.firstMatch(of: /\)\s+([0-9A-Fa-f]{40})\s+"(.+)"/).map { SigningIdentity(hash: String($0.1), name: String($0.2)) }
         }
@@ -140,7 +142,23 @@ public struct Doctor: Sendable {
         let command = ProcessCommand(
             executable: "/usr/bin/defaults", arguments: ["read", "com.apple.dt.Xcode", "DVTDeveloperAccountManagerAppleIDLists"],
             environment: Self.environment)
-        guard let outcome = try? await runner.run(command, onLine: { _ in }) else { return nil }
+        guard let outcome = await bounded(command) else { return nil }
         return outcome.exitCode == 0 && outcome.output.contains("identifier")
+    }
+
+    /// `command`'s outcome, nil when it cannot run or takes longer than `signTimeout` (a locked keychain or a
+    /// stuck preferences daemon must not stall every report).
+    private func bounded(_ command: ProcessCommand) async -> ProcessOutcome? {
+        let runner = runner, clock = clock, timeout = signTimeout
+        return await withTaskGroup(of: ProcessOutcome?.self) { group in
+            group.addTask { try? await runner.run(command, onLine: { _ in }) }
+            group.addTask {
+                try? await clock.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 }

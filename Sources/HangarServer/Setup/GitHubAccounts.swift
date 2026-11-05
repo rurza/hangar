@@ -7,6 +7,8 @@ import Synchronization
 /// Authorization header; errors carry neither it nor GitHub's text.
 public final class GitHubAccounts: Sendable {
     static let lifetime: TimeInterval = 300
+    /// How long a token GitHub refused is not asked about again by `cachedLogin`.
+    static let failureLifetime: TimeInterval = 60
     static let rejected = APIError(
         code: "github_token_rejected",
         message: "GitHub did not accept this token: it may be mistyped, expired or revoked. Create a new one and try again.")
@@ -15,6 +17,7 @@ public final class GitHubAccounts: Sendable {
     private let transport: any HTTPTransport
     private let now: @Sendable () -> Date
     private let cache = Mutex<[Data: (login: String, expiresAt: Date)]>([:])
+    private let failures = Mutex<[Data: Date]>([:])
 
     init(transport: any HTTPTransport, now: @escaping @Sendable () -> Date) {
         self.transport = transport
@@ -39,7 +42,21 @@ public final class GitHubAccounts: Sendable {
         struct User: Decodable { var login: String }
         let login = try GitHubSourceHost.decode(User.self, data).login
         cache.withLock { $0[hash] = (login, now().addingTimeInterval(Self.lifetime)) }
+        failures.withLock { $0[hash] = nil }
         return login
+    }
+
+    /// The login for a status line: nil when GitHub refuses the token or cannot be asked, and then not asked again
+    /// for `failureLifetime`, so a bad token or an unreachable GitHub does not slow every page.
+    func cachedLogin(token: String) async -> String? {
+        let hash = Self.hash(token)
+        if let until = failures.withLock({ $0[hash] }), until > now() { return nil }
+        do {
+            return try await login(token: token)
+        } catch {
+            failures.withLock { $0[hash] = now().addingTimeInterval(Self.failureLifetime) }
+            return nil
+        }
     }
 
     /// SHA-256 of the token, hex: what is kept to recognise a token without keeping it.
@@ -58,7 +75,7 @@ struct GitHubCLI {
 
     /// The login of `gh`'s active github.com account; nil without gh, a login or a network.
     func login() async -> String? {
-        guard let login = await environment.output("gh", ["api", "user", "--jq", ".login"]),
+        guard let login = await environment.lastLine("gh", ["api", "user", "--jq", ".login"]),
             login.wholeMatch(of: /[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/) != nil
         else { return nil }
         return login
@@ -66,7 +83,7 @@ struct GitHubCLI {
 
     /// `gh auth token` for github.com: the token from gh's output, never from or into an argument.
     func token() async throws -> String {
-        guard let token = await environment.output("gh", ["auth", "token", "--hostname", "github.com"]), !token.isEmpty,
+        guard let token = await environment.lastLine("gh", ["auth", "token", "--hostname", "github.com"]), !token.isEmpty,
             !token.contains(where: { $0.isWhitespace })
         else { throw Self.notSignedIn }
         return token

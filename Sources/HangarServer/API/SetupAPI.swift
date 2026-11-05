@@ -9,9 +9,10 @@ extension HangarServerApp {
     static let githubTokenSourceSetting = "github_token_source"
 
     func addSetupRoutes(to api: APIGroup) {
-        api.get("setup") { _, _ in
+        api.get("setup") { _, context in
             let hostName = await localHostName.value(setup)
             let machines = try machines.all()
+            let local = viewerIsLocal(context)
             return try Response.json(
                 SetupStatus(
                     appStoreConnect: try Self.appStoreConnectCredentials(variables: variables).map {
@@ -21,27 +22,28 @@ extension HangarServerApp {
                     localWorker: hostName.map { name in machines.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame } }
                         ?? false,
                     localHostName: hostName,
-                    workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil))
+                    workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil,
+                    viewerIsLocal: local, installedWorker: local ? await setup.installedWorker() : nil))
         }
 
         // MARK: App Store Connect
 
-        api.get("setup/asc-keys") { _, _ in try Response.json(ASCKeyScanner(environment: setup).scan()) }
+        api.get("setup/asc-keys") { _, context in
+            try requireLocal(context)
+            return try Response.json(await scanASCKeys())
+        }
         api.post("setup/asc-keys/use") { request, context in
+            try requireLocal(context)
             let input = try await request.decode(as: UseASCKeyRequest.self, context: context)
             // Only a file the scan finds right now: the request names a path, the server decides what it may read.
-            guard let key = ASCKeyScanner(environment: setup).scan().first(where: { $0.path == input.path }) else {
+            guard let key = await scanASCKeys().first(where: { $0.path == input.path }) else {
                 throw APIError(
                     code: "asc_key_not_found", message: "That key file is not one Hangar found on this Mac. Scan again or choose the file.")
             }
-            let data: Data
-            do {
-                data = try Data(contentsOf: URL(fileURLWithPath: key.path))
-            } catch {
+            guard let text = ASCKeyScanner.read(key.path) else {
                 throw APIError(code: "asc_key_unreadable", message: "\(key.displayPath) cannot be read: check its permissions.")
             }
-            let result = try await testAndSaveASCKey(
-                keyID: key.keyID, issuerID: input.issuerID, privateKey: String(decoding: data, as: UTF8.self))
+            let result = try await testAndSaveASCKey(keyID: key.keyID, issuerID: input.issuerID, privateKey: text)
             return try Response.json(result)
         }
         api.post("settings/asc-key") { request, context in
@@ -56,8 +58,12 @@ extension HangarServerApp {
 
         // MARK: GitHub
 
-        api.get("setup/github") { _, _ in try Response.json(GitHubCLIStatus(ghLogin: await GitHubCLI(environment: setup).login())) }
-        api.post("setup/github/use-gh") { _, _ in
+        api.get("setup/github") { _, context in
+            try requireLocal(context)
+            return try Response.json(GitHubCLIStatus(ghLogin: await GitHubCLI(environment: setup).login()))
+        }
+        api.post("setup/github/use-gh") { _, context in
+            try requireLocal(context)
             let token = try await GitHubCLI(environment: setup).token()
             return try Response.json(GitHubLoginResponse(login: try await saveGitHubToken(token, source: .gh)))
         }
@@ -72,14 +78,41 @@ extension HangarServerApp {
 
         // MARK: This Mac
 
-        api.get("setup/local-worker") { _, _ in
+        api.get("setup/local-worker") { _, context in
+            try requireLocal(context)
             guard let install = localWorkerSetup.current else {
                 throw APIError(code: "not_found", message: "No worker install has run since the server started.")
             }
             return try Response.json(install)
         }
-        api.post("setup/local-worker") { _, _ in
-            try Response.json(try await startLocalWorkerInstall(), status: .accepted)
+        api.post("setup/local-worker") { _, context in
+            try requireLocal(context)
+            return try Response.json(try await startLocalWorkerInstall(), status: .accepted)
+        }
+    }
+
+    // MARK: This Mac only
+
+    /// The request's socket peer is this Mac. Never a header: only the channel's remote address counts.
+    func viewerIsLocal(_ context: HangarRequestContext) -> Bool {
+        let peer = context.remoteAddress?.ipAddress
+        if let check = setup.isLocalPeer { return check(peer) }
+        return LocalPeer.isLocal(peer, boundHost: configuration.host, interfaces: LocalPeer.interfaceAddresses())
+    }
+
+    /// 403 `local_only` unless the request comes from this Mac: its keys, its gh login and installing a worker
+    /// here are the owner's, not any tailnet peer's.
+    func requireLocal(_ context: HangarRequestContext) throws {
+        guard viewerIsLocal(context) else {
+            throw APIError(code: "local_only", message: "Open Hangar on this Mac to use what's installed on it.")
+        }
+    }
+
+    /// The key scan, off the cooperative pool: a first look at ~/Downloads may wait on a privacy prompt.
+    func scanASCKeys() async -> [FoundASCKey] {
+        let scanner = ASCKeyScanner(environment: setup)
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: scanner.scan()) }
         }
     }
 
@@ -142,7 +175,7 @@ extension HangarServerApp {
         guard let token = try globalGitHubToken() else { return nil }
         let marker = try serverSettings.value(Self.githubTokenSourceSetting)
         let source: GitHubStatus.Source = marker == "gh:\(GitHubAccounts.hexHash(token))" ? .gh : .token
-        return GitHubStatus(login: try? await githubAccounts.login(token: token), source: source)
+        return GitHubStatus(login: await githubAccounts.cachedLogin(token: token), source: source)
     }
 
     // MARK: This Mac
@@ -154,6 +187,7 @@ extension HangarServerApp {
     }
 
     /// Enrolls this Mac with a fresh pairing code by running the `/install` script here, for the server's user.
+    /// Never touches a worker already set up on this Mac.
     func startLocalWorkerInstall() async throws -> LocalWorkerInstall {
         if let current = localWorkerSetup.current, current.state == .running { return current }
         guard let name = await localHostName.value(setup) else {
@@ -167,25 +201,35 @@ extension HangarServerApp {
                 code: "worker_binary_missing",
                 message: "This server has no hangar-worker to install. Reinstall the server with the latest scripts/server/install-server.sh.")
         }
-        guard let origin = localOrigin else {
-            throw APIError(code: "invalid_request", message: "The server's address cannot be used to install the worker.")
+        guard configuration.port != 0, let origin = localOrigin else {
+            throw APIError(
+                code: "server_address_unusable",
+                message: "The server listens on a port picked at start-up, which the worker cannot be given. Start it with --port.")
         }
+        if let existing = await setup.installedWorker() {
+            let detail = existing.serverURL.map { "for \($0)" } ?? (existing.agentLoaded ? "its launchd agent is loaded" : "its configuration exists")
+            throw APIError(
+                code: "worker_already_installed",
+                message: "A worker is already set up on this Mac (\(detail)); to update it, run the install command again: curl -fsSL \(existing.serverURL ?? origin)/install | sh")
+        }
+        // The slot first, then the code: two clicks at once make one install and one code.
+        guard let reserved = localWorkerSetup.reserve() else { return localWorkerSetup.current ?? LocalWorkerInstall(state: .running) }
         let code = pairings.create().code
-        var environment = setup.childEnvironment
-        environment["HANGAR_WORKER_TOKEN"] = nil
+        var environment = setup.scriptEnvironment
         environment["HANGAR_PAIRING_CODE"] = code
         environment["HANGAR_MACHINE_NAME"] = name
-        if environment["HANGAR_BIN_DIR"]?.isEmpty ?? true {
+        if environment["HANGAR_BIN_DIR"] == nil {
             environment["HANGAR_BIN_DIR"] = URL(fileURLWithPath: setup.homeDirectory).appendingPathComponent(".local/bin").path
         }
         let script = InstallScript.render(origin: origin)
         let installer = setup.installer
         let machines = machines
         let childEnvironment = environment
-        return localWorkerSetup.start(
+        localWorkerSetup.run(
             secret: code,
             install: { onLine in try await installer.run(script: script, environment: childEnvironment, onLine: onLine) },
             finish: { try machines.all().first { $0.name.caseInsensitiveCompare(name) == .orderedSame } })
+        return reserved
     }
 }
 
