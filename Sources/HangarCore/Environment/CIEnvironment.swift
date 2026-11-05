@@ -26,10 +26,12 @@ public struct CIEnvironment: Sendable {
         public var resultBundle: String
         /// The job directory (`CI_WORKSPACE`).
         public var workspace: String
+        /// The job's own temporary directory: `TMPDIR` of every command of the job.
+        public var temporary: String
 
         public init(
             repository: String, projectFile: String, derivedData: String, archive: String,
-            resultBundle: String, workspace: String
+            resultBundle: String, workspace: String, temporary: String
         ) {
             self.repository = repository
             self.projectFile = projectFile
@@ -37,6 +39,7 @@ public struct CIEnvironment: Sendable {
             self.archive = archive
             self.resultBundle = resultBundle
             self.workspace = workspace
+            self.temporary = temporary
         }
     }
 
@@ -46,10 +49,6 @@ public struct CIEnvironment: Sendable {
         /// Never contain variable values.
         public var warnings: [String]
     }
-
-    /// The job's own temporary directory, `<job directory>/tmp`: `TMPDIR` of every job, created by the worker before
-    /// the first hook and removed with the job directory.
-    public static func temporaryDirectory(workspace: String) -> String { workspace + "/tmp" }
 
     /// Variables copied from the worker's own environment when set. LaunchAgents start with a bare one, and tools
     /// like xcodegen, brew, swift and git fail without a user name, a temp directory or a UTF-8 locale.
@@ -118,7 +117,7 @@ public struct CIEnvironment: Sendable {
         if let teamID { env["CI_TEAM_ID"] = teamID }
         env.merge(identityEnvironment(from: processEnvironment)) { ci, _ in ci }
         // Per job, not the worker's: temporary files do not pile up across jobs or collide between concurrent ones.
-        env["TMPDIR"] = temporaryDirectory(workspace: paths.workspace)
+        env["TMPDIR"] = paths.temporary
         return env
     }
 

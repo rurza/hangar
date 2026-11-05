@@ -177,7 +177,7 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 
     fileprivate static func loop(
         connection: some ServerConnection, runner: some JobRunning, clock: ManualClock, dataDirectory: String,
-        maxConcurrentJobs: Int = 1
+        maxConcurrentJobs: Int = 1, temporaryRoot: String? = nil
     ) -> WorkerLoop {
         let processes = DoctorTests.scriptedRunner()
         return WorkerLoop(
@@ -186,7 +186,9 @@ private final class BlockingJobRunner: JobRunning, Sendable {
                 dataDirectory: dataDirectory),
             connection: connection,
             doctor: DoctorTests.doctor(processes),
-            jobRunner: runner, clock: clock)
+            jobRunner: runner, clock: clock,
+            // Never the real per-user hangar-jobs: a live worker on this Mac keeps its jobs' TMPDIRs there.
+            temporaryRoot: temporaryRoot ?? dataDirectory + "-tmp")
     }
 
     /// Polls (in real time, briefly) until `condition` holds; the suite's time limit bounds a condition that never does.
@@ -299,6 +301,31 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 
         #expect(try FileManager.default.contentsOfDirectory(atPath: jobs).isEmpty)
         #expect(FileManager.default.fileExists(atPath: directory + "/workspaces/demo"))
+    }
+
+    @Test func sweepsTemporaryDirectoriesLeftByACrash() async throws {
+        let directory = Self.dataDirectory()
+        let temporaryRoot = directory + "-tmp"
+        defer {
+            try? FileManager.default.removeItem(atPath: directory)
+            try? FileManager.default.removeItem(atPath: temporaryRoot)
+        }
+        let leftover = temporaryRoot + "/" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: leftover + "/nested", withIntermediateDirectories: true)
+        try "x".write(toFile: leftover + "/nested/f", atomically: true, encoding: .utf8)
+
+        let connection = ScriptedConnection()
+        let task = Task {
+            await Self.loop(
+                connection: connection, runner: BlockingJobRunner(), clock: ManualClock(), dataDirectory: directory,
+                temporaryRoot: temporaryRoot
+            ).run()
+        }
+        await Self.eventually { connection.heartbeats.count >= 1 }
+        task.cancel()
+        await task.value
+
+        #expect(try FileManager.default.contentsOfDirectory(atPath: temporaryRoot).isEmpty)
     }
 
     @Test func createsAMissingDataDirectory() async throws {

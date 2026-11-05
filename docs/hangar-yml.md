@@ -80,7 +80,7 @@ Secret variables are available to `ci_scripts` hooks and post-actions but not to
 
 ### Reserved names
 
-Hangar sets `CI_*` (the Xcode Cloud variables), `PATH`, `HOME`, `DEVELOPER_DIR`, `USER`, `LOGNAME`, `TMPDIR` and `SHELL` for every job; a variable with one of these names is ignored with a warning in the job log, and the web UI refuses to create one. `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden. `TMPDIR` is the job's own `tmp` folder inside the job directory, created before the first hook and deleted with the job.
+Hangar sets `CI_*` (the Xcode Cloud variables), `PATH`, `HOME`, `DEVELOPER_DIR`, `USER`, `LOGNAME`, `TMPDIR` and `SHELL` for every job; a variable with one of these names is ignored with a warning in the job log, and the web UI refuses to create one. `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden. `TMPDIR` is the job's own folder in the Mac user's temporary directory (`/var/folders/…/T/hangar-jobs/<job id>`, a path without spaces), created before the first hook and deleted with the job; the worker removes leftovers of a crashed run when it starts.
 
 ### Private Swift packages
 

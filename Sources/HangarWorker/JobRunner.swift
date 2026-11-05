@@ -28,6 +28,8 @@ public struct JobRunner: Sendable {
     private let runner: any ProcessRunner
     private let locator: XcodeLocator
     private let dataDirectory: String
+    /// Holds every job's `TMPDIR`; see `WorkspaceLayout.temporaryRoot`.
+    private let temporaryRoot: String
     /// Names this Mac in failure reasons.
     private let machineName: String
     private let clock: any Clock<Duration>
@@ -36,6 +38,7 @@ public struct JobRunner: Sendable {
 
     public init(
         connection: any ServerConnection, runner: any ProcessRunner, locator: XcodeLocator, dataDirectory: String,
+        temporaryRoot: String = WorkspaceLayout.systemTemporaryRoot,
         machineName: String = JobRunner.computerName,
         clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
@@ -46,6 +49,7 @@ public struct JobRunner: Sendable {
         self.runner = runner
         self.locator = locator
         self.dataDirectory = dataDirectory
+        self.temporaryRoot = temporaryRoot
         self.machineName = machineName
         self.clock = clock
         self.appStoreConnectFactory = appStoreConnectFactory
@@ -67,7 +71,8 @@ public struct JobRunner: Sendable {
 
     public func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
         let jobID = assignment.job.id
-        let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID)
+        let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID,
+            temporaryRoot: temporaryRoot)
         let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
         let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock)
         let materializer = SecretsMaterializer(directory: layout.secrets)
@@ -184,16 +189,20 @@ public struct JobRunner: Sendable {
         let paths = CIEnvironment.Paths(
             repository: layout.repository, projectFile: layout.repository + "/" + workflow.projectOrWorkspacePath,
             derivedData: layout.derivedData, archive: layout.archive(scheme: action.scheme),
-            resultBundle: layout.resultBundle, workspace: layout.jobDirectory)
+            resultBundle: layout.resultBundle, workspace: layout.jobDirectory,
+            temporary: layout.temporary)
         let ci = CIEnvironment.make(
             app: assignment.app, workflow: assignment.workflowName, action: action, buildNumber: assignment.buildNumber,
             jobID: assignment.job.id, buildID: assignment.job.buildID, commit: assignment.commit, ref: assignment.ref,
             teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH,
             testDestination: testDestination)
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
-        // TMPDIR must exist before the first hook; cleanup removes it with the job directory.
-        try FileManager.default.createDirectory(
-            atPath: layout.temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // TMPDIR must exist before the first hook; cleanup removes it. The root is created 0700 too: it is the user's
+        // temp directory, but nothing else has a reason to read another job's files.
+        for directory in [layout.temporaryRoot, layout.temporary] {
+            try FileManager.default.createDirectory(
+                atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
         merged.warnings.forEach(log)
         try materializer.write(merged.filesToWrite)
         // Tests sign with the key when there is one, but do not need it.
@@ -371,6 +380,9 @@ public struct JobRunner: Sendable {
                 let outcome = try await runner.run(command, onLine: log)
                 if outcome.exitCode != 0 { throw CheckoutError.gitFailed(command: "git clean -ffdx", exitCode: outcome.exitCode) }
             }
+        }
+        await attempt("remove the temporary directory") {
+            try SafeRemoval.removeItem(atPath: layout.temporary, within: layout.temporaryRoot)
         }
         await attempt("remove the job directory") {
             try SafeRemoval.removeItem(atPath: layout.jobDirectory, within: dataDirectory + "/jobs")
