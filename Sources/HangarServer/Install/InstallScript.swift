@@ -36,22 +36,29 @@ enum InstallScript {
         #
         #   curl -fsSL __HANGAR_ORIGIN__/install | sh
         #
-        # Run it as the user that builds (the worker runs as a launchd agent in that user's GUI session). It
-        # downloads hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac, enrolls this
-        # Mac, writes the worker configuration and starts the agent. No sudo, no checkout, no Swift build.
+        # Run it in Terminal as an administrator. Builds then run as a separate, unprivileged macOS user named
+        # hangar: `hangar-worker isolate` creates it with a generated password (shown once and saved in your login
+        # keychain as app.hangar.worker-account; sudo asks for your password), installs the worker there and waits
+        # for you to log in as hangar once with fast user switching. An enrolled worker running as you moves with
+        # its enrollment and build cache. Run as hangar itself, or with HANGAR_AS_CURRENT_USER=1, or as a standard
+        # (non-admin) account, it installs for the current user instead: no sudo. Either way it downloads
+        # hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac, enrolls this Mac,
+        # writes the worker configuration and starts the agent. No checkout, no Swift build.
         #
         # Run it again to update: when this Mac is already enrolled with this server (`hangar-worker check`), it
         # replaces the binary and restarts the agent without asking for a code.
         #
         # Settings, all optional, as environment variables (put them after the pipe: ... | HANGAR_MAX_JOBS=2 sh):
+        #   HANGAR_AS_CURRENT_USER=1  install for the user running this, not for the hangar user
         #   HANGAR_PAIRING_CODE   the pairing code; asked for on the terminal when unset
         #   HANGAR_MACHINE_NAME   how this Mac appears in Hangar (default: its local host name)
-        #   HANGAR_BIN_DIR        where hangar-worker goes (default: ~/.local/bin; must be writable by you)
+        #   HANGAR_BIN_DIR        where hangar-worker goes when installing for the current user (default:
+        #                         ~/.local/bin; must be writable by you). The hangar user's is always its ~/.local/bin.
         #   HANGAR_MAX_JOBS       builds this Mac runs at once, 1 to 99 (default: 1)
         #   HANGAR_WORKER_CONFIG  the worker configuration file (default: hangar-worker's own,
         #                         ~/Library/Application Support/Hangar/worker/config.json)
-        #   HANGAR_NO_LAUNCHD=1   for testing: download, enroll and write the configuration, but neither write nor
-        #                         load the launchd agent, and skip the doctor
+        #   HANGAR_NO_LAUNCHD=1   for testing: install for the current user, download, enroll and write the
+        #                         configuration, but neither write nor load the launchd agent, and skip the doctor
         #
         # The machine token never appears in a command line or in the output: it goes from the server's answer to
         # `hangar-worker setup` in the environment.
@@ -165,6 +172,116 @@ enum InstallScript {
             fi
         }
 
+        # Downloads hangar-worker to <path>: next to its final place, then renamed over it, so a running worker keeps
+        # its own copy until it restarts.
+        download_worker() {
+            target=$1
+            download="$(dirname "$target")/.hangar-worker.download.$$"
+            say "Downloading hangar-worker..."
+            status=$(curl -sS -o "$download" -w '%{http_code}' "$HANGAR_SERVER/install/hangar-worker") \
+                || die "Cannot reach $HANGAR_SERVER. Check that this Mac is on the tailnet."
+            case $status in
+                200) ;;
+                503) die "The server has no hangar-worker to hand out. Reinstall the server with the latest scripts/server/install-server.sh, then run this again." ;;
+                *) die "Downloading hangar-worker failed: HTTP $status." ;;
+            esac
+            chmod 755 "$download"
+            xattr -d com.apple.quarantine "$download" 2>/dev/null || true
+            "$download" --help >/dev/null 2>&1 \
+                || die "The downloaded hangar-worker does not run on this Mac ($(uname -m)); the server may have a build for another architecture."
+            mv -f "$download" "$target"
+        }
+
+        # Asks for the pairing code, enrolls this Mac and writes the configuration with `hangar-worker setup`.
+        # enroll [setup arguments...]
+        enroll() {
+            # The pairing code. The script itself arrives on stdin, so the code is read from the terminal.
+            code=${HANGAR_PAIRING_CODE:-}
+            if [ -z "$code" ]; then
+                (: </dev/tty) 2>/dev/null || die "No terminal to ask for the pairing code. Set HANGAR_PAIRING_CODE."
+                printf 'Pairing code (from Hangar → Machines → Add Mac): ' >/dev/tty
+                IFS= read -r code </dev/tty || [ -n "$code" ] || die "No pairing code entered."
+            fi
+            code=$(printf '%s' "$code" | tr -d ' \t-' | tr '[:lower:]' '[:upper:]')
+            case $code in
+                '' | *[!A-Z0-9]*) die "That is not a pairing code. It looks like ABCD-EFGH: 8 letters and digits." ;;
+            esac
+
+            # Enroll. The body goes on stdin and the answer, which holds the token, stays in this shell.
+            say "Enrolling $name..."
+            body=$(printf '{"code":"%s","name":"%s","maxConcurrentJobs":%s}' "$code" "$(json_escape "$name")" "$max_jobs")
+            response=$(printf '%s' "$body" | curl -sS -X POST -H 'Content-Type: application/json' \
+                --data-binary @- -w '\n%{http_code}' "$HANGAR_SERVER/api/v1/enroll") \
+                || die "Cannot reach $HANGAR_SERVER. Check that this Mac is on the tailnet."
+            status=$(printf '%s\n' "$response" | tail -n 1)
+            answer=$(printf '%s\n' "$response" | sed '$d')
+            unset response
+            case $status in
+                201) ;;
+                409) die "Hangar already has a machine named \"$name\". The code is still valid; run this again with another name, e.g.: curl -fsSL $HANGAR_SERVER/install | HANGAR_MACHINE_NAME=mini-2 sh" ;;
+                403) die "The pairing code was not accepted: mistyped, already used or expired (codes last 15 minutes). Get a new one in Hangar → Machines → Add Mac." ;;
+                429) die "Too many wrong pairing codes from this Mac. Wait 10 minutes, then run this again." ;;
+                *)
+                    message=$(printf '%s' "$answer" | json_value message)
+                    die "Enrolling failed: HTTP $status${message:+: $message}"
+                    ;;
+            esac
+
+            # The configuration. The token reaches setup through its environment, never its arguments.
+            token=$(printf '%s' "$answer" | json_value token)
+            unset answer
+            [ -n "$token" ] || die "The server's answer holds no token."
+            HANGAR_WORKER_TOKEN=$token "$worker" setup --server "$HANGAR_SERVER" --max-jobs "$max_jobs" "$@" \
+                || die "hangar-worker setup failed. $name is enrolled already: remove it in Hangar → Machines before running this again."
+            unset token
+        }
+
+        # Whether builds should run as the dedicated hangar user, set up by `hangar-worker isolate`: yes for an
+        # administrator, unless HANGAR_AS_CURRENT_USER=1. The hangar user itself, and any other standard account,
+        # installs for itself.
+        wants_isolation() {
+            [ "$(id -un)" != hangar ] || return 1
+            [ "${HANGAR_AS_CURRENT_USER:-}" != 1 ] || return 1
+            [ "${HANGAR_NO_LAUNCHD:-}" != 1 ] || return 1
+            id -Gn | tr ' ' '\n' | grep -qx admin
+        }
+
+        # The install as an administrator: hangar-worker isolate creates the hangar user (with a generated password
+        # it shows once and keeps in your login keychain), moves or installs the worker there and waits for one login.
+        install_isolated() {
+            me=$(id -un)
+            say "Builds run as a separate, unprivileged macOS user named hangar, so a build cannot read $me's files."
+            say "To build as $me instead: curl -fsSL $HANGAR_SERVER/install | HANGAR_AS_CURRENT_USER=1 sh"
+            (: </dev/tty) 2>/dev/null \
+                || die "Setting up the hangar user needs a terminal (sudo asks for your password). Run this in Terminal, or set HANGAR_AS_CURRENT_USER=1."
+            work=$(mktemp -d "${TMPDIR:-/tmp}/hangar-install.XXXXXX") || die "Cannot create a temporary directory."
+            chmod 700 "$work"
+            trap 'rm -rf "$work"' EXIT
+            trap 'exit 130' INT TERM HUP
+            worker="$work/hangar-worker"
+            download_worker "$worker"
+
+            hangar_config="/Users/hangar/Library/Application Support/Hangar/worker/config.json"
+            config_file=${config:-"$HOME/Library/Application Support/Hangar/worker/config.json"}
+            set -- isolate --binary "$worker"
+            configured=''
+            [ ! -f "$config_file" ] || configured=$(/usr/bin/plutil -extract serverURL raw -o - "$config_file" 2>/dev/null || true)
+            if [ "$configured" = "$HANGAR_SERVER" ] && "$worker" check --config "$config_file" >/dev/null 2>&1; then
+                # isolate finds this user's agent and configuration itself, and removes them once hangar runs.
+                say "This Mac's worker runs as $me; it moves to the hangar user with the same enrollment."
+            else
+                say "Checking for a hangar user that is already set up (macOS asks for your password)..."
+                if sudo /bin/test -f "$hangar_config" \
+                    && [ "$(sudo /usr/bin/plutil -extract serverURL raw -o - "$hangar_config" 2>/dev/null)" = "$HANGAR_SERVER" ]; then
+                    say "The hangar user's worker is already enrolled with $HANGAR_SERVER; it is updated."
+                else
+                    enroll --config "$work/config.json"
+                    set -- "$@" --config "$work/config.json"
+                fi
+            fi
+            "$worker" "$@" </dev/tty || die "hangar-worker isolate did not finish. Run this command again to pick up where it stopped."
+        }
+
         main() {
             [ "$(uname -s)" = Darwin ] || die "The Hangar worker runs on macOS only."
             say "Installing the Hangar worker from $HANGAR_SERVER"
@@ -198,26 +315,19 @@ enum InstallScript {
             config=''
             [ -z "${HANGAR_WORKER_CONFIG:-}" ] || config=$(absolute "$HANGAR_WORKER_CONFIG")
 
-            # 1. The binary: downloaded next to its final place, then renamed over it, so a running worker keeps
-            #    its own copy until it restarts.
+            if wants_isolation; then
+                install_isolated
+                return 0
+            fi
+            [ "$(id -un)" = hangar ] || [ "${HANGAR_AS_CURRENT_USER:-}" = 1 ] || [ "${HANGAR_NO_LAUNCHD:-}" = 1 ] \
+                || say "$(id -un) is not an administrator, so the worker is installed for $(id -un) and builds run as $(id -un)."
+
+            # 1. The binary.
             mkdir -p "$bin_dir" 2>/dev/null || die "Cannot create $bin_dir. Set HANGAR_BIN_DIR to a directory you own."
             [ -w "$bin_dir" ] || die "$bin_dir is not writable. Set HANGAR_BIN_DIR to a directory you own."
-            download="$bin_dir/.hangar-worker.download.$$"
-            trap 'rm -f "$download"' EXIT
+            trap 'rm -f "$bin_dir/.hangar-worker.download.$$"' EXIT
             trap 'exit 130' INT TERM HUP
-            say "Downloading hangar-worker..."
-            status=$(curl -sS -o "$download" -w '%{http_code}' "$HANGAR_SERVER/install/hangar-worker") \
-                || die "Cannot reach $HANGAR_SERVER. Check that this Mac is on the tailnet."
-            case $status in
-                200) ;;
-                503) die "The server has no hangar-worker to hand out. Reinstall the server with the latest scripts/server/install-server.sh, then run this again." ;;
-                *) die "Downloading hangar-worker failed: HTTP $status." ;;
-            esac
-            chmod 755 "$download"
-            xattr -d com.apple.quarantine "$download" 2>/dev/null || true
-            "$download" --help >/dev/null 2>&1 \
-                || die "The downloaded hangar-worker does not run on this Mac ($(uname -m)); the server may have a build for another architecture."
-            mv -f "$download" "$worker"
+            download_worker "$worker"
             say "Installed $worker"
 
             # 2. Already enrolled with this server? Then this run is an update: no code, no new machine.
@@ -248,47 +358,8 @@ enum InstallScript {
                 die "Cannot write the worker configuration $config_file. Fix its permissions (or set HANGAR_WORKER_CONFIG), then run this again."
             fi
 
-            # 3. The pairing code. The script itself arrives on stdin, so the code is read from the terminal.
-            code=${HANGAR_PAIRING_CODE:-}
-            if [ -z "$code" ]; then
-                (: </dev/tty) 2>/dev/null || die "No terminal to ask for the pairing code. Set HANGAR_PAIRING_CODE."
-                printf 'Pairing code (from Hangar → Machines → Add Mac): ' >/dev/tty
-                IFS= read -r code </dev/tty || [ -n "$code" ] || die "No pairing code entered."
-            fi
-            code=$(printf '%s' "$code" | tr -d ' \t-' | tr '[:lower:]' '[:upper:]')
-            case $code in
-                '' | *[!A-Z0-9]*) die "That is not a pairing code. It looks like ABCD-EFGH: 8 letters and digits." ;;
-            esac
-
-            # 4. Enroll. The body goes on stdin and the answer, which holds the token, stays in this shell.
-            say "Enrolling $name..."
-            body=$(printf '{"code":"%s","name":"%s","maxConcurrentJobs":%s}' "$code" "$(json_escape "$name")" "$max_jobs")
-            response=$(printf '%s' "$body" | curl -sS -X POST -H 'Content-Type: application/json' \
-                --data-binary @- -w '\n%{http_code}' "$HANGAR_SERVER/api/v1/enroll") \
-                || die "Cannot reach $HANGAR_SERVER. Check that this Mac is on the tailnet."
-            status=$(printf '%s\n' "$response" | tail -n 1)
-            answer=$(printf '%s\n' "$response" | sed '$d')
-            unset response
-            case $status in
-                201) ;;
-                409) die "Hangar already has a machine named \"$name\". The code is still valid; run this again with another name, e.g.: curl -fsSL $HANGAR_SERVER/install | HANGAR_MACHINE_NAME=mini-2 sh" ;;
-                403) die "The pairing code was not accepted: mistyped, already used or expired (codes last 15 minutes). Get a new one in Hangar → Machines → Add Mac." ;;
-                429) die "Too many wrong pairing codes from this Mac. Wait 10 minutes, then run this again." ;;
-                *)
-                    message=$(printf '%s' "$answer" | json_value message)
-                    die "Enrolling failed: HTTP $status${message:+: $message}"
-                    ;;
-            esac
-
-            # 5. The configuration. The token reaches setup through its environment, never its arguments.
-            token=$(printf '%s' "$answer" | json_value token)
-            unset answer
-            [ -n "$token" ] || die "The server's answer holds no token."
-            set -- setup --server "$HANGAR_SERVER" --max-jobs "$max_jobs"
-            [ -z "$config" ] || set -- "$@" --config "$config"
-            HANGAR_WORKER_TOKEN=$token "$worker" "$@" \
-                || die "hangar-worker setup failed. $name is enrolled already: remove it in Hangar → Machines before running this again."
-            unset token
+            # 3. The pairing code, the enrollment and the configuration.
+            if [ -n "$config" ]; then enroll --config "$config"; else enroll; fi
 
             finish "$name" "Done — $name should appear in Hangar within a few seconds."
         }

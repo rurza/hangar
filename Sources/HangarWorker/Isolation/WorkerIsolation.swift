@@ -259,7 +259,8 @@ public struct WorkerIsolation: Sendable {
         try installLaunchAgent()
 
         // 7. The graphical login, and the agent it starts.
-        if !hasSession(uid: accountUID) {
+        let sessionExisted = hasSession(uid: accountUID)
+        if !sessionExisted {
             showLoginInstructions(password: password)
             if options.noWait {
                 say("Not waiting (--no-wait). Run hangar-worker isolate again after logging in as \(layout.user) to finish.")
@@ -269,7 +270,7 @@ public struct WorkerIsolation: Sendable {
         } else if let password, !dryRun {
             showPassword(password)
         }
-        try await waitForAgent(uid: accountUID)
+        try await waitForAgent(uid: accountUID, sessionExisted: sessionExisted)
         reportKeychain()
 
         // 8. The server must see the machine heartbeat from the account; then the old agent goes.
@@ -510,9 +511,10 @@ public struct WorkerIsolation: Sendable {
         say("\(layout.user) is logged in.")
     }
 
-    /// The login loads the agent from the account's LaunchAgents; if it does not (the session existed before the
-    /// plist), it is bootstrapped into the account's GUI domain.
-    private func waitForAgent(uid: String) async throws {
+    /// A new login loads the agent from the account's LaunchAgents; if it does not, the agent is bootstrapped into the
+    /// account's GUI domain. When the session was already there, a loaded agent is restarted onto the new binary and
+    /// an unloaded one bootstrapped right away.
+    private func waitForAgent(uid: String, sessionExisted: Bool) async throws {
         let target = "gui/\(uid)/\(WorkerLaunchAgent.label)"
         let print = IsolationCommand(["/usr/bin/sudo", "/bin/launchctl", "print", target], kind: .probe, capturesOutput: true, quiet: true)
         if dryRun {
@@ -520,6 +522,14 @@ public struct WorkerIsolation: Sendable {
             return
         }
         var bootstrapped = false
+        if sessionExisted {
+            if runner.succeeds(print) {
+                try require(.sudo("/bin/launchctl", "kickstart", "-k", target), "restart \(layout.user)'s worker agent")
+            } else {
+                try require(.sudo("/bin/launchctl", "bootstrap", "gui/\(uid)", layout.plist), "start \(layout.user)'s worker agent")
+            }
+            bootstrapped = true
+        }
         for attempt in 0..<timing.agentRunningPolls {
             let result = try runner.run(print)
             if result.succeeded, Self.isRunning(launchctlPrint: result.output) {

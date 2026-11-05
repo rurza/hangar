@@ -241,6 +241,25 @@ fileprivate final class Lines: Sendable {
         #expect(store.saved.withLock { $0.isEmpty })
         #expect(outcome.generatedPassword == nil && !outcome.createdAccount)
         #expect(!output.text.contains("log in as hangar once"), "already logged in: no instructions")
+        #expect(runner.changes.contains("/usr/bin/sudo /bin/launchctl kickstart -k gui/502/app.hangar.worker"), "restarted onto the new binary")
+        #expect(!runner.changes.contains { $0.contains("bootstrap") })
+    }
+
+    @Test func aSessionWithoutTheAgentGetsItBootstrappedAtOnce() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let runner = ScriptedRunner()
+        runner.on { command, _ in command.arguments == ["/usr/bin/id", "-u", "hangar"] ? IsolationResult(exitCode: 0, output: "502") : nil }
+        runner.on { command, seen in
+            guard command.arguments.contains("print") else { return nil }
+            return seen.contains { $0.arguments.contains("bootstrap") } ? IsolationResult(exitCode: 0, output: "state = running") : IsolationResult(exitCode: 113)
+        }
+        Self.freshMac(runner, sessionAfterPolls: 0)
+        _ = try await Self.isolation(fixture, runner: runner).run()
+        #expect(runner.changes.filter { $0.contains("launchctl") && !$0.contains("print") } == [
+            "/bin/launchctl bootout gui/501/app.hangar.worker",
+            "/usr/bin/sudo /bin/launchctl bootstrap gui/502 /Users/hangar/Library/LaunchAgents/app.hangar.worker.plist",
+        ])
     }
 
     @Test func resetPasswordGivesAnExistingAccountANewOne() async throws {
