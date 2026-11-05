@@ -7,11 +7,14 @@ import {
   svg, toast,
 } from '../ui.js';
 import { jobRunLine, stepDetail, stepDisplayStatus, stepStages, stepStatusWords } from '../build-model.js';
+import {
+  appendEntries, countLabel, createLog, defaultOpenSteps, displayText, issuePositions, issueTotals, lineSegments, visibleLines,
+} from '../log-model.js';
 import { appIcon } from './apps.js';
 
 const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
 const ONLINE_WINDOW_MS = 90_000;
-const LOG_LINE_CAP = 5000;
+const FULL_LOG = 'full-log.txt';
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
 const STEP_LABELS = {
@@ -408,44 +411,77 @@ function stepRow(step, job, live) {
 
 // MARK: Log panel
 
+/** Lines a step renders at most; the rest are in the downloadable log. */
+const RENDER_LIMIT = 4000;
+
+/**
+ * The log of one job at a time: a section per step (the failed step open, the running one while the job runs,
+ * the others closed), errors and warnings counted with links that jump to each in turn, a filter for just those,
+ * a search, and a link to download the log. Follows new lines while scrolled to the bottom.
+ */
 function logPanel(initialJobs, context) {
   let jobs = initialJobs;
   let selectedJob = jobs[0]?.id ?? null;
-  let selectedStep = '';
   let stop = null;
   let pinned = true;
-  let lineCount = 0;
-  let stepOptions = null; // the step names the filter lists, joined
+  let model = createLog();
+  let issuesOnly = false;
+  let query = '';
+  /** Per step: its section's elements and how many of its lines are rendered. */
+  let sections = new Map();
+  /** Steps the reader opened or closed; their choice stands over the defaults. */
+  let userChoice = new Map();
+  /** Steps whose next `toggle` event comes from this code, not the reader. */
+  const programmatic = new Set();
+  const cursor = { error: -1, warning: -1 };
+  let downloadGeneration = 0;
 
   const tabs = h('div', { class: 'segmented log-tabs', role: 'tablist', 'aria-label': 'Job' });
-  const stepSelect = h('select', {
-    class: 'input select log-step-select', 'aria-label': 'Step',
-    onChange: () => {
-      selectedStep = stepSelect.value;
-      restart();
+  const filterAll = h('button', { type: 'button', class: 'segment', role: 'radio', 'aria-checked': 'true', onClick: () => setIssuesOnly(false) }, 'All');
+  const filterIssues = h('button', { type: 'button', class: 'segment', role: 'radio', 'aria-checked': 'false', onClick: () => setIssuesOnly(true) }, 'Errors & Warnings');
+  const filter = h('div', { class: 'segmented log-filter', role: 'radiogroup', 'aria-label': 'Show' }, filterAll, filterIssues);
+  let searchTimer = null;
+  const search = h('input', {
+    type: 'search', class: 'input log-search', placeholder: 'Search the log', 'aria-label': 'Search the log',
+    autocomplete: 'off', spellcheck: 'false',
+    onInput: () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        query = search.value;
+        refilter();
+      }, 150);
     },
   });
+  const errorsLink = h('button', { type: 'button', class: 'log-count log-count-error', hidden: true, onClick: () => jump('error') });
+  const warningsLink = h('button', { type: 'button', class: 'log-count log-count-warning', hidden: true, onClick: () => jump('warning') });
+  const download = h('a', { class: 'log-download', hidden: true });
+  const announcer = h('p', { class: 'visually-hidden', 'aria-live': 'polite' });
   const lines = h('div', {
     class: 'log-lines', role: 'log', 'aria-live': 'off', tabindex: '0', 'aria-label': 'Log',
   });
   const status = h('p', { class: 'log-status' });
-  const jump = h('button', {
+  const jumpLatest = h('button', {
     type: 'button', class: 'button button-primary button-small log-jump', hidden: true,
     onClick: () => {
       pinned = true;
-      jump.hidden = true;
+      jumpLatest.hidden = true;
       lines.scrollTop = lines.scrollHeight;
     },
   }, 'Jump to latest');
   lines.addEventListener('scroll', () => {
     pinned = lines.scrollTop + lines.clientHeight >= lines.scrollHeight - 24;
-    if (pinned) jump.hidden = true;
+    if (pinned) jumpLatest.hidden = true;
   });
 
   const element = h('div', { class: 'log-panel' },
-    h('div', { class: 'log-toolbar' }, tabs, stepSelect),
-    h('div', { class: 'log-viewport' }, lines, jump),
+    h('div', { class: 'log-toolbar' }, tabs, filter, search),
+    h('div', { class: 'log-summary' }, errorsLink, warningsLink, download, announcer),
+    h('div', { class: 'log-viewport' }, lines, jumpLatest),
     status);
+
+  function selectedJobValue() {
+    return jobs.find((candidate) => candidate.id === selectedJob);
+  }
 
   function renderTabs() {
     if (jobs.length < 2) {
@@ -467,44 +503,246 @@ function logPanel(initialJobs, context) {
     }, actionLabel(job.action))));
   }
 
-  function renderSteps() {
-    const job = jobs.find((candidate) => candidate.id === selectedJob);
-    const names = (job?.steps ?? []).map((step) => step.name);
-    stepOptions = names.join();
-    if (selectedStep && !names.includes(selectedStep)) names.push(selectedStep);
-    replaceChildren(stepSelect,
-      h('option', { value: '' }, 'All steps'),
-      names.map((name) => h('option', { value: name }, stepLabel(name))));
-    stepSelect.value = selectedStep;
-  }
-
   function select(jobID) {
     if (jobID === selectedJob) return;
     selectedJob = jobID;
-    selectedStep = '';
     renderTabs();
-    renderSteps();
     restart();
   }
 
-  function append(entries) {
-    if (lineCount === 0) status.textContent = '';
-    const fresh = entries.length > LOG_LINE_CAP ? entries.slice(-LOG_LINE_CAP) : entries;
-    const fragment = document.createDocumentFragment();
-    for (const entry of fresh) {
-      const line = document.createElement('div');
-      line.className = 'log-line';
-      line.textContent = `${logTime(entry.t)} [${entry.step}] ${entry.line}`;
-      fragment.append(line);
-    }
-    lines.append(fragment);
-    lineCount += fresh.length;
-    while (lineCount > LOG_LINE_CAP) {
-      lines.firstChild.remove();
-      lineCount -= 1;
-    }
+  // MARK: Filter and search
+
+  function filtering() {
+    return issuesOnly || query.trim() !== '';
+  }
+
+  function setIssuesOnly(value) {
+    if (issuesOnly === value) return;
+    issuesOnly = value;
+    filterAll.setAttribute('aria-checked', String(!value));
+    filterIssues.setAttribute('aria-checked', String(value));
+    refilter();
+  }
+
+  function refilter() {
+    for (const step of model.steps) renderSection(step.name, { rebuild: true });
+    applyOpenState();
+    updateStatusLine();
     if (pinned) lines.scrollTop = lines.scrollHeight;
-    else jump.hidden = false;
+  }
+
+  // MARK: Sections
+
+  function stepStatus(name) {
+    const job = selectedJobValue();
+    const step = job?.steps?.find((candidate) => candidate.name === name);
+    return step ? stepDisplayStatus(step, job) : 'pending';
+  }
+
+  function section(name) {
+    let entry = sections.get(name);
+    if (entry) return entry;
+    const counts = h('span', { class: 'log-step-counts' });
+    const summary = h('summary', { class: 'log-step-summary' });
+    const body = h('div', { class: 'log-step-body' });
+    const details = h('details', { class: 'log-step', dataset: { step: name } }, summary, body);
+    details.addEventListener('toggle', () => {
+      if (programmatic.delete(name)) return;
+      if (!filtering()) userChoice.set(name, details.open);
+      if (details.open) renderSection(name, { rebuild: true });
+    });
+    entry = { details, summary, body, counts, rendered: 0, signature: '' };
+    sections.set(name, entry);
+    // Steps appear in the order their first line arrived.
+    lines.append(details);
+    return entry;
+  }
+
+  function renderSummary(name) {
+    const entry = section(name);
+    const step = model.byName[name];
+    const status = stepStatus(name);
+    const shown = filtering() ? visibleLines(step, { issuesOnly, query }).filter((line) => line.kind !== 'task').length : null;
+    const signature = [status, step.errors, step.warnings, step.lines.length, shown].join('|');
+    if (signature === entry.signature) return;
+    entry.signature = signature;
+    replaceChildren(entry.counts,
+      step.errors ? h('span', { class: 'log-badge log-badge-error' }, countLabel(step.errors, 'error')) : null,
+      step.warnings ? h('span', { class: 'log-badge log-badge-warning' }, countLabel(step.warnings, 'warning')) : null,
+      h('span', { class: 'log-step-lines' }, shown === null
+        ? countLabel(step.lines.length + step.dropped, 'line')
+        : `${shown} of ${step.lines.length + step.dropped}`));
+    replaceChildren(entry.summary,
+      stepIcon(status),
+      h('span', { class: 'log-step-name' }, stepLabel(name)),
+      h('span', { class: 'visually-hidden' }, `, ${stepStatusWords(status)}`),
+      entry.counts);
+  }
+
+  /** Renders the step's lines when its section is open: all again with `rebuild`, else just the new ones. */
+  function renderSection(name, { rebuild = false } = {}) {
+    const entry = section(name);
+    const step = model.byName[name];
+    renderSummary(name);
+    if (!entry.details.open) {
+      if (rebuild) {
+        entry.body.replaceChildren();
+        entry.rendered = 0;
+      }
+      return;
+    }
+    if (filtering() || rebuild || entry.rendered === 0) {
+      const visible = filtering() ? visibleLines(step, { issuesOnly, query }) : step.lines;
+      const shown = visible.length > RENDER_LIMIT ? visible.slice(-RENDER_LIMIT) : visible;
+      const hidden = visible.length - shown.length + (filtering() ? 0 : step.dropped);
+      const fragment = document.createDocumentFragment();
+      if (hidden > 0) {
+        fragment.append(h('div', { class: 'log-line log-line-note' },
+          `${countLabel(hidden, 'earlier line')} not shown here; download the log to see everything.`));
+      }
+      if (filtering() && visible.length === 0) {
+        fragment.append(h('div', { class: 'log-line log-line-note' }, issuesOnly && !query.trim()
+          ? 'No errors or warnings in this step.'
+          : 'No lines match.'));
+      }
+      for (const line of shown) fragment.append(lineView(line));
+      entry.body.replaceChildren(fragment);
+      entry.rendered = step.lines.length ? step.lines[step.lines.length - 1].index + 1 : 0;
+      return;
+    }
+    // Unfiltered and open: append what arrived since the last render.
+    const fresh = step.lines.filter((line) => line.index >= entry.rendered);
+    if (!fresh.length) return;
+    const fragment = document.createDocumentFragment();
+    for (const line of fresh) fragment.append(lineView(line));
+    entry.body.append(fragment);
+    entry.rendered = fresh[fresh.length - 1].index + 1;
+    while (entry.body.childElementCount > RENDER_LIMIT) entry.body.firstElementChild.remove();
+  }
+
+  function lineView(line) {
+    const text = h('span', { class: 'log-text' });
+    for (const segment of lineSegments(line.text, query)) {
+      const piece = segment.mark ? h('mark', { class: 'log-mark' }, segment.text) : document.createTextNode(segment.text);
+      text.append(segment.title
+        ? h('span', { class: 'log-path', title: segment.title }, piece)
+        : piece);
+    }
+    return h('div', { class: ['log-line', `log-${line.kind}`], dataset: { line: String(line.index) } },
+      h('span', { class: 'log-time', 'aria-hidden': 'true' }, logTime(line.t)),
+      text);
+  }
+
+  function setOpen(name, open) {
+    const entry = section(name);
+    if (entry.details.open === open) return;
+    programmatic.add(name);
+    entry.details.open = open;
+    if (open) renderSection(name, { rebuild: true });
+  }
+
+  /** Opens and closes sections: while filtering, those with matches; otherwise the reader's choice or the default. */
+  function applyOpenState() {
+    const defaults = new Set(defaultOpenSteps(model, selectedJobValue()));
+    for (const step of model.steps) {
+      if (filtering()) {
+        setOpen(step.name, visibleLines(step, { issuesOnly, query }).length > 0);
+      } else {
+        setOpen(step.name, userChoice.has(step.name) ? userChoice.get(step.name) : defaults.has(step.name));
+      }
+    }
+  }
+
+  // MARK: Counts and jumps
+
+  function updateStatusLine() {
+    const totals = issueTotals(model);
+    errorsLink.hidden = totals.errors === 0;
+    warningsLink.hidden = totals.warnings === 0;
+    errorsLink.textContent = countLabel(totals.errors, 'error');
+    warningsLink.textContent = countLabel(totals.warnings, 'warning');
+    errorsLink.title = 'Jump to the next error';
+    warningsLink.title = 'Jump to the next warning';
+  }
+
+  /** Scrolls to the next error or warning (after the last one jumped to), opening its step. */
+  function jump(kind) {
+    const positions = issuePositions(model, kind);
+    if (!positions.length) return;
+    cursor[kind] = (cursor[kind] + 1) % positions.length;
+    const target = positions[cursor[kind]];
+    if (query.trim()) {
+      search.value = '';
+      query = '';
+      refilter();
+    }
+    if (!filtering()) userChoice.set(target.step, true);
+    setOpen(target.step, true);
+    const row = section(target.step).body.querySelector(`[data-line="${target.index}"]`);
+    if (!row) return;
+    pinned = false;
+    jumpLatest.hidden = false;
+    // Within the log box only: scrollIntoView would move the whole page too.
+    lines.scrollTop += row.getBoundingClientRect().top - lines.getBoundingClientRect().top - lines.clientHeight / 3;
+    row.classList.remove('log-line-flash');
+    void row.offsetWidth;
+    row.classList.add('log-line-flash');
+    const words = kind === 'error' ? 'Error' : 'Warning';
+    announcer.textContent = `${words} ${cursor[kind] + 1} of ${positions.length}: ${displayText(row.querySelector('.log-text')?.textContent ?? '')}`;
+  }
+
+  // MARK: Download
+
+  /** Links the full log once the job kept one, else the log as stored. */
+  async function updateDownload() {
+    const job = selectedJobValue();
+    if (!job) {
+      download.hidden = true;
+      return;
+    }
+    const generation = ++downloadGeneration;
+    const stored = () => {
+      download.href = `/api/v1/jobs/${seg(job.id)}/log?format=text`;
+      download.download = `log-${job.id.toLowerCase()}.txt`;
+      download.textContent = 'Download log';
+      download.title = 'The log as shown here, as a text file';
+      download.hidden = false;
+    };
+    stored();
+    if (!isTerminal(job.status)) return;
+    try {
+      const artifacts = await api.get(`/jobs/${seg(job.id)}/artifacts`, { signal: context.signal });
+      if (generation !== downloadGeneration || !artifacts.some((artifact) => artifact.name === FULL_LOG)) return;
+      download.href = `/api/v1/jobs/${seg(job.id)}/artifacts/${FULL_LOG}`;
+      download.download = FULL_LOG;
+      download.textContent = 'Download full log';
+      download.title = 'Everything xcodebuild printed, compiler invocations included';
+    } catch {
+      // The stored log stays linked.
+    }
+  }
+
+  // MARK: Stream
+
+  function append(entries) {
+    if (model.steps.length === 0) status.textContent = '';
+    const changed = appendEntries(model, entries);
+    const known = new Set(sections.keys());
+    for (const name of changed) {
+      section(name);
+      if (!known.has(name)) applyOpenStateFor(name);
+      renderSection(name);
+    }
+    updateStatusLine();
+    if (pinned) lines.scrollTop = lines.scrollHeight;
+    else jumpLatest.hidden = false;
+  }
+
+  /** The open state of a step that just appeared. */
+  function applyOpenStateFor(name) {
+    const step = model.byName[name];
+    if (filtering()) setOpen(name, visibleLines(step, { issuesOnly, query }).length > 0);
+    else setOpen(name, userChoice.get(name) ?? defaultOpenSteps(model, selectedJobValue()).includes(name));
   }
 
   function restart() {
@@ -513,19 +751,27 @@ function logPanel(initialJobs, context) {
     // Never open a stream for a page that is gone (its cleanups have already run).
     if (context.signal.aborted) return;
     lines.replaceChildren();
-    lineCount = 0;
+    model = createLog();
+    sections = new Map();
+    userChoice = new Map();
+    programmatic.clear();
+    cursor.error = -1;
+    cursor.warning = -1;
+    announcer.textContent = '';
     pinned = true;
-    jump.hidden = true;
+    jumpLatest.hidden = true;
+    updateStatusLine();
+    updateDownload();
     if (!selectedJob) {
       status.textContent = 'This build has no jobs.';
       return;
     }
-    const job = jobs.find((candidate) => candidate.id === selectedJob);
+    const job = selectedJobValue();
     status.textContent = job && isTerminal(job.status) ? 'Loading the log…' : 'Waiting for output…';
     const jobID = selectedJob;
-    stop = followLog(jobID, selectedStep || null, append, () => {
+    stop = followLog(jobID, null, append, () => {
       if (jobID !== selectedJob) return;
-      status.textContent = lineCount === 0 ? 'The job wrote no log.' : 'The job has finished.';
+      status.textContent = model.steps.length === 0 ? 'The job wrote no log.' : '';
     }, (error) => {
       if (jobID !== selectedJob) return;
       status.replaceChildren(
@@ -534,19 +780,24 @@ function logPanel(initialJobs, context) {
     });
   }
 
-  context.onCleanup(() => stop?.());
+  context.onCleanup(() => {
+    stop?.();
+    clearTimeout(searchTimer);
+  });
 
   renderTabs();
-  renderSteps();
   restart();
 
   return {
     element,
-    /** Keeps the step filter in step with the selected job's steps (a build's jobs never change). */
+    /** Keeps step icons and open sections in step with the jobs (a build's jobs never change). */
     updateJobs(next) {
+      const before = selectedJobValue();
       jobs = next;
-      const names = (jobs.find((job) => job.id === selectedJob)?.steps ?? []).map((step) => step.name).join();
-      if (names !== stepOptions) renderSteps();
+      const after = selectedJobValue();
+      for (const step of model.steps) renderSummary(step.name);
+      if (!filtering()) applyOpenState();
+      if (after && before && isTerminal(after.status) && !isTerminal(before.status)) updateDownload();
     },
   };
 }
