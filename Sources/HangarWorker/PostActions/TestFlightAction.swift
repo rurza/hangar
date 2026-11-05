@@ -164,16 +164,24 @@ public struct TestFlightAction: PostActionModule {
         (error as? ASCError)?.refusalDetail ?? String(describing: error)
     }
 
-    /// Polls straight away, then every 30 s. A build App Store Connect does not list yet counts as processing.
+    /// Polls straight away, then every 30 s. A build App Store Connect does not list yet counts as processing, and so
+    /// does a poll that fails for a passing reason (a timeout, no network, HTTP 429 or 5xx): the build is uploaded,
+    /// so one lost answer must not fail the job. A refusal (another 4xx) or a reply that can't be read still throws.
     private func waitForProcessing(_ client: any AppStoreConnectClient, _ context: PostActionContext) async throws -> ASCBuild {
         let version = "\(context.buildNumber)"
         let platform = context.action.platform.appStoreConnectPlatform
         let timeout = Duration.seconds(settings.processingTimeoutMinutes * 60)
         var waited = Duration.zero
         while true {
-            let builds = try await client.builds(appID: context.app.appStoreConnectAppID, version: version)
-            let match = builds.first { $0.version == version && $0.platform == platform }
-            context.log("TestFlight processing: \(match?.processingState ?? "not listed yet")")
+            let builds: [ASCBuild]?
+            do {
+                builds = try await client.builds(appID: context.app.appStoreConnectAppID, version: version)
+            } catch where Self.isPassing(error) {
+                context.log("TestFlight processing: could not ask App Store Connect (\(Self.reason(error))); asking again")
+                builds = nil
+            }
+            let match = builds?.first { $0.version == version && $0.platform == platform }
+            if builds != nil { context.log("TestFlight processing: \(match?.processingState ?? "not listed yet")") }
             if let match {
                 switch match.processingState {
                 case "VALID": return match
@@ -185,6 +193,14 @@ public struct TestFlightAction: PostActionModule {
             try await context.clock.sleep(for: Self.pollInterval)
             waited += Self.pollInterval
         }
+    }
+
+    /// Whether `error` is worth asking again: the network, or App Store Connect busy or failing on its side.
+    static func isPassing(_ error: any Error) -> Bool {
+        if error is URLError { return true }
+        if case .http(let status, _) = error as? ASCError { return status == 429 || status >= 500 }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
     }
 
     /// What happened to the groups: a line for the stage and the problems, one sentence each.

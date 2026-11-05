@@ -20,6 +20,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
     private struct State {
         var polls: [[ASCBuild]]
+        var pollErrors: [any Error & Sendable]
         var calls: [Call] = []
     }
 
@@ -28,8 +29,12 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
     private let addBuildError: ASCError?
     private let reviewError: ASCError?
 
-    init(polls: [[ASCBuild]], groups: [ASCBetaGroup] = [], addBuildError: ASCError? = nil, reviewError: ASCError? = nil) {
-        state = Mutex(State(polls: polls))
+    /// The first polls throw `pollErrors`, in order, before `polls` are answered.
+    init(
+        polls: [[ASCBuild]], pollErrors: [any Error & Sendable] = [], groups: [ASCBetaGroup] = [],
+        addBuildError: ASCError? = nil, reviewError: ASCError? = nil
+    ) {
+        state = Mutex(State(polls: polls, pollErrors: pollErrors))
         self.groups = groups
         self.addBuildError = addBuildError
         self.reviewError = reviewError
@@ -39,8 +44,9 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
     var pollCount: Int { calls.filter { if case .builds = $0 { true } else { false } }.count }
 
     func builds(appID: String, version: String?) async throws -> [ASCBuild] {
-        state.withLock {
+        try state.withLock {
             $0.calls.append(.builds(appID: appID, version: version))
+            if !$0.pollErrors.isEmpty { throw $0.pollErrors.removeFirst() }
             return $0.polls.count > 1 ? $0.polls.removeFirst() : ($0.polls.first ?? [])
         }
     }
@@ -165,6 +171,24 @@ private final class StageLog: Sendable {
         let plist = try PropertyListSerialization.propertyList(
             from: Data(contentsOf: URL(fileURLWithPath: fixture.layout.upload + "/ExportOptions.plist")), format: nil)
         #expect((plist as? [String: Any])?["destination"] as? String == "upload")
+    }
+
+    @Test func aPassingPollFailureIsAskedAgain() async throws {
+        let fixture = try Fixture()
+        let client = FakeAppStoreConnect(
+            polls: [[build("b1", "VALID")]],
+            pollErrors: [URLError(.timedOut), ASCError.http(status: 503, body: "")])
+        let output = try await fixture.run(TestFlightSettings(), fixture.context(client: client)).get()
+        #expect(client.pollCount == 3)
+        #expect(output.summary == "Build 311 (iOS) is VALID in TestFlight; groups: none")
+        #expect(fixture.log.all.contains { $0.hasPrefix("TestFlight processing: could not ask App Store Connect") })
+    }
+
+    @Test func aRefusedPollStillFails() async throws {
+        let fixture = try Fixture()
+        let client = FakeAppStoreConnect(polls: [[build("b1", "VALID")]], pollErrors: [ASCError.http(status: 403, body: "")])
+        let result = await fixture.run(TestFlightSettings(), fixture.context(client: client))
+        #expect(throws: ASCError.http(status: 403, body: "")) { try result.get() }
     }
 
     @Test func failedProcessingThrows() async throws {
