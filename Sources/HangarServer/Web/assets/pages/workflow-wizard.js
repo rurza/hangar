@@ -331,7 +331,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
           if (!name || takenNames.includes(name)) {
             nameInput.setAttribute('aria-invalid', 'true');
             nameInput.focus();
-            throw new Error(name ? `Another workflow is named “${name}”.` : 'Name the workflow.');
+            throw new Error(name ? `Another workflow is named “${name}”. Choose another name.` : 'Name the workflow.');
           }
           await onCreate(model());
           return true;

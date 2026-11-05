@@ -114,7 +114,17 @@ function workflowEditor({ app, stored: initial, context }) {
   // MARK: State
 
   function snapshot() {
-    return JSON.stringify(fileFromModels(models));
+    return snapshotOf(models);
+  }
+
+  /** `list` as a file, sorted by name, so the order of the models (a new workflow last) is no edit. */
+  function snapshotOf(list) {
+    return JSON.stringify(fileFromModels([...list].sort((a, b) => (a.name.trim() < b.name.trim() ? -1 : 1))));
+  }
+
+  /** Every name a new workflow can't take: the workflows on screen and those as last saved (one may be renamed). */
+  function takenNames() {
+    return unique([...models.map((other) => other.name.trim()), ...Object.keys(stored?.workflows?.workflows ?? {})]);
   }
 
   function isDirty() {
@@ -253,35 +263,40 @@ function workflowEditor({ app, stored: initial, context }) {
       loadSuggestion,
       groups,
       branches,
-      takenNames: models.map((other) => other.name.trim()),
+      takenNames: takenNames(),
       onBlank: () => {
-        const name = uniqueName('Default', models.map((other) => other.name.trim()));
+        const name = uniqueName('Default', takenNames());
         models = [...models, scratchWorkflow(name)];
         current = models.length - 1;
         selection = { kind: 'general' };
         banner = { kind: 'info', text: 'A blank workflow: fill in each item, then Save.' };
         renderEditor();
       },
+      // Only the new workflow is saved, beside the workflows as last saved. Unsaved edits to the others stay
+      // unsaved, so they still pass Save's checks first and Cancel still reverts them.
       onCreate: async (created) => {
-        const next = [...models, created];
-        const file = fileFromModels(next);
-        stored = await api.put(`${base}/workflow-file`, { yaml: workflowToYAML(file) });
-        // Unsaved edits to the other workflows were saved along with it.
-        models = modelsFromFile(stored.workflows);
-        saved = snapshot();
-        current = Math.max(0, models.findIndex((other) => other.name === created.name.trim()));
+        const name = created.name.trim();
+        if (takenNames().includes(name)) throw new Error(`Another workflow is named “${name}”. Choose another name.`);
+        const file = stored?.workflows ?? { version: 1, workflows: {} };
+        stored = await api.put(`${base}/workflow-file`, {
+          yaml: workflowToYAML({ ...file, workflows: { ...file.workflows, [name]: toWorkflow(created) } }),
+        });
+        const fresh = modelsFromFile(stored.workflows);
+        models = [...models, fresh.find((other) => other.name === name) ?? created];
+        saved = snapshotOf(fresh);
+        current = models.length - 1;
         selection = { kind: 'general' };
         view = 'list';
-        banner = savedBanner(created.name.trim(), { created: true });
+        banner = savedBanner(name, { created: true, othersUnsaved: isDirty() });
         renderEditor();
       },
     });
   }
 
   /** The next step once a workflow is saved: deploy it, or add a Mac first when there is none (review P1-2). */
-  function savedBanner(name, { created = false } = {}) {
+  function savedBanner(name, { created = false, othersUnsaved = false } = {}) {
     const noMac = machines !== null && machines.length === 0;
-    const what = created ? `“${name}” is created.` : `Saved “${name}”.`;
+    const what = `${created ? `“${name}” is created.` : `Saved “${name}”.`}${othersUnsaved ? ' Your other edits are not saved yet.' : ''}`;
     return {
       kind: 'success',
       text: noMac
