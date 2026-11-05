@@ -8,6 +8,8 @@ public struct HangarRequestContext: RemoteAddressRequestContext {
     public var coreContext: CoreRequestContextStorage
     /// The authenticated worker machine; set by `MachineAuth` on the worker routes, nil on the public ones.
     public var machine: Machine?
+    /// The job a job token is limited to (set by `MachineAuth` with the token's machine); nil for a machine token.
+    public var jobScope: UUID?
     /// The API token of the request, set by `APITokenAuth`; nil for the web UI, the CLI and the worker routes.
     public var apiToken: APIToken?
     /// The connected peer; the pairing rate limit counts failures per address.

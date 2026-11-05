@@ -20,6 +20,8 @@ public struct HangarServerApp: Sendable {
     public let machines: MachineRepository
     /// Bearer tokens for agents; only their hashes are stored.
     public let apiTokens: APITokenRepository
+    /// Tokens a job's VM uses instead of its machine's; only their hashes are stored.
+    public let jobTokens: JobTokenRepository
     public let variables: VariableRepository
     public let workflowFiles: WorkflowFileRepository
     public let numbers: BuildNumberService
@@ -77,6 +79,7 @@ public struct HangarServerApp: Sendable {
         builds = BuildRepository(database: database)
         machines = MachineRepository(database: database)
         apiTokens = APITokenRepository(database: database)
+        jobTokens = JobTokenRepository(database: database)
         workflowFiles = WorkflowFileRepository(database: database)
         let variables = VariableRepository(
             database: database, box: SecretBox(key: try MasterKey.loadOrCreate(at: configuration.masterKeyPath)))

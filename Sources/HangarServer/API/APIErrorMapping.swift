@@ -40,8 +40,8 @@ enum APIErrorMapping {
     }
 
     static func status(code: String) -> HTTPResponse.Status {
-        if code == "unauthorized" || code == "invalid_api_token" { return .unauthorized }
-        if code == "token_scope" { return .forbidden }
+        if code == "unauthorized" || code == "invalid_api_token" || code == "invalid_job_token" { return .unauthorized }
+        if code == "token_scope" || code == "job_token_scope" { return .forbidden }
         if code == "cross_site_request" || code == "invalid_pairing_code" || code == "local_only" { return .forbidden }
         if code == "too_many_attempts" { return .tooManyRequests }
         if ["worker_binary_missing", "host_name_unknown", "server_address_unusable"].contains(code) { return .serviceUnavailable }

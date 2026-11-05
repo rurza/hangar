@@ -2,7 +2,8 @@ import Foundation
 import HangarCore
 import Hummingbird
 
-/// The routes worker machines call, under `/api/v1/worker`, each authenticated by the machine's token.
+/// The routes worker machines call, under `/api/v1/worker`, each authenticated by the machine's token. A job's VM
+/// calls its job's own routes with a job token instead (`MachineAuth`, `JobTokenPolicy`).
 ///
 /// `GET /jobs/next` is the only response that carries variable values, and only to the machine the job is
 /// assigned to. Nothing here logs request bodies or the environment.
@@ -11,12 +12,16 @@ extension HangarServerApp {
     static let maxJobWait = 60
 
     func addWorkerRoutes(to api: APIGroup) {
-        let worker = api.group("worker").add(middleware: MachineAuth(machines: machines))
+        let worker = api.group("worker").add(middleware: MachineAuth(machines: machines, jobTokens: jobTokens))
 
         // `hangar-worker check`: is this token still a machine's? Never returns the token.
-        worker.get("me") { _, context in try Response.json(try context.requireMachine()) }
+        worker.get("me") { _, context in
+            try context.requireMachineToken()
+            return try Response.json(try context.requireMachine())
+        }
 
         worker.post("heartbeat") { request, context in
+            try context.requireMachineToken()
             let machine = try context.requireMachine()
             let input = try await request.decode(as: HeartbeatRequest.self, context: context)
             let now = now()
@@ -40,6 +45,7 @@ extension HangarServerApp {
         }
 
         worker.get("jobs/next") { request, context in
+            try context.requireMachineToken()
             let machine = try context.requireMachine()
             let wait = min(try request.integer("wait") ?? Self.defaultJobWait, Self.maxJobWait)
             guard let assignment = try await nextAssignment(machineID: machine.id, wait: .seconds(wait)) else {
@@ -117,10 +123,34 @@ extension HangarServerApp {
                     failureReason: result.failureReason, machineID: try context.requireMachine().id)
             else { throw try stateConflict(job.id, "cannot finish") }
             try builds.setOutputs(jobID: job.id, result.outputs)
+            try jobTokens.revoke(jobID: job.id)
             cancelRequests.clear(job.id)
             let finished = try publishChange(of: job)
             scheduler.poke()
             return try Response.json(finished)
+        }
+
+        // A token for the job's VM, in place of the machine token: only while the job is assigned or running here.
+        // Only the machine token can ask for one (`JobTokenPolicy`), and the response is the only place it appears.
+        worker.post("jobs/:id/token") { _, context in
+            try context.requireMachineToken()
+            let machine = try context.requireMachine()
+            let job = try workerJob(context)
+            guard job.status == .assigned || job.status == .running else {
+                throw APIError(
+                    code: "job_state_conflict", message: "Job \(job.id.uuidString) is \(job.status.rawValue) and gets no token.")
+            }
+            let token = try jobTokens.issue(jobID: job.id, machineID: machine.id, now: now())
+            return try Response.json(JobTokenResponse(token: token), status: .created)
+        }
+
+        // Revokes the tokens this machine was given for the job, e.g. once its VM is gone. Idempotent, and allowed
+        // after the job ended or moved to another machine (whose own tokens it leaves alone).
+        worker.delete("jobs/:id/token") { _, context in
+            try context.requireMachineToken()
+            let job = try job(context)
+            try jobTokens.revoke(jobID: job.id, machineID: try context.requireMachine().id)
+            return Response(status: .noContent)
         }
     }
 
@@ -216,10 +246,13 @@ extension HangarServerApp {
             environment: try variables.resolvedEntries(appID: app.id))
     }
 
-    /// The `{id}` job, which must be assigned to the authenticated machine.
+    /// The `{id}` job, which must be assigned to the authenticated machine, and be the job of a job token's scope.
     private func workerJob(_ context: HangarRequestContext) throws -> Job {
         let machine = try context.requireMachine()
         let job = try job(context)
+        if let scope = context.jobScope, scope != job.id {
+            throw APIError(code: "job_token_scope", message: "A job token can only report on its own job.")
+        }
         guard job.machineID == machine.id else {
             throw APIError(
                 code: "job_not_assigned_to_machine",

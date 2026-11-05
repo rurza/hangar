@@ -129,6 +129,19 @@ enum Migrations {
         migrator.registerMigration("v7") { db in
             try db.execute(sql: "ALTER TABLE machines ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
         }
+        // One-job tokens a VM uses instead of its machine's token (VM builds design): only the SHA-256 of each is
+        // stored. They go with their job, and with the machine they were issued to.
+        migrator.registerMigration("v8") { db in
+            try db.execute(sql: """
+                CREATE TABLE job_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                    machine_id TEXT NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+                    created_at DOUBLE NOT NULL
+                );
+                CREATE INDEX job_tokens_job ON job_tokens(job_id);
+                """)
+        }
         return migrator
     }
 }
