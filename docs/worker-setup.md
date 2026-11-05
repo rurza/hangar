@@ -25,7 +25,7 @@ Do these steps on every build Mac, as an administrator, in Terminal.
    ```sh
    curl -fsSL http://<tailnet-host>:8787/install | sh
    ```
-   and type the code when asked. Then the script hands over to `hangar-worker isolate`, which does the rest:
+   and type the code when asked. The script checks the downloaded `hangar-worker` against the SHA-256 the server wrote into it and stops with "SHA-256 mismatch" if they differ, whichever user it installs for. Then it hands over to `hangar-worker isolate`, which does the rest:
 
    - asks for your password once (`sudo`; creating a user needs an administrator);
    - creates the `hangar` user: a standard account, not an administrator, shell `/bin/zsh`, home `/Users/hangar`, with a **generated** password. You never make one up. The password is shown once and saved in your login keychain as `app.hangar.worker-account`; to see it again:
@@ -33,7 +33,7 @@ Do these steps on every build Mac, as an administrator, in Terminal.
      security find-generic-password -s app.hangar.worker-account -a hangar -w
      ```
      (or search Keychain Access for "Hangar build account"). Neither Hangar nor the worker stores or needs it. It reaches macOS on standard input, never in a command line;
-   - copies `hangar-worker` to `/Users/hangar/.local/bin`, installs the configuration (mode 0600) and the launch agent for `hangar`, and sets `/Users/hangar` to mode 0700;
+   - copies `hangar-worker` to `/Users/hangar/.local/bin`, installs the configuration (mode 0600, work directory `/Users/hangar/.hangar/worker`) and the launch agent for `hangar`, and sets `/Users/hangar` to mode 0700;
    - checks that `hangar` cannot read the server's `master.key` when the server runs on this Mac;
    - prints the one step macOS keeps for a person: **log in as `hangar` once** with fast user switching (the user menu in the menu bar, or Apple menu › Lock Screen › Switch User), click through the welcome screens, and switch back. Do not log out of `hangar`: builds run in that session, and the login is what unlocks its keychain after every reboot;
    - waits for that login, then confirms the agent runs as `hangar`, that the login keychain exists, and that Hangar sees the Mac heartbeat as `hangar`.
@@ -62,7 +62,7 @@ Do these steps on every build Mac, as an administrator, in Terminal.
 
    The server must have `hangar-worker` next to `hangar-server` (install-server.sh puts it there); otherwise the sheet says so and the script stops with "the server has no hangar-worker to hand out". The command needs the server's tailnet address: if you opened Hangar on `localhost`, replace that in the command.
 
-   **To update, run the command again** (the worker also updates itself when idle). As an administrator, it updates the `hangar` user's worker and restarts its agent. As the current user, the script installs the new binary and then runs `hangar-worker check`, which asks the server whether this Mac's token is still valid. If it is (and the configuration points at the same server), it skips the code, restarts the agent, runs the doctor and prints "Updated <name>". If the machine was removed in Hangar, it asks for a new code and enrolls the Mac again. If the server cannot be reached, it stops without enrolling anything. A configuration for a different server is replaced after a warning.
+   **To update, run the command again** (the worker also updates itself when idle, never during a build). As an administrator, it updates the `hangar` user's worker and restarts its agent with SIGTERM, so a build in flight is cancelled with the reason (see [Where builds happen](#where-builds-happen)). As the current user, the script installs the new binary and then runs `hangar-worker check`, which asks the server whether this Mac's token is still valid. If it is (and the configuration points at the same server), it skips the code, restarts the agent, runs the doctor and prints "Updated <name>". If the machine was removed in Hangar, it asks for a new code and enrolls the Mac again. If the server cannot be reached, it stops without enrolling anything. A configuration for a different server is replaced after a warning.
 
    `hangar-worker check [--config <file>]` exits 0 when the token is accepted (it prints the machine's name), 3 when the server refuses it, 4 when the server cannot be reached and 2 when the configuration cannot be read.
 
@@ -90,16 +90,22 @@ Do these steps on every build Mac, as an administrator, in Terminal.
    ```
    It should show Xcode 27.2, `canSignWithoutPrompt: true`, and `tools` containing `xcodegen` and `brew`. The Machines page shows **Runs as** `hangar`; any other user gets a warning there and in the worker's log.
 
+## Where builds happen
+
+Checkouts, DerivedData, job folders and each job's `TMPDIR` go to the worker's work directory, which never has a space in its path: projects written for Xcode Cloud (`/Volumes/workspace/repository`) often use `$CI_PRIMARY_REPOSITORY_PATH` unquoted. For the `hangar` user it is `/Users/hangar/.hangar/worker` (mode 0700, inside the 0700 home), named in its `config.json`. For a worker installed as another user it is by default `~/.hangar/worker` for the usual configuration under `~/Library/Application Support/Hangar/worker` (the data directory itself when its path has no spaces). Set another with `hangar-worker setup --work-dir <path>` or `"workDirectory"` in `config.json`; for `hangar`, keep it inside `/Users/hangar`. The first time a worker starts with a new work directory it moves the cached workspaces there (a rename, instant on the same volume), so the next build fetches instead of cloning; Xcode rebuilds what it keyed to the old path once.
+
+On SIGTERM (`launchctl bootout`, a restart, an update run by an administrator) the worker stops asking for jobs, cancels a running build with the reason ("hangar-worker on <Mac> was stopped (SIGTERM) during archive"), cleans up and exits. Check the Machines page for running jobs before restarting a worker by hand. As an administrator, the `hangar` user's agent is stopped with `sudo launchctl kill SIGTERM gui/$(id -u hangar)/app.hangar.worker` (launchd starts it again) or `sudo launchctl bootout gui/$(id -u hangar)/app.hangar.worker`.
+
 ## Move an existing worker to the `hangar` user
 
-A worker installed as your own user moves without a new pairing code: same machine in Hangar, same token, and its build cache (checkouts and DerivedData) moves too, so the next build is warm. Run the install command again as that administrator, or, with the worker already on your `PATH`:
+A worker installed as your own user moves without a new pairing code: same machine in Hangar, same token, and its build cache (checkouts and DerivedData) moves too, so the next build fetches instead of cloning. Run the install command again as that administrator, or, with the worker already on your `PATH`:
 
 ```sh
 hangar-worker isolate --dry-run   # what it would do
 hangar-worker isolate
 ```
 
-Run it when nothing important is building: it stops your user's agent, and a build in flight stops with it. It creates `hangar` if needed (as above), copies the worker and its configuration into that user with the data directory rewritten to `/Users/hangar/Library/Application Support/Hangar/worker`, moves `workspaces/` there (`mv` on one volume; a copy, then removal, across volumes), removes leftover `jobs/`, waits for the `hangar` login, and once Hangar sees the Mac heartbeat as `hangar` removes your user's launch agent and configuration. If that confirmation does not come, both stay, and the error says how to start the old agent again. It never copies your login keychain, `~/Library/Developer`, `~/Library/Caches` or `~/.gitconfig`: the first archive as `hangar` creates its own signing identity, so allow `codesign` once in Keychain Access as `hangar` if the doctor asks. It never moves or deletes the `hangar-worker` next to `hangar-server` (the file other Macs download) or one in `/usr/local/bin`.
+Run it when nothing important is building: it stops your user's agent, and a build in flight is cancelled with it ("stopped (SIGTERM)"). It creates `hangar` if needed (as above), copies the worker and its configuration into that user with the data directory rewritten to `/Users/hangar/Library/Application Support/Hangar/worker` and the work directory to `/Users/hangar/.hangar/worker`, and moves each app's workspace from your work directory (`~/.hangar/worker/workspaces`, and from the data directory's `workspaces/` if an older worker left one there) into `/Users/hangar/.hangar/worker/workspaces` (`mv` on one volume; a copy, then removal, across volumes). An app `hangar` already has keeps its copy. As when the work directory moves within one user, the parts of DerivedData that record the old path are dropped (`DerivedData/Build`, and `workspace-state.json`, `artifacts` and `checkouts` under `SourcePackages`); the package mirrors in `SourcePackages/repositories` are kept, and Xcode rebuilds the rest once. Everything moved is given to `hangar`. It removes leftover `jobs/` and `tmp/` and your emptied `~/.hangar/worker`, waits for the `hangar` login, and once Hangar sees the Mac heartbeat as `hangar` removes your user's launch agent and configuration. If that confirmation does not come, both stay, and the error says how to start the old agent again. It never copies your login keychain, `~/Library/Developer`, `~/Library/Caches` or `~/.gitconfig`: the first archive as `hangar` creates its own signing identity, so allow `codesign` once in Keychain Access as `hangar` if the doctor asks. It never moves or deletes the `hangar-worker` next to `hangar-server` (the file other Macs download) or one in `/usr/local/bin`.
 
 When the server runs on the same Mac, it stays your user's; the worker becomes `hangar`. If `hangar` can read the server's `master.key`, the command stops before moving anything and prints the `chmod 700` to run on the server's data directory. **Use This Mac for Builds** on the setup page shows this command instead of installing the worker as the server's user.
 
@@ -117,4 +123,4 @@ Variables marked secret are masked in every log line and are never passed to `xc
 
 ## Crash recovery
 
-When the worker starts it removes job directories left in `<data directory>/jobs/` by a previous crash, wiping each one's secrets first. The cached per-app checkouts are kept.
+When the worker starts it removes job directories left in `<work directory>/jobs/` (and an older `<data directory>/jobs/`) by a previous crash, wiping each one's secrets first, and the job `TMPDIR`s left in `<work directory>/tmp/`. The cached per-app checkouts are kept.

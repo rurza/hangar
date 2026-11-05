@@ -124,6 +124,19 @@ What exists today is a convention, not an isolation boundary.
   is why the default path happens to be private. The home directory is mode 0755
   and group `staff`, so files a job writes directly under the home are readable
   by every other account.
+- *(revised for 0.6.0)* Since 0.6.0 the job's files live in a separate work
+  directory without spaces, `WorkerConfiguration.resolvedWorkDirectory`: by
+  default `~/.hangar/worker` for the usual data directory. It holds
+  `workspaces/`, `jobs/` and `tmp/<job>` (each job's `TMPDIR`); the data
+  directory keeps only `config.json`. On the first start with a new work
+  directory, `WorkDirectoryMigration` moves `workspaces/` there and drops the
+  parts of DerivedData that record the old absolute path (`DerivedData/Build`,
+  `SourcePackages/workspace-state.json`, `artifacts`, `checkouts`; the git
+  mirrors in `SourcePackages/repositories` stay). SIGTERM stops the worker
+  cleanly: no new jobs, a running job is cancelled with the reason and cleans
+  up, and a self-update never restarts while a job poll is in flight. The curl
+  install checks the downloaded binary against the SHA-256 the server put in
+  the script.
 - The worker process's umask is launchd's, normally 022. A hook that writes
   `/tmp` leaves a world-readable file owned by whoever the worker is.
 - Git does not store the GitHub token. `Checkout` sets an in-environment
@@ -286,9 +299,13 @@ sleep (`pmset`, already in the worker setup): sleep suspends both sessions.
 
 After the login it waits for `launchctl print gui/<uid>/app.hangar.worker` to
 say `state = running`, and bootstraps the agent itself if the login did not
-load it. When the session already existed (a rerun), it restarts a loaded
-agent onto the new binary (`launchctl kickstart -k`) or bootstraps an unloaded
-one. It reports whether `~/Library/Keychains/login.keychain-db` exists: the
+load it. When the session already existed (a rerun or an update), it restarts
+a loaded agent onto the new binary the way launchd stops it: `launchctl kill
+SIGTERM`, which the worker handles by cancelling a running build with the
+reason and cleaning up; once the pid in `launchctl print` has changed, KeepAlive
+has started the new binary (`launchctl kickstart` only if it is not running
+yet). Only a worker still running after the wait gets `kickstart -k`. An
+unloaded agent is bootstrapped. It reports whether `~/Library/Keychains/login.keychain-db` exists: the
 login creates and unlocks it.
 
 *(revised)* No FileVault secure token is granted. A user without one cannot
@@ -330,11 +347,11 @@ itself is 0644:
 | Home | `/Users/hangar` | Mode 0700, owner `hangar`, group `staff`. No ACL that grants another user read or execute. |
 | Login keychain and Apple Development identity | `~/Library/Keychains` | Created by the GUI login. Persistent across jobs, as the 2026-11-04 design requires. Not copied from the console user. |
 | Xcode account, provisioning profiles, per-user simulator devices | `~/Library/Developer` | Devices are small. Runtimes are the shared ones above, not a copy of this tree. An individual App Store Connect key still means signing in to Xcode once as `hangar`. |
-| Worker token | `~/Library/Application Support/Hangar/worker/config.json` | Mode 0600, directory 0700, as `WorkerConfiguration.write` already does. |
-| Checkouts and DerivedData | `…/worker/workspaces/<appSlug>/repository` and `…/DerivedData` | One warm cache per app per machine. Not the console user's DerivedData, and not a world-readable directory under `/Library`. |
+| Worker token | `~/Library/Application Support/Hangar/worker/config.json` | Mode 0600, directory 0700, as `WorkerConfiguration.write` already does. The configuration names the work directory explicitly. |
+| Checkouts and DerivedData | `~/.hangar/worker/workspaces/<appSlug>/repository` and `…/DerivedData` | *(revised)* The work directory, no spaces in the path, mode 0700 like `~/.hangar`. One warm cache per app per machine. Not the console user's DerivedData, and not a world-readable directory under `/Library`. |
 | This user's package and Xcode caches | `~/Library/Caches` (including `org.swift.swiftpm`) | Warm across jobs. Not shared with the console user: that cache can hold their source and credentials, and a shared cache would be readable both ways. The disk cost is one cache, not an Xcode. |
-| Job secrets, archive, export, result bundle | `…/worker/jobs/<jobID>/` | Secrets stay 0600 in a 0700 directory. The job directory is removed at cleanup, as today. |
-| Temp | `<job directory>/tmp` | Already `TMPDIR` for the job (`CIEnvironment.temporaryDirectory`). Not `/tmp`. |
+| Job secrets, archive, export, result bundle | `~/.hangar/worker/jobs/<jobID>/` | Secrets stay 0600 in a 0700 directory. The job directory is removed at cleanup, as today. |
+| Temp | `~/.hangar/worker/tmp/<job>` | `TMPDIR` for the job, outside the job directory since 0.6.0. Not `/tmp`. Swept at start. |
 | Git credentials | nowhere on disk | Unchanged: in-environment helper, helpers from gitconfig cleared for `github.com`, no `osxkeychain`. The private home means a credential file a hook writes anyway is not readable by the console user. |
 | Worker binary the agent runs | `/Users/hangar/.local/bin/hangar-worker` | Mode 0755, directory writable by `hangar`. This is a copy of the one binary the server hands out, not a second build and not the server's file. |
 | Logs | `~/Library/Logs/Hangar/worker.log` | The plist's `StandardOutPath` and `StandardErrorPath`. |
@@ -365,11 +382,10 @@ every start is slow and races a build):
    themselves. Doctor and `setup` do not change umask: they do not run repo
    code. The umask is applied in the `run` command, not in `WorkerLoop`, so
    unit tests do not change the umask of the test process.
-2. `prepareDataDirectory` creates the data directory and then `chmod`s it to
-   0700. Passing `posixPermissions` to `createDirectory` is not enough: an
-   existing directory keeps its mode, and the attribute is subject to umask.
-   The same `chmod` covers `workspaces` and `jobs` only for the directories
-   `prepareDataDirectory` itself creates. It does not walk the cache.
+2. `prepareDataDirectory` creates the data directory and the work directory
+   and then `chmod`s each to 0700. Passing `posixPermissions` to
+   `createDirectory` is not enough: an existing directory keeps its mode, and
+   the attribute is subject to umask. It does not walk the cache.
 3. Only when `NSUserName()` is `hangar` and the home is `/Users/hangar`, `run`
    sets that home to mode 0700 and strips ACLs (`chmod -N`, then `chmod 700`).
    A worker running as any other user does not touch that user's home. Tests
@@ -392,7 +408,7 @@ Unchanged pipeline, unchanged paths, with the uid and the umask above.
 - `DEVELOPER_DIR` is the shared Xcode the workflow selected. `PATH` is
   unchanged (`/usr/bin:/bin:/usr/sbin:/sbin` plus Homebrew's prefixes).
 - The checkout and DerivedData are that user's warm per-app cache.
-- `TMPDIR` is the job directory's `tmp`, mode 0700, removed with the job.
+- `TMPDIR` is `~/.hangar/worker/tmp/<job>`, mode 0700, removed with the job.
 - The GitHub token exists only in the environment of git and of
   `xcodebuild -resolvePackageDependencies`, as today.
 - The App Store Connect key is an as-file secret under the job directory, wiped
@@ -429,7 +445,10 @@ For an administrator (not `hangar`, no `HANGAR_AS_CURRENT_USER=1`) the script
 downloads the worker into a private temporary directory, enrolls into a
 configuration there when this Mac is not enrolled yet (the token never leaves
 that directory except through `isolate`, which installs it mode 0600 into the
-`hangar` home), and runs `hangar-worker isolate --binary <download> [--config
+`hangar` home), checks the download against the SHA-256 the server wrote into
+the script (`download_worker`, the same check as a current-user install, so a
+binary that is not the announced one never reaches `isolate` or `hangar`), and
+runs `hangar-worker isolate --binary <download> [--config
 <enrolled>]` on the terminal. When the administrator's own worker is enrolled
 with this server, `isolate` moves it instead (no pairing). When `hangar`
 already has a configuration for this server (`sudo test -f`, `sudo plutil
@@ -443,7 +462,12 @@ The `hangar` agent's binary is `/Users/hangar/.local/bin/hangar-worker`
 (`HANGAR_BIN_DIR` applies only to current-user installs). The plist's program is that binary. Idle
 self-update can replace it, because `hangar` owns the directory, and then
 re-execs. The running process keeps the old inode until the exec, as it does
-today. Jobs are not interrupted: the update waits until `runningIDs` is empty.
+today. Jobs are not interrupted: the update waits until `runningIDs` is empty
+and no job poll is in flight. The re-exec keeps the uid, the umask and the
+ignored SIGTERM disposition until `run` installs its handlers again, so a
+stop during the update window is not lost as an unclean kill. An update run by
+the administrator (`isolate` again) restarts the agent with SIGTERM, as in
+*The user*.
 
 Do not point this plist at `/usr/local/bin/hangar-worker` when that file is
 root-owned. Self-update then fails with `unwritable` and the machine stays on
@@ -547,25 +571,41 @@ In order:
    does not chmod it.
 5. `sudo xcodebuild -runFirstLaunch` when still needed.
 6. `launchctl bootout gui/<old uid>/app.hangar.worker`, then wait until no
-   `hangar-worker run` is left for the old uid; stop if one is. An in-flight
-   build dies with that bootout. The operator runs this when nothing important
-   is building; the command says so.
+   `hangar-worker run` is left for the old uid; stop if one is. Bootout sends
+   SIGTERM: an in-flight build is cancelled with "stopped (SIGTERM)", reports
+   it and cleans up. The operator runs this when nothing important is
+   building; the command says so.
 7. `install -d -o hangar -g staff` the directories (0700 for Application
-   Support, the data directory and the logs; 0755 for `.local/bin` and
-   `LaunchAgents`). `install -m 755` the binary into
+   Support, the data directory, `~/.hangar`, the work directory
+   `~/.hangar/worker` and its `workspaces`, and the logs; 0755 for
+   `.local/bin` and `LaunchAgents`). `install -m 755` the binary into
    `/Users/hangar/.local/bin`. A copy: the server's `hangar-worker` is never
    moved, deleted, or used as the new plist's program.
 8. The configuration: the same `serverURL`, `token` and `maxConcurrentJobs`,
-   `dataDirectory` rewritten to the `hangar` data directory, staged mode 0600
+   `dataDirectory` rewritten to the `hangar` data directory and
+   `workDirectory` set to `/Users/hangar/.hangar/worker`, staged mode 0600
    in the invoker's private temp directory and installed with `install -o
    hangar -m 600`. The token is never on a command line or printed. A custom
-   `dataDirectory` outside the home is not preserved. With no configuration
+   `dataDirectory` or `workDirectory` outside the home is not preserved. With no configuration
    to move, `hangar` must already have one (update), or the run stops.
-9. Move `<old dataDirectory>/workspaces` with `mv` on one volume, or `ditto`
-   then `rm -rf` across volumes (it says DerivedData temporarily takes twice
-   its size); `chown -R hangar:staff`. An existing destination is left alone.
-   Remove the old `jobs/`. Never copy Xcode, `~/Library/Keychains`,
-   `~/Library/Developer`, `~/Library/Caches` or `~/.gitconfig`.
+9. *(revised for 0.6.0)* Move the build cache into
+   `/Users/hangar/.hangar/worker/workspaces`, app by app, the way
+   `WorkDirectoryMigration` does within one user: from the old work directory
+   (the configured `workDirectory`, else the default for the old data
+   directory under the invoker's home, `~/.hangar/worker`), then from
+   `<old dataDirectory>/workspaces` for a worker that never ran 0.6.0. `mv` on
+   one volume, or `ditto` then `rm -rf` across volumes (it says the app
+   temporarily takes twice its size). An app `hangar` already has keeps its
+   copy, and the old one is named and left. Then, for every app that moved,
+   `sudo rm -rf` the parts of DerivedData that record the old absolute path
+   (`WorkDirectoryMigration.pathBoundCaches`: `DerivedData/Build`,
+   `SourcePackages/workspace-state.json`, `SourcePackages/artifacts`,
+   `SourcePackages/checkouts`; the git mirrors in
+   `SourcePackages/repositories` stay), and `chown -R hangar:staff` the
+   workspaces. Remove the old `jobs/` and `tmp/` (both directories' `jobs/`),
+   and the old work directory and `workspaces/` when they are empty. Never copy
+   Xcode, `~/Library/Keychains`, `~/Library/Developer`, `~/Library/Caches` or
+   `~/.gitconfig`.
 10. `chmod -N` and `chmod 700` the `hangar` home, then confirm the invoker can
     no longer traverse it (`access(X_OK)` must fail).
 11. Install the launch agent (the keys of `scripts/worker/app.hangar.worker.plist`,
@@ -588,7 +628,9 @@ In order:
     Homebrew.
 
 After this, idle self-update targets `/Users/hangar/.local/bin/hangar-worker`.
-The server's binary is untouched. The first build uses the moved DerivedData.
+The server's binary is untouched. The first build uses the moved checkout,
+package mirrors and module caches; Xcode rebuilds the dropped path-bound parts
+once.
 
 A Mac that was installed as `hangar` from the start does not run the script.
 
@@ -670,9 +712,11 @@ not a hole in this design.
    daemon leaves the keychain locked, and the scheduler then assigns no jobs.
 7. **Migration keeps the machine token and moves `workspaces/`. It does not
    copy the login keychain or re-pair.** The token is the enrollment.
-   `dataDirectory` inside the copied configuration is rewritten into the
-   `hangar` home, or the new process would keep writing the console user's
-   tree. The development identity is created again by the first archive.
+   `dataDirectory` and `workDirectory` inside the copied configuration are
+   rewritten into the `hangar` home, or the new process would keep writing the
+   console user's tree. The cache moves as `WorkDirectoryMigration` moves it,
+   so DerivedData that names the old path is dropped rather than left to fail
+   the next build. The development identity is created again by the first archive.
    Copying the old keychain would import the interactive user's keys.
 8. **Use This Mac for Builds no longer installs as the server user**, unless
    the server already runs as `hangar`. The server process must not `sudo`.
@@ -720,6 +764,54 @@ other home through `sudo`.
 5. **Refuse Use This Mac for Builds unless the server runs as `hangar`**
    (`409` `dedicated_user_required`; the setup page shows the command).
 6. **`docs/worker-setup.md`** describes the automated setup and the move.
+7. **Merge 0.6.0** *(revised)*: `isolate` moves the cache into the `hangar`
+   work directory `~/.hangar/worker` and drops path-bound DerivedData as
+   `WorkDirectoryMigration` does; the configuration names that work
+   directory; the install script's SHA-256 check covers the hand-off to
+   `isolate`; `prepareDataDirectory` makes both directories 0700; an update
+   restarts `hangar`'s agent with SIGTERM.
 
-None of it is verified on a real Mac yet; see the branch's verification list
-before merging.
+None of it is verified on a real Mac yet; the list below is to be done before
+merging.
+
+## Manual verification
+
+On a spare Mac (or after a backup), not on the live build Mac, with a Hangar
+0.6.0 worker enrolled as an administrator and a warm Legilo build in
+`~/.hangar/worker`:
+
+1. `hangar-worker isolate --dry-run`: only probes run; it prints the account
+   creation, the per-app `mv` into `/Users/hangar/.hangar/worker/workspaces`,
+   the `rm -rf` of the path-bound DerivedData parts and the `chown`.
+2. The curl install as that administrator: password shown once and found with
+   `security find-generic-password -s app.hangar.worker-account -a hangar -w`;
+   a server whose binary changed after the script was fetched stops with
+   "SHA-256 mismatch" before anything runs.
+3. Log in as `hangar` with fast user switching, switch back: `isolate` reports
+   the agent running, the keychain present and the heartbeat as `hangar`; the
+   Machines page shows **Runs as** `hangar`, same machine, no new pairing.
+4. As root: `/Users/hangar` is 0700 with no ACL; `~/.hangar` and
+   `~/.hangar/worker` are 0700 and owned by `hangar`; `config.json` is 0600 and
+   names `"workDirectory" : "/Users/hangar/.hangar/worker"`; the moved apps
+   have no `DerivedData/Build`, `workspace-state.json`, `artifacts` or
+   `checkouts`, but keep `SourcePackages/repositories`; nothing is left in the
+   administrator's `~/.hangar/worker`, and the old plist and configuration are
+   gone.
+5. Run a Legilo build: it fetches (no clone), resolves packages from the kept
+   mirrors, archives and signs (allow `codesign` once if the doctor asks).
+   The log says nothing about "artifact bundle info.json not found".
+6. A hook that writes `/tmp/x` leaves a 0600 file owned by `hangar`; as the
+   administrator, `cat /Users/hangar/.hangar/worker/...` is refused.
+7. Self-update: install a newer server, wait for an idle heartbeat; the agent
+   re-execs from `/Users/hangar/.local/bin/hangar-worker` and the Machines
+   page shows the new build. Start a build, then install again: the update
+   waits for the build.
+8. SIGTERM: during a build, run the curl install again as the administrator.
+   The build ends as cancelled with "hangar-worker on <Mac> was stopped
+   (SIGTERM)", its job and tmp folders are gone, and the agent comes back on
+   the new binary without `kickstart -k` (the log shows a clean stop).
+9. Reboot: after the administrator unlocks FileVault and switches to `hangar`
+   once, the worker heartbeats and signs again.
+10. Server on the same Mac: `isolate` stops when `hangar` can read
+    `master.key`, and **Use This Mac for Builds** shows the command instead of
+    installing.
