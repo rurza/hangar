@@ -117,7 +117,8 @@ function workflowSummary(workflow) {
   if (!actions.length) parts.push('No actions');
   const flight = testFlight(workflow);
   if (flight && archives.some((action) => action.export !== 'developer-id')) {
-    const groups = groupsOf(flight);
+    // Without waiting for processing the worker only uploads, so it adds the build to no group.
+    const groups = (flight['wait-for-processing'] ?? true) ? groupsOf(flight) : [];
     parts.push(groups.length ? `TestFlight: ${listText(groups)}` : 'TestFlight');
   } else if (archives.length) {
     parts.push('Download only');

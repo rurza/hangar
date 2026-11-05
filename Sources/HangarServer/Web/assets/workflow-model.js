@@ -236,7 +236,8 @@ function describeArchive(action, model) {
   const pieces = ['Archives ', strong(scheme), ' for ', strong(platformName(action.platform)),
     `, stamps the build number, ${signing} and keeps the ${file} as an artifact.`];
   if (model?.testflightOn && action.export !== 'developer-id') {
-    const groups = groupsText(model.testflight.groups);
+    // Without waiting for processing the worker only uploads: no groups, as describeTestFlight says.
+    const groups = model.testflight.waitForProcessing ? groupsText(model.testflight.groups) : '';
     pieces.push(groups ? ` Then it goes to TestFlight for ${groups}.` : ' Then it goes to TestFlight.');
   }
   return pieces;

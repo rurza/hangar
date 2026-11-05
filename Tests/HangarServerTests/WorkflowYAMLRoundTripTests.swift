@@ -331,16 +331,27 @@ import Testing
             """
             (() => {
               const model = modelsFromFile(input)[0];
+              model.actions.push({ ...blankAction('archive'), scheme: 'LegiloMobile', platform: 'ios' });
               model.testflight.groups = ['Internal'];
+              const sentences = () => [plainText(describeArchive(model.actions[5], model)),
+                plainText(describeArchive(model.actions[6], model)), plainText(describeTestFlight(model)),
+                workflowSteps(toWorkflow(model)).join(' '), workflowSummary(toWorkflow(model))];
+              const waiting = sentences();
               model.testflight.waitForProcessing = false;
-              return [plainText(describeArchive(model.actions[5], model)), plainText(describeTestFlight(model)),
-                workflowSteps(toWorkflow(model)).join(' ')].join('\\n');
+              return [...waiting, ...sentences()].join('\\n');
             })()
             """)
         let lines = output.components(separatedBy: "\n")
-        #expect(lines.count == 3)
+        #expect(lines.count == 10)
+        guard lines.count == 10 else { return }
+        // Waiting: the App Store archive, the TestFlight step, the steps and the summary all name the group.
         #expect(!lines[0].contains("TestFlight"), "\(lines[0])")
-        #expect(!lines[1].contains("Internal") && !lines[2].contains("for Internal"), "\(output)")
+        for line in lines[1...4] { #expect(line.contains("Internal"), "\(line)") }
+        // Not waiting: the worker only uploads, so nothing names the group, but the App Store archive still goes to TestFlight.
+        #expect(!lines[5].contains("TestFlight"), "\(lines[5])")
+        #expect(lines[6].hasSuffix("Then it goes to TestFlight."), "\(lines[6])")
+        for line in lines[7...9] { #expect(!line.contains("Internal"), "\(line)") }
+        #expect(lines[9].hasSuffix("· TestFlight"), "\(lines[9])")
     }
 
     /// Runs `workflowToYAML` from yaml.js in JXA with `file` encoded as the API encodes it.

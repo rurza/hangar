@@ -37,6 +37,7 @@ import Testing
             with: #""postActions": [{"name": "testflight", "settings": {"groups": ["Internal"], "wait-for-processing": false}, "requiresApproval": false}]"#)
         #expect(try Self.steps(workflow).hasSuffix(
             "Uploads both to TestFlight, where App Store Connect users with access can install them."))
+        #expect(try Self.summary(workflow).hasSuffix("· TestFlight"))
     }
 
     @Test func developerIDOnlyIsADownload() throws {
