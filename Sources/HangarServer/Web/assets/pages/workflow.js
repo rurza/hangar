@@ -6,16 +6,17 @@
 import { api, ApiError, seg } from '../api.js';
 import { addLeaveGuard, navigate } from '../router.js';
 import {
-  button, card, confirm, copyText, emptyState, h, page, relativeTime, replaceChildren, selectContents, sheet, switchField,
+  button, card, confirm, copyText, emptyState, h, page, plusIcon, relativeTime, replaceChildren, selectContents, sheet, switchField,
   toast,
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
 import {
   PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels,
-  itemProblems, modelsFromFile, platformName, scratchWorkflow, testDestinationText, uniqueName, workflowSummary,
+  itemProblems, modelsFromFile, platformName, scratchWorkflow, testDestinationText, toWorkflow, uniqueName,
 } from '../workflow-model.js';
+import { workflowSummary } from '../workflow-summary.js';
 import {
-  betaGroupsStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, plusGlyph, segmented, tile,
+  betaGroupsStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, plusGlyph, tile,
 } from './workflow-parts.js';
 import { openWorkflowWizard } from './workflow-wizard.js';
 import { openDeploySheet } from './deploy.js';
@@ -93,18 +94,19 @@ function workflowEditor({ app, stored: initial, context }) {
   if (stored) {
     loadSuggestion().catch(() => {});
     groups.load().then(() => { if (element.isConnected && models.length) renderEditor(); });
-  } else {
-    // The server remembers the answer for a while, so this is not a GitHub call on every visit.
-    api.get(`${base}/workflow-source`, { signal: context.signal }).then(
-      (status) => { repoFile = status?.repositoryHasWorkflowFile ?? null; },
-      (error) => { if (error.code !== 'aborted') repoFile = null; },
-    ).then(() => {
-      if (!element.isConnected || models.length) return;
-      renderStart();
-      // Coming from Add App: straight into the wizard, unless the repository has its own .hangar.yml.
-      if (context.query?.get('suggest') === '1' && repoFile !== true) openWizard();
-    });
   }
+  // Whether the repository has its own .hangar.yml, asked even with a stored workflow (`repository=1`): the start
+  // view offers it only when it exists, and Delete says what builds fall back to. The server remembers the answer
+  // for a while, so this is not a GitHub call on every visit.
+  api.get(`${base}/workflow-source?repository=1`, { signal: context.signal }).then(
+    (status) => { repoFile = status?.repositoryHasWorkflowFile ?? null; },
+    (error) => { if (error.code !== 'aborted') repoFile = null; },
+  ).then(() => {
+    if (!element.isConnected || models.length) return;
+    renderStart();
+    // Coming from Add App: straight into the wizard, unless the repository has its own .hangar.yml.
+    if (context.query?.get('suggest') === '1' && repoFile !== true) openWizard();
+  });
 
   // MARK: State
 
@@ -135,9 +137,10 @@ function workflowEditor({ app, stored: initial, context }) {
   };
   window.addEventListener('beforeunload', onBeforeUnload);
   const confirmDiscard = () => confirm({
-    title: 'Discard Unsaved Changes?',
+    title: 'Discard Changes?',
     message: 'Your edits to the workflow have not been saved.',
     confirmLabel: 'Discard',
+    cancelLabel: 'Keep Editing',
     destructive: true,
   });
   // Back and Forward: the router asks before leaving and restores this page's URL when the user stays.
@@ -185,7 +188,8 @@ function workflowEditor({ app, stored: initial, context }) {
       return;
     }
     titleNode.textContent = model().name.trim() || 'Untitled Workflow';
-    subtitleNode.textContent = workflowSummary(model());
+    // The same line the app page shows for this workflow.
+    subtitleNode.textContent = workflowSummary(toWorkflow(model()));
     const switcher = models.length > 1
       ? h('select', {
         class: 'select wf-switcher', 'aria-label': 'Workflow',
@@ -264,22 +268,24 @@ function workflowEditor({ app, stored: initial, context }) {
         current = Math.max(0, models.findIndex((other) => other.name === created.name.trim()));
         selection = { kind: 'general' };
         view = 'list';
-        banner = createdBanner(created.name.trim());
+        banner = savedBanner(created.name.trim(), { created: true });
         renderEditor();
       },
     });
   }
 
-  function createdBanner(name) {
+  /** The next step once a workflow is saved: deploy it, or add a Mac first when there is none (review P1-2). */
+  function savedBanner(name, { created = false } = {}) {
     const noMac = machines !== null && machines.length === 0;
+    const what = created ? `“${name}” is created.` : `Saved “${name}”.`;
     return {
       kind: 'success',
       text: noMac
-        ? `“${name}” is saved. Add a Mac to run it; meanwhile, fine-tune any step here.`
-        : `“${name}” is saved. Deploy it now, or fine-tune any step here.`,
+        ? `${what} Add a Mac to run it${created ? '; meanwhile, fine-tune any step here' : ''}.`
+        : `${what} Deploy it now${created ? ', or fine-tune any step here' : ''}.`,
       actions: noMac
         ? [h('a', { href: '/machines', 'data-link': true, class: 'button button-primary button-small' }, 'Add Mac…')]
-        : [button('Deploy…', { kind: 'primary', class: 'button button-primary button-small', onClick: () => openDeploySheet(app) })],
+        : [button('Deploy Now', { kind: 'primary', class: 'button button-primary button-small', onClick: () => openDeploySheet(app) })],
     };
   }
 
@@ -289,13 +295,19 @@ function workflowEditor({ app, stored: initial, context }) {
   const sidebar = h('nav', { class: 'wf-sidebar', 'aria-label': 'Workflow items' });
   const detail = card({ class: 'wf-detail', role: 'region', 'aria-live': 'off' });
   const bannerSlot = h('div', { class: 'wf-banner-slot' });
-  const status = h('p', { class: 'wf-savebar-status', 'aria-live': 'polite' });
-  const saveButton = button('Save', { kind: 'primary', onClick: save });
+  // The save bar: Cancel on the left, Save on the right, as on iOS. Sticky at the top of the editor on wide screens
+  // and above the tab bar on phones, so Save is always in reach.
+  const status = h('button', {
+    type: 'button', class: 'wf-savebar-status', 'aria-live': 'polite',
+    onClick: () => { if (status.dataset.problems) showFirstProblem(); },
+  });
+  const saveButton = button('Save', { kind: 'primary', onClick: save, 'aria-describedby': 'wf-save-status' });
+  status.id = 'wf-save-status';
+  const cancelButton = button('Cancel', { kind: 'plain', class: 'button button-plain wf-cancel', onClick: cancelEdits });
   const savebar = h('div', { class: 'wf-savebar' },
+    cancelButton,
     status,
-    h('div', { class: 'wf-savebar-actions' },
-      button('Show .hangar.yml', { kind: 'plain', onClick: showYAML }),
-      saveButton));
+    h('div', { class: 'wf-savebar-actions' }, saveButton));
   editor.append(sidebar, detail);
 
   function renderEditor({ focusDetail = false } = {}) {
@@ -307,7 +319,7 @@ function workflowEditor({ app, stored: initial, context }) {
     if (selection.kind === 'action' && !model().actions[selection.index]) selection = { kind: 'general' };
     if (selection.kind === 'testflight' && !model().testflightOn) selection = { kind: 'general' };
     editor.dataset.view = view;
-    if (!body.contains(editor)) replaceChildren(body, bannerSlot, editor, savebar);
+    if (!body.contains(editor)) replaceChildren(body, savebar, bannerSlot, editor);
     renderBanner();
     renderSidebar();
     renderDetail();
@@ -319,14 +331,22 @@ function workflowEditor({ app, stored: initial, context }) {
   function refresh() {
     updateChrome();
     renderSidebar();
-    const found = allProblems(problemsOf());
+    const found = models.flatMap((_, index) => allProblems(problemsOf(index)));
     const dirty = isDirty();
-    saveButton.disabled = busy || !dirty;
+    // With problems Save stays off, and the status says why and jumps to the first one.
+    saveButton.disabled = busy || !dirty || found.length > 0;
+    cancelButton.disabled = busy || !dirty;
     status.classList.toggle('wf-has-problems', dirty && found.length > 0);
+    status.disabled = !(dirty && found.length > 0);
+    if (dirty && found.length) status.dataset.problems = 'true';
+    else delete status.dataset.problems;
     status.textContent = busy ? 'Saving…'
       : dirty
-        ? found.length ? `${found.length} ${found.length === 1 ? 'problem' : 'problems'} to fix before saving` : (saved === null ? 'Not saved yet' : 'Unsaved changes')
+        ? found.length ? `${found.length === 1 ? 'Fix 1 problem' : `Fix ${found.length} problems`} to save ›` : (saved === null ? 'Not saved yet' : 'Unsaved changes')
         : `Saved ${relativeTime(stored?.updatedAt)}`;
+    // Unsaved changes show in the title and the browser tab too.
+    titleNode.classList.toggle('wf-dirty', dirty);
+    document.title = `${dirty ? '• ' : ''}${models.length ? model().name.trim() || 'Workflow' : 'Workflow'} – Hangar`;
   }
 
   function changed() {
@@ -438,7 +458,7 @@ function workflowEditor({ app, stored: initial, context }) {
       for (const [platform, label] of PLATFORMS) {
         const available = !known || known.has(platform);
         items.push({
-          icon: kind, label, disabled: !available, detail: available ? null : 'No scheme for this platform',
+          icon: kind, label, disabled: !available, detail: available ? null : `No scheme for ${label} in this repository`,
           onSelect: () => addAction(kind, platform),
         });
       }
@@ -473,7 +493,7 @@ function workflowEditor({ app, stored: initial, context }) {
   function addMenu(label, items) {
     const trigger = h('button', {
       type: 'button', class: 'wf-icon-button', 'aria-label': label, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
-    }, plusGlyph());
+    }, plusIcon());
     trigger.addEventListener('click', () => {
       if (closeMenu) {
         closeMenu();
@@ -613,7 +633,19 @@ function workflowEditor({ app, stored: initial, context }) {
         wfField({ label: 'Name', control: nameInput }),
         wfField({ label: 'Repository', control: h('div', { class: 'wf-readonly' }, h('a', { href: repository, target: '_blank', rel: 'noopener' }, repository.replace(/^https:\/\//, ''), ' ↗')) }),
         project,
-        h('div', null, removeButton)),
+        wfField({
+          label: 'As a file',
+          control: h('div', null, button('Show .hangar.yml', { kind: 'plain', class: 'button button-plain wf-flush-start', onClick: showYAML })),
+          hint: 'The workflow as YAML, to commit to the repository if you like.',
+        }),
+        h('div', { class: 'wf-field wf-danger-zone' }, removeButton,
+          models.length === 1 && stored
+            ? h('p', { class: 'wf-field-hint' }, repoFile === true
+              ? `Without it, ${app.name} builds with the .hangar.yml in its repository.`
+              : repoFile === false
+                ? `Without it, ${app.name} can’t build: the repository has no .hangar.yml.`
+                : `Without it, ${app.name} needs a .hangar.yml in its repository to build.`)
+            : null)),
     };
   }
 
@@ -742,29 +774,35 @@ function workflowEditor({ app, stored: initial, context }) {
           changed();
         },
       }),
-      button('Delete…', { kind: 'plain', class: 'button button-plain button-small wf-destructive', onClick: () => removeAction(index) }),
     ];
     const explainBox = h('div', null, explain(isTest ? describeTest(action) : describeArchive(action, target)));
     const redraw = () => {
       replaceChildren(explainBox, explain(isTest ? describeTest(action) : describeArchive(action, target)));
       changed();
     };
-    const platforms = availablePlatforms(action.platform);
-    const platform = wfField({
-      label: 'Platform',
-      control: segmented({
-        label: 'Platform', value: action.platform, options: platforms.map((p) => [p, platformName(p)]),
-        onChange: (value) => {
-          action.platform = value;
-          const schemes = schemesFor(value, action.kind).map((scheme) => scheme.name);
-          if (schemes.length && !schemes.includes(action.scheme)) action.scheme = schemes[0];
-          if (action.export === 'developer-id' && value !== 'macos') action.export = 'app-store-connect';
-          renderDetail();
-          changed();
-          detail.querySelector(`.wf-segmented [data-value="${value}"]`)?.focus();
-        },
-      }),
-    });
+    // Platform first: a pop-up of every platform, those without a detected scheme greyed with the reason. The scheme
+    // list below follows it; a scheme that doesn't build for the new platform is cleared, to be picked again.
+    const known = schemePlatforms();
+    const platformSelect = h('select', {
+      class: 'select',
+      onChange: () => {
+        const value = platformSelect.value;
+        action.platform = value;
+        const schemes = schemesFor(value, action.kind).map((scheme) => scheme.name);
+        if (known && !schemes.includes(action.scheme)) action.scheme = '';
+        if (action.export === 'developer-id' && value !== 'macos') action.export = 'app-store-connect';
+        renderDetail();
+        changed();
+        const schemeSelect = detail.querySelectorAll('.wf-form select')[1];
+        (action.scheme ? detail.querySelector('.wf-form select') : schemeSelect)?.focus();
+      },
+    }, PLATFORMS.map(([value, label]) => {
+      const available = !known || known.has(value) || value === action.platform;
+      return h('option', { value, disabled: !available },
+        available ? label : `${label} — no scheme for ${label} in this repository`);
+    }));
+    platformSelect.value = action.platform;
+    const platform = wfField({ label: 'Platform', control: platformSelect });
     const scheme = schemeField(action, redraw);
     const fields = isTest ? testFields(action, redraw) : [distributionField(action, target, redraw)];
     return {
@@ -772,7 +810,12 @@ function workflowEditor({ app, stored: initial, context }) {
         icon: isTest ? 'test' : 'archive', title: actionTitle(action),
         tools,
       }),
-      body: h('div', { class: 'wf-form' }, explainBox, platform, scheme, fields),
+      // The destructive action comes last, apart from the rest.
+      body: h('div', { class: 'wf-form' }, explainBox, platform, scheme, fields,
+        h('div', { class: 'wf-danger-zone' },
+          button(`Delete ${isTest ? 'Test' : 'Archive'} Action…`, {
+            kind: 'plain', class: 'button button-plain wf-destructive wf-flush-start', onClick: () => removeAction(index),
+          }))),
     };
   }
 
@@ -898,70 +941,67 @@ function workflowEditor({ app, stored: initial, context }) {
       replaceChildren(explainBox, explain(describeTestFlight(target)));
       changed();
     };
-    const tools = [button('Delete…', { kind: 'plain', class: 'button button-plain button-small wf-destructive', onClick: removeTestFlight })];
-    const groupsField = h('div', { class: 'wf-field' });
-    const drawGroups = () => replaceChildren(groupsField,
-      h('span', { class: 'wf-field-label' }, 'Groups'),
-      groupPicker({ store: groups, selected: t.groups, onChange: () => { redraw(); renderSidebar(); }, disabled: !t.waitForProcessing }));
-    drawGroups();
-
-    const timeout = h('input', {
-      class: 'input wf-number', type: 'number', inputmode: 'numeric', min: '1', step: '1', value: t.timeout, id: 'wf-timeout',
-      'aria-invalid': /^[1-9]\d*$/.test(t.timeout.trim()) ? null : 'true',
-      onInput: (event) => {
-        t.timeout = event.target.value;
-        timeout.setAttribute('aria-invalid', /^[1-9]\d*$/.test(t.timeout.trim()) ? 'false' : 'true');
-        changed();
-      },
-    });
-    const timeoutRow = h('div', { class: 'wf-dependent-note' },
-      h('div', { class: 'wf-input-row' },
-        h('label', { class: 'wf-field-hint', for: 'wf-timeout' }, 'Give up after'), timeout, h('span', { class: 'wf-suffix' }, 'minutes')));
     const files = suggestion?.whatToTestFiles ?? [];
     const locales = files.map((path) => path.replace(/^.*WhatToTest\./, '').replace(/\.txt$/, ''));
-    const flags = h('div', { class: 'wf-switches' });
-    const drawFlags = () => {
+    // One grouped box: "Wait for processing", and nested under it, indented to its label, everything that needs the
+    // processed build. With the wait off the nested settings go, and a line says why.
+    const box = h('div', { class: 'wf-switches' });
+    function draw(focusWait) {
       const wait = switchField({
         label: 'Wait for processing',
-        hint: 'Hangar waits for App Store Connect to process the build (usually 5–30 minutes) so it can add it to groups.',
+        hint: 'Hangar waits for App Store Connect to process the build (usually 5–30 minutes) so it can hand it to testers.',
         checked: t.waitForProcessing,
         onChange: (on) => {
           t.waitForProcessing = on;
-          drawFlags();
-          drawGroups();
+          draw(true);
           redraw();
-          flags.querySelector('input')?.focus();
         },
       });
-      const whatToTest = switchField({
-        label: 'What to Test',
-        hint: suggestion
-          ? files.length
-            ? `From TestFlight/WhatToTest.<locale>.txt next to the project: found ${listText(locales)}.`
-            : 'From TestFlight/WhatToTest.<locale>.txt next to the project. The repository has none yet, so nothing is set.'
-          : 'From TestFlight/WhatToTest.<locale>.txt next to the project.',
-        checked: t.whatToTest, disabled: !t.waitForProcessing,
-        onChange: (on) => { t.whatToTest = on; changed(); },
-      });
-      const review = switchField({
-        label: 'Submit for external review',
-        hint: 'Sends the build to Beta App Review, which external groups need.',
-        checked: t.submitForExternalReview, disabled: !t.waitForProcessing,
-        onChange: (on) => { t.submitForExternalReview = on; changed(); },
-      });
-      replaceChildren(flags,
-        wait.element,
-        t.waitForProcessing ? timeoutRow : h('p', { class: 'wf-dependent-note' }, 'Groups, What to Test and review need processing to finish, so they are off.'),
-        whatToTest.element,
-        review.element);
-    };
-    drawFlags();
+      let nested;
+      if (t.waitForProcessing) {
+        const minutes = /^[1-9]\d*$/.test(t.timeout.trim()) ? t.timeout.trim() : '60';
+        const choices = ['30', '60', '120'].includes(minutes) ? ['30', '60', '120'] : ['30', '60', '120', minutes];
+        const timeout = h('select', {
+          class: 'select wf-timeout', id: 'wf-timeout',
+          onChange: () => { t.timeout = timeout.value; changed(); },
+        }, choices.map((value) => h('option', { value }, value === '120' ? '2 hours' : `${value} minutes`)));
+        timeout.value = minutes;
+        const groupsField = h('div', { class: 'wf-field' },
+          h('span', { class: 'wf-field-label' }, 'Groups'),
+          groupPicker({ store: groups, selected: t.groups, onChange: () => { redraw(); renderSidebar(); } }));
+        const whatToTest = switchField({
+          label: 'What to Test',
+          hint: suggestion
+            ? files.length
+              ? `From TestFlight/WhatToTest.<locale>.txt next to the project: found ${listText(locales)}.`
+              : 'From TestFlight/WhatToTest.<locale>.txt next to the project. The repository has none yet, so nothing is set.'
+            : 'From TestFlight/WhatToTest.<locale>.txt next to the project.',
+          checked: t.whatToTest,
+          onChange: (on) => { t.whatToTest = on; changed(); },
+        });
+        const review = switchField({
+          label: 'Submit for external review',
+          hint: 'Sends the build to Beta App Review, which external groups need.',
+          checked: t.submitForExternalReview,
+          onChange: (on) => { t.submitForExternalReview = on; changed(); },
+        });
+        nested = h('div', { class: 'wf-nested' },
+          h('div', { class: 'wf-inline-field' }, h('label', { class: 'wf-field-label', for: 'wf-timeout' }, 'Give up after'), timeout),
+          groupsField,
+          h('div', { class: 'wf-switch-list' }, whatToTest.element, review.element));
+      } else {
+        nested = h('p', { class: 'wf-nested wf-dependent-note' }, 'Groups, What to Test and review need the processed build, so they are off. The build still goes to TestFlight.');
+      }
+      replaceChildren(box, wait.element, nested);
+      if (focusWait) box.querySelector('input[role="switch"]')?.focus();
+    }
+    draw();
     return {
-      header: header({
-        icon: 'testflight', title: 'TestFlight Internal Testing', tools,
-      }),
-      body: h('div', { class: 'wf-form' }, explainBox, groupsField, flags,
-        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step waits for approval (requires-approval in the file).') : null),
+      header: header({ icon: 'testflight', title: 'TestFlight Internal Testing' }),
+      body: h('div', { class: 'wf-form' }, explainBox, box,
+        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step waits for approval (requires-approval in the file).') : null,
+        h('div', { class: 'wf-danger-zone' },
+          button('Delete Post-Action…', { kind: 'plain', class: 'button button-plain wf-destructive wf-flush-start', onClick: removeTestFlight }))),
     };
   }
 
@@ -979,6 +1019,58 @@ function workflowEditor({ app, stored: initial, context }) {
   }
 
   // MARK: Save, YAML and removal
+
+  /** Shows the first item with a problem (from the save bar's status). */
+  function showFirstProblem() {
+    for (let index = 0; index < models.length; index += 1) {
+      const found = problemsOf(index);
+      if (!allProblems(found).length) continue;
+      current = index;
+      selection = firstProblemItem(found);
+      view = 'detail';
+      renderEditor({ focusDetail: true });
+      detail.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      return;
+    }
+  }
+
+  /** Cancel: back to the workflow as last saved, after asking; a workflow never saved leaves for the app page. */
+  async function cancelEdits() {
+    if (!isDirty()) return;
+    const confirmed = await confirm({
+      title: 'Discard Changes?',
+      message: saved === null ? 'This workflow has not been saved.' : 'Your edits since the last save are lost.',
+      confirmLabel: 'Discard',
+      cancelLabel: 'Keep Editing',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    if (!stored) {
+      saved = snapshot();
+      navigate(base);
+      return;
+    }
+    const name = model()?.name.trim();
+    models = modelsFromFile(stored.workflows);
+    saved = snapshot();
+    current = Math.max(0, models.findIndex((other) => other.name === name));
+    selection = { kind: 'general' };
+    view = 'list';
+    banner = null;
+    renderEditor();
+    toast('Changes discarded', 'info');
+  }
+
+  // ⌘S (Ctrl-S elsewhere) saves, as in a document.
+  const onKeydown = (event) => {
+    if (event.key !== 's' || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    if (!models.length || document.querySelector('.sheet-backdrop')) return;
+    event.preventDefault();
+    if (!saveButton.disabled) save();
+    else if (status.dataset.problems) showFirstProblem();
+  };
+  document.addEventListener('keydown', onKeydown);
+  context.onCleanup(() => document.removeEventListener('keydown', onKeydown));
 
   async function save() {
     // Every workflow is checked; the first problem's item is shown.
@@ -1008,9 +1100,8 @@ function workflowEditor({ app, stored: initial, context }) {
       current = Math.max(0, models.findIndex((other) => other.name === name));
       saved = snapshot();
       busy = false;
-      banner = null;
+      banner = savedBanner(model().name.trim());
       renderEditor();
-      toast('Workflow saved', 'success');
     } catch (error) {
       busy = false;
       if (error.code === 'aborted') return;
@@ -1075,13 +1166,17 @@ function workflowEditor({ app, stored: initial, context }) {
       renderStart();
       return;
     }
-    const repositoryHasFile = await api.get(`${base}/workflow-source`).then((s) => s?.repositoryHasWorkflowFile, () => null);
+    const repositoryHasFile = repoFile === undefined || repoFile === null
+      ? await api.get(`${base}/workflow-source?repository=1`).then((s) => s?.repositoryHasWorkflowFile ?? null, () => null)
+      : repoFile;
     const confirmed = await confirm({
       title: `Delete “${name}”?`,
       message: repositoryHasFile === true
         ? `${app.name} builds with the .hangar.yml in its repository again.`
-        : `Without a workflow ${app.name} can’t build: its repository has no .hangar.yml.`,
-      confirmLabel: repositoryHasFile === true ? 'Delete' : 'Delete and Stop Builds',
+        : repositoryHasFile === false
+          ? `${app.name}’s repository has no .hangar.yml, so deploys fail until you set up a workflow again.`
+          : `${app.name} then builds with a .hangar.yml in its repository. Builds fail if it has none.`,
+      confirmLabel: repositoryHasFile === false ? 'Delete and Disable Builds' : 'Delete',
       destructive: true,
     });
     if (!confirmed) return;
@@ -1118,12 +1213,6 @@ function workflowEditor({ app, stored: initial, context }) {
     const schemes = schemesFor(platform, kind);
     if (kind === 'test') return (schemes.find((scheme) => scheme.isApplication && scheme.hasTests) ?? schemes.find((s) => s.hasTests) ?? schemes[0])?.name;
     return schemes.find((scheme) => scheme.isApplication)?.name ?? schemes[0]?.name;
-  }
-
-  /** Platforms a scheme exists for (all of them before the repository is read), and the action's own. */
-  function availablePlatforms(currentPlatform) {
-    const known = schemePlatforms();
-    return PLATFORMS.map(([platform]) => platform).filter((platform) => !known || known.has(platform) || platform === currentPlatform);
   }
 
   /** Xcode versions the Macs report, newest first, with the Macs that have each. */

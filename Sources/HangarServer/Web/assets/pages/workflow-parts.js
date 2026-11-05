@@ -2,7 +2,7 @@
 // and the TestFlight group picker with its "+ New Group".
 
 import { api, ApiError } from '../api.js';
-import { h, replaceChildren, spinner, svg } from '../ui.js';
+import { h, plusIcon, replaceChildren, spinner, svg } from '../ui.js';
 
 // MARK: Glyphs
 
@@ -33,8 +33,9 @@ export function tile(name, tone = name) {
   return h('span', { class: ['wf-tile', `wf-tone-${tone}`], 'aria-hidden': 'true' }, glyph(name));
 }
 
+/** The plus of an add row: ui.js's shared plus icon in a filled accent circle (22 px, the checkboxes' column). */
 export function plusGlyph() {
-  return svg('svg', { viewBox: '0 0 14 14', 'aria-hidden': 'true', focusable: 'false' }, svg('path', { d: 'M7 1.5v11M1.5 7h11' }));
+  return h('span', { class: 'wf-plus-circle', 'aria-hidden': 'true' }, plusIcon());
 }
 
 export function chevron(direction = 'right') {
@@ -99,27 +100,6 @@ export function checkRow({ title, detail, tag, tagWarning, checked, disabled, on
         h('span', { class: 'wf-check-title' }, title),
         detail ? h('span', { class: 'wf-check-detail' }, detail) : null),
       tag ? h('span', { class: ['wf-check-tag', tagWarning && 'wf-check-tag-warning'] }, tag) : null));
-}
-
-/** A segmented control of `options` (`[value, label, disabled?]`) as radios; `onChange(value)`. */
-export function segmented({ label, value, options, onChange }) {
-  const buttons = options.map(([optionValue, text, disabled]) => h('button', {
-    type: 'button', class: 'segment', role: 'radio', 'aria-checked': String(optionValue === value),
-    tabindex: optionValue === value ? '0' : '-1', disabled, dataset: { value: optionValue },
-    onClick: () => { if (optionValue !== value) onChange(optionValue); },
-  }, text));
-  const control = h('div', { class: 'segmented wf-segmented', role: 'radiogroup', 'aria-label': label }, buttons);
-  // Arrow keys move the choice, as in a radio group.
-  control.addEventListener('keydown', (event) => {
-    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-    const enabled = buttons.filter((b) => !b.disabled);
-    const index = enabled.indexOf(document.activeElement);
-    if (index < 0) return;
-    event.preventDefault();
-    const next = enabled[(index + (event.key === 'ArrowRight' ? 1 : enabled.length - 1)) % enabled.length];
-    onChange(next.dataset.value);
-  });
-  return control;
 }
 
 // MARK: TestFlight groups
@@ -206,7 +186,9 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
     ];
     const list = h('ul', { class: 'wf-checklist', 'aria-label': 'TestFlight groups' }, rows, addRow());
     replaceChildren(element, list,
-      h('p', { class: 'wf-field-hint' }, 'Internal groups contain people on your App Store Connect team.'));
+      h('p', { class: 'wf-field-hint' }, known.length || missing.length
+        ? 'Internal groups contain people on your App Store Connect team.'
+        : 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.'));
   }
 
   function addRow() {

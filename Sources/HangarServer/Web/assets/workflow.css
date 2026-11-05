@@ -59,8 +59,7 @@
 
 /* A round icon button (the sidebar's "+"). */
 .wf-icon-button {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 28px;
   height: 28px;
   padding: 0;
@@ -73,7 +72,8 @@
 }
 .wf-icon-button:hover { background: var(--fill-strong); }
 .wf-icon-button:disabled { opacity: 0.4; cursor: default; }
-.wf-icon-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+/* The plus fills the circle, so it is centred by construction (ui.js plusIcon). */
+.wf-icon-button .plus-icon { width: 100%; height: 100%; }
 
 /* MARK: Banners */
 
@@ -101,9 +101,6 @@
 /* MARK: Page */
 
 .wf-body { display: grid; gap: var(--space-2); }
-/* The header's controls centred on the large title's first line (41 px), not on the subtitle. */
-.wf-page .page-header { align-items: flex-start; }
-.wf-page .page-actions { margin-top: 2.5px; }
 /* A plain button whose text lines up with the content edge, its hover pill reaching into the margin. */
 .wf-flush-start { justify-self: start; margin-inline-start: calc(-1 * var(--space-1)); }
 .wf-header-actions { display: flex; align-items: center; gap: var(--space-1); }
@@ -320,11 +317,6 @@
 }
 .wf-readonly a { overflow-wrap: anywhere; }
 
-/* A segmented control as wide as a form field. */
-.wf-segmented { display: flex; width: 100%; min-height: 36px; }
-.wf-segmented .segment { flex: 1; min-width: 0; padding-inline: 6px; }
-.wf-segmented .segment:disabled { color: var(--tertiary); cursor: default; }
-
 /* Radio cards: a choice and what it means. */
 .wf-choices { display: grid; gap: var(--space-1); margin: 0; padding: 0; border: 0; min-width: 0; }
 .wf-choice {
@@ -460,7 +452,7 @@
 }
 .wf-add-row:hover { background: var(--fill); }
 .wf-add-row:focus-visible { outline-offset: -3px; }
-.wf-add-row svg { justify-self: center; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.wf-plus-circle { display: block; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-text); }
 .wf-new-group { display: grid; gap: var(--space-1); padding: 8px 12px 12px 46px; }
 .wf-new-group .input { background: var(--card); }
 .wf-new-group-actions { display: flex; justify-content: flex-end; gap: var(--space-1); }
@@ -496,23 +488,67 @@
 
 /* MARK: Save bar */
 
+/* Cancel left, status, Save right. Wide screens: sticky under the top bar, above the editor. Phones: sticky above
+   the tab bar (and the home indicator), after the editor. */
 .wf-savebar {
   position: sticky;
-  bottom: 0;
+  top: var(--topbar-height);
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   margin: 0 calc(-1 * var(--gutter));
-  padding: 12px var(--gutter);
+  padding: 10px var(--gutter);
   background: var(--header-bg);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
-  border-top: 0.5px solid var(--separator);
+  border-bottom: 0.5px solid var(--separator);
 }
-.wf-savebar-status { flex: 1; min-width: 0; color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
-.wf-savebar-status.wf-has-problems { color: var(--failure); }
+.wf-cancel { flex-shrink: 0; margin-inline-start: calc(-1 * var(--space-1)); }
+.wf-savebar-status {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--secondary);
+  font: var(--footnote);
+  letter-spacing: -0.08px;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-savebar-status:disabled { cursor: default; }
+.wf-savebar-status.wf-has-problems { color: var(--failure); font-weight: 600; cursor: pointer; }
 .wf-savebar-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
+
+/* Unsaved changes: a dot after the large title. */
+.large-title.wf-dirty::after {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 0.3em;
+}
+
+/* Destructive actions sit last, apart from the rest. */
+.wf-danger-zone { padding-top: var(--space-2); border-top: 0.5px solid var(--separator); }
+
+/* Settings nested under a switch, indented to its label. */
+.wf-nested { display: grid; gap: var(--space-2); margin: 0 12px 12px 28px; }
+.wf-nested.wf-dependent-note { padding: 0; }
+.wf-inline-field { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.wf-inline-field .select { width: auto; min-width: 140px; }
+.wf-nested .wf-checklist, .wf-switch-list { background: var(--card); }
+.wf-switch-list { display: grid; border-radius: var(--radius-sm); }
+.wf-switch-list .switch-field { padding: 12px; }
+
+/* The wizard's Cancel on the left of its footer, as on iOS. */
+.wf-wizard-sheet .sheet-actions > .button:first-child { margin-inline-end: auto; }
 
 /* MARK: YAML sheet */
 
@@ -665,11 +701,13 @@
 }
 
 @media (max-width: 639.98px) {
-  .wf-savebar { bottom: calc(var(--tab-bar-height) + var(--safe-bottom)); }
-  .wf-page .page-heading { flex-basis: 100%; }
-  .wf-page .page-actions { width: 100%; margin-top: 0; }
-  .wf-header-actions { width: 100%; }
-  .wf-header-actions .wf-switcher { flex: 1; }
+  .wf-body .wf-savebar {
+    order: 1;
+    top: auto;
+    bottom: calc(var(--tab-bar-height) + var(--safe-bottom));
+    border-bottom: 0;
+    border-top: 0.5px solid var(--separator);
+  }
   .wf-menu { right: 0; width: min(300px, calc(100vw - 2 * var(--gutter))); }
   .wf-detail-header .wf-tile { width: 32px; height: 32px; border-radius: 8px; }
   .wf-detail-header .wf-tile svg { width: 20px; height: 20px; }
@@ -684,3 +722,4 @@
 .wf-destructive { color: var(--failure); }
 .wf-detail-problems:empty { display: none; }
 .wf-switches .input, .wf-checklist .input { background: var(--card); }
+.wf-steps-list { display: grid; gap: var(--space-half); margin: 0; padding-left: 32px; }

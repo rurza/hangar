@@ -201,7 +201,7 @@ import Testing
     }
 
     /// The wizard's answers become a workflow the server parses: tests first, then archives, TestFlight with the
-    /// chosen groups. The summary line and the review sentence say the same.
+    /// chosen groups. Its summary and steps come from workflow-summary.js, as on the app page and in Deploy.
     @Test func wizardBuildsTheWorkflowItDescribes() throws {
         let base = WorkflowFile(version: 1, workflows: [
             "release": Workflow(
@@ -209,7 +209,7 @@ import Testing
                 actions: [WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect)]),
         ])
         let output = try Self.runJXA(
-            base,
+            json: String(decoding: try JSONEncoder().encode(base), as: UTF8.self), files: Self.editorFiles,
             """
             (() => {
               const choices = [
@@ -219,7 +219,7 @@ import Testing
               ];
               const model = wizardModel({ name: 'Default', base: input.workflows.release, choices, distribution: 'testflight', groups: ['Internal'] });
               const file = fileFromModels([model]);
-              return [workflowToYAML(file), workflowSummary(model), plainText(describeWorkflow(model)),
+              return [workflowToYAML(file), workflowSummary(toWorkflow(model)), workflowSteps(toWorkflow(model)).join(' '),
                 JSON.stringify(allProblems(itemProblems(model, { betaGroups: ['Internal'] })))].join('\\n---\\n');
             })()
             """)
@@ -237,15 +237,15 @@ import Testing
                 // Default settings are left out of the YAML.
                 postActions: [PostActionSpec(name: "testflight", settings: ["groups": .array([.string("Internal")])])]),
         ]))
-        #expect(parts[1] == "Manual start · Archive macOS, iOS · Test iOS · TestFlight Internal")
-        #expect(parts[2] == "Runs tests for LegiloMobile on the newest iPhone simulator, archives Legilo (macOS) and LegiloMobile (iOS), uploads both to TestFlight for Internal.")
+        #expect(parts[1] == "Tests LegiloMobile (iOS) · Archives Legilo (macOS) and LegiloMobile (iOS) · TestFlight: Internal")
+        #expect(parts[2] == "Tests LegiloMobile (iOS). Archives Legilo (macOS) and LegiloMobile (iOS) with Xcode 27.2. Uploads both to TestFlight for Internal.")
         #expect(parts[3] == "[]")
     }
 
     /// Developer ID goes to Mac archives only and turns TestFlight off; tests alone need no distribution.
     @Test func wizardDistributionChoices() throws {
         let output = try Self.runJXA(
-            Self.legilo,
+            json: String(decoding: try JSONEncoder().encode(Self.legilo), as: UTF8.self), files: Self.editorFiles,
             """
             (() => {
               const base = input.workflows.testflight;
@@ -256,13 +256,13 @@ import Testing
               const testsOnly = wizardModel({ name: 'CI', base, distribution: 'testflight',
                 choices: [{ scheme: 'LegiloMobile', platform: 'ios', archive: false, test: true }] });
               return [mac, keep, testsOnly].map((model) => [JSON.stringify(toWorkflow(model).actions), String(model.testflightOn),
-                plainText(describeWorkflow(model))].join(' | ')).join('\\n');
+                workflowSteps(toWorkflow(model)).join(' ')].join(' | ')).join('\\n');
             })()
             """)
         #expect(output == """
-            [{"kind":"test","scheme":"Legilo","platform":"macos"},{"kind":"archive","scheme":"Legilo","platform":"macos","export":"developer-id"}] | false | Runs tests for Legilo on this Mac, archives Legilo (macOS), signs it with Developer ID.
-            [{"kind":"archive","scheme":"LegiloMobile","platform":"ios","export":"app-store-connect"}] | false | Archives LegiloMobile (iOS), keeps the builds on the build page.
-            [{"kind":"test","scheme":"LegiloMobile","platform":"ios"}] | false | Runs tests for LegiloMobile on the newest iPhone simulator.
+            [{"kind":"test","scheme":"Legilo","platform":"macos"},{"kind":"archive","scheme":"Legilo","platform":"macos","export":"developer-id"}] | false | Tests Legilo (macOS). Archives Legilo (macOS) with Xcode 27.2. Exports a Developer ID app to download from the build page.
+            [{"kind":"archive","scheme":"LegiloMobile","platform":"ios","export":"app-store-connect"}] | false | Archives LegiloMobile (iOS) with Xcode 27.2. Uploads nothing: the .ipa or .pkg is on the build page to download.
+            [{"kind":"test","scheme":"LegiloMobile","platform":"ios"}] | false | Tests LegiloMobile (iOS) with Xcode 27.2.
             """)
     }
 
@@ -284,6 +284,29 @@ import Testing
         #expect(output == #"{"general":["Another workflow is named “ci”."],"environment":["Choose an Xcode version."],"#
             + #""actions":[[],["Choose a scheme."],[],[],[],["TestFlight uploads every archive, and a Developer ID archive can’t go to TestFlight."]],"#
             + #""testflight":["The timeout is a whole number of minutes.","App Store Connect has no group named “Typo”."],"workflow":[]}"#)
+    }
+
+    /// The editor's files with the shared summary, loaded together as the wizard uses them.
+    static let editorFiles = ["yaml.js", "workflow-model.js", "workflow-summary.js"]
+
+    /// Each action's own sentence stays in step with the whole workflow's: a Developer ID archive is never said
+    /// to go to TestFlight, and a TestFlight step that doesn't wait names no groups.
+    @Test func actionSentencesAgreeWithTheSummary() throws {
+        let output = try Self.runJXA(
+            json: String(decoding: try JSONEncoder().encode(Self.withTests), as: UTF8.self), files: Self.editorFiles,
+            """
+            (() => {
+              const model = modelsFromFile(input)[0];
+              model.testflight.groups = ['Internal'];
+              model.testflight.waitForProcessing = false;
+              return [plainText(describeArchive(model.actions[5], model)), plainText(describeTestFlight(model)),
+                workflowSteps(toWorkflow(model)).join(' ')].join('\\n');
+            })()
+            """)
+        let lines = output.components(separatedBy: "\n")
+        #expect(lines.count == 3)
+        #expect(!lines[0].contains("TestFlight"), "\(lines[0])")
+        #expect(!lines[1].contains("Internal") && !lines[2].contains("for Internal"), "\(output)")
     }
 
     /// Runs `workflowToYAML` from yaml.js in JXA with `file` encoded as the API encodes it.

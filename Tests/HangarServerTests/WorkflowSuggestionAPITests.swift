@@ -457,6 +457,19 @@ private func legiloRepo(_ host: FakeSourceHost) {
         }
     }
 
+    @Test func workflowSourceAsksTheRepositoryEvenWithAStoredWorkflowWhenAsked() async throws {
+        let fixture = try APIFixture()
+        try fixture.createApp()
+        let yaml = fixture.host.state.withLock { $0.files[WorkflowFile.path]! }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-file", method: .put, headers: jsonHeaders, body: try body(PutWorkflowFileRequest(yaml: yaml))) { _ in }
+            fixture.host.state.withLock { $0.files[WorkflowFile.path] = nil }
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-source?repository=1", method: .get) { response throws in
+                #expect(try decode(WorkflowSourceStatus.self, response) == WorkflowSourceStatus(stored: true, repositoryHasWorkflowFile: false))
+            }
+        }
+    }
+
     @Test func rateLimitSendsRetryAfter() async throws {
         let fixture = try inspectFixture(asc: nil)
         fixture.host.state.withLock { $0.treeError = .rateLimited(resetAt: Date().addingTimeInterval(120)) }

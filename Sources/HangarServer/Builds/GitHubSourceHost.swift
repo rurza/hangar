@@ -72,6 +72,25 @@ public struct GitHubSourceHost: SourceHost {
         }
     }
 
+    public func branches(repoURL: String, token: String?) async throws -> RepositoryBranches {
+        let (owner, repo) = try Self.parse(repoURL)
+        let base = "\(Self.apiBase)/repos/\(owner)/\(repo)"
+        struct Repository: Decodable {
+            var defaultBranch: String?
+            enum CodingKeys: String, CodingKey { case defaultBranch = "default_branch" }
+        }
+        struct Branch: Decodable { var name: String }
+        let repository = try await get(Repository.self, base, token: token)
+        let branches = try await get([Branch].self, "\(base)/branches?per_page=100", token: token)
+        return RepositoryBranches(defaultBranch: repository.defaultBranch, branches: branches.map(\.name)).defaultFirst
+    }
+
+    private func get<T: Decodable>(_ type: T.Type, _ url: String, token: String?) async throws -> T {
+        let (data, response) = try await transport.send(try request(url, accept: "application/vnd.github+json", token: token))
+        guard (200..<300).contains(response.statusCode) else { throw Self.failure(response, data) }
+        return try Self.decode(type, data)
+    }
+
     func request(_ url: String, accept: String, token: String?) throws -> URLRequest {
         guard let url = URL(string: url) else { throw SourceHostError.unsupportedRepository(url) }
         var request = URLRequest(url: url)

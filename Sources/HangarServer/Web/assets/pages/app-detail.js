@@ -1,4 +1,5 @@
-// The app detail page: next build number, workflow source, recent builds, environment and removal.
+// The app detail page, in the order a visit needs it: what (if anything) keeps builds from running, the latest
+// build and what the workflow does, recent builds, then the rarer things: build numbers, environment and removal.
 
 import { api, ApiError, events, seg } from '../api.js';
 import { navigate } from '../router.js';
@@ -7,8 +8,11 @@ import {
   toast,
 } from '../ui.js';
 import { appIcon, recheckIconSoon } from './apps.js';
+import { buildDuration } from './build.js';
+import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
 import { variablesEditor } from './variables.js';
+import { workflowSummary } from '../workflow-summary.js';
 
 const RECENT_BUILDS = 20;
 
@@ -30,13 +34,18 @@ export async function appDetailPage(params, context) {
   }
   const slug = seg(app.slug);
 
-  const numbers = numbersCard(app, signal);
+  const notice = machinesNotice(signal);
+  const latest = latestCard();
   const workflow = workflowCard(app, signal);
-  const builds = buildsList(app, signal);
+  const builds = buildsList(app, signal, (list) => latest.render(list[0] ?? null));
+  const numbers = numbersCard(app, signal);
 
   context.onCleanup(events((event) => {
     if (event.type === 'build' && event.build?.appID === app.id) builds.upsert(event.build);
-  }, { onReconnect: () => builds.reload() }));
+    if (event.type === 'machine') notice.seen(event.machine);
+  }, { onReconnect: () => { builds.reload(); notice.reload(); } }));
+  const timer = setInterval(() => { builds.tick(); latest.tick(); }, 60_000);
+  context.onCleanup(() => clearInterval(timer));
 
   let icon = appIcon(app, 'large');
   recheckIconSoon([app], context, async () => {
@@ -55,9 +64,11 @@ export async function appDetailPage(params, context) {
     leading: icon,
     actions: button('Deploy', { kind: 'primary', onClick: () => openDeploySheet(app) }),
   },
-  h('div', { class: 'detail-grid' }, numbers, workflow),
+  notice.element,
+  h('div', { class: 'detail-grid' }, latest.element, workflow),
   section({ title: 'Recent Builds', actions: h('a', { href: `/builds?app=${slug}`, 'data-link': true, class: 'section-link' }, 'All Builds') },
     builds.element),
+  section({ title: 'Build Numbers' }, numbers),
   section({
     title: 'Environment',
     footer: 'Every job of this app gets these variables. One with the same name as a global variable replaces it.',
@@ -65,19 +76,87 @@ export async function appDetailPage(params, context) {
   section({ title: 'Remove App' }, removeCard(app)));
 }
 
+// MARK: Machines
+
+/**
+ * A notice above everything while there is no Mac to build on, with the way to add one. Whether a Mac is online
+ * and able is the Deploy sheet's question to the server; this only counts machines, so it needs no clock.
+ */
+function machinesNotice(signal) {
+  const element = h('div', { class: 'page-notice-slot' });
+  let known = null; // ids of the machines listed
+  async function reload() {
+    let machines;
+    try {
+      machines = await api.get('/machines', { signal });
+    } catch {
+      return; // Not worth a warning of its own; the Deploy sheet says it again.
+    }
+    known = new Set(machines.map((machine) => machine.id));
+    replaceChildren(element, machines.length === 0
+      ? h('div', { class: 'page-notice', role: 'note' },
+        h('p', null, 'No Mac can run builds yet. Add one and Deploy can start.'),
+        h('a', { href: '/machines?add=1', 'data-link': true, class: 'button button-secondary button-small' }, 'Add a Mac'))
+      : null);
+  }
+  /** A heartbeat of a machine already listed changes nothing here; a new one is worth a fresh list. */
+  function seen(machine) {
+    if (known && machine && !known.has(machine.id)) reload();
+  }
+  reload();
+  return { element, reload, seen };
+}
+
+// MARK: Latest build
+
+function latestCard() {
+  const element = card({ class: 'latest-card' });
+  let build;
+  let when = null;
+
+  function tick() {
+    if (when && build) when.textContent = `${relativeTime(build.createdAt)} · ${buildDuration(build)}`;
+  }
+
+  function render(next) {
+    build = next;
+    if (build === null) {
+      when = null;
+      replaceChildren(element,
+        cardTitle('Latest Build'),
+        h('p', { class: 'card-headline' }, 'No builds yet'),
+        h('p', { class: 'card-detail' }, 'Deploy runs the workflow; its build and files show up here.'));
+      return;
+    }
+    when = h('span', null);
+    replaceChildren(element,
+      cardTitle('Latest Build', statusBadge(build.status)),
+      h('a', { href: `/builds/${seg(build.id)}`, 'data-link': true, class: 'latest-link' },
+        h('span', { class: 'latest-number' }, `Build ${build.buildNumber}`),
+        h('span', { class: 'card-detail latest-ref' }, `${build.workflow} · ${build.ref} · ${String(build.commit ?? '').slice(0, 7)}`)),
+      h('p', { class: 'card-note' }, when),
+      h('div', { class: 'card-actions' },
+        h('a', { href: `/builds/${seg(build.id)}`, 'data-link': true, class: 'button button-secondary' }, 'View Build')));
+    tick();
+  }
+
+  replaceChildren(element, cardTitle('Latest Build'), h('div', { class: 'card-loading' }, spinner('Loading the latest build')));
+  return { element, render, tick };
+}
+
 /** A card's heading row: the title and an optional trailing control. */
 function cardTitle(text, trailing) {
   return h('div', { class: 'card-title-row' }, h('h2', { class: 'card-title' }, text), trailing);
 }
 
-// MARK: Next build number
+// MARK: Build numbers
 
 function numbersCard(app, signal) {
   const element = card({ class: 'numbers-card' });
   const path = `/apps/${seg(app.slug)}/numbers`;
 
   function loading() {
-    replaceChildren(element, cardTitle('Next Build Number'), h('div', { class: 'card-loading' }, spinner('Loading numbers')));
+    replaceChildren(element, h('div', { class: 'card-loading' }, spinner('Loading numbers')));
   }
 
   async function load() {
@@ -95,12 +174,14 @@ function numbersCard(app, signal) {
       h('dt', { class: 'fact-label' }, label),
       h('dd', { class: 'fact-value' }, value ?? '–'));
     replaceChildren(element,
-      cardTitle('Next Build Number', button('Raise…', { kind: 'plain', onClick: () => raise(report) })),
-      h('p', { class: 'big-number' }, String(report.next)),
+      h('div', { class: 'card-title-row' },
+        h('p', { class: 'card-headline' }, 'Next build gets ', h('span', { class: 'numbers-next' }, String(report.next))),
+        button('Raise…', { kind: 'plain', class: 'button button-plain button-small', onClick: () => raise(report) })),
       h('dl', { class: 'facts' },
         fact('Highest in Hangar', report.highestHangar),
         fact('Highest in App Store Connect', report.highestAppStoreConnect),
-        fact('Last Xcode Cloud run', report.lastXcodeCloudRun)),
+        // Only Xcode Cloud migrants have one; a dash would be noise for everyone else.
+        report.lastXcodeCloudRun != null ? fact('Last Xcode Cloud run', report.lastXcodeCloudRun) : null),
       report.inFlight
         ? h('p', { class: 'card-note' }, 'A build is in progress and has already taken its number.')
         : null);
@@ -109,7 +190,6 @@ function numbersCard(app, signal) {
   function renderError(error) {
     const needsKey = error.code === 'app_store_connect_not_configured';
     replaceChildren(element,
-      cardTitle('Next Build Number'),
       h('p', { class: 'inline-error-message' }, error.message),
       h('div', { class: 'card-actions' },
         needsKey
@@ -168,6 +248,14 @@ function numbersCard(app, signal) {
 
 // MARK: Workflow
 
+/** Each workflow by name with what it does, in one line. */
+function workflowList(file) {
+  const entries = Object.entries(file?.workflows ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  return h('ul', { class: 'workflow-summaries', 'aria-label': 'Workflows' }, entries.map(([name, workflow]) => h('li', null,
+    h('span', { class: 'workflow-summary-name' }, name),
+    h('span', { class: 'workflow-summary-text' }, workflowSummary(workflow)))));
+}
+
 function workflowCard(app, signal) {
   const element = card({ class: 'workflow-card' });
   const editor = `/apps/${seg(app.slug)}/workflow`;
@@ -175,40 +263,39 @@ function workflowCard(app, signal) {
 
   // The workflow stored in Hangar; only without one is GitHub asked whether the repository has a .hangar.yml.
   api.get(`/apps/${seg(app.slug)}/workflow-file`, { signal }).then((stored) => {
-    const names = Object.keys(stored.workflows?.workflows ?? {}).sort();
     replaceChildren(element,
       cardTitle('Workflow'),
-      h('p', { class: 'card-headline' }, 'Defined in Hangar'),
-      h('p', { class: 'card-detail' }, `Updated ${relativeTime(stored.updatedAt)}`),
-      names.length ? h('ul', { class: 'chips', 'aria-label': 'Workflows' }, names.map((name) => h('li', { class: 'chip' }, name))) : null,
+      workflowList(stored.workflows),
+      h('p', { class: 'card-note' }, `Defined in Hangar · updated ${relativeTime(stored.updatedAt)}`),
       h('div', { class: 'card-actions' },
         h('a', { href: editor, 'data-link': true, class: 'button button-secondary' }, 'Edit Workflow')));
   }, (error) => {
     if (error.code === 'aborted') return;
     if (error.code === 'workflow_file_not_found') {
       // No workflow in Hangar: does the repository have its own .hangar.yml (at its default branch)?
-      replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Checking the repository')),
-        h('p', { class: 'card-detail' }, 'Checking the repository…'));
+      replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Checking the repository')));
       // Remembered by the server for a while, so not a GitHub call on every view.
       api.get(`/apps/${seg(app.slug)}/workflow-source`, { signal }).then(
         (status) => status?.repositoryHasWorkflowFile ?? null,
         (failure) => (failure.code === 'aborted' ? undefined : null),
-      ).then((repoFile) => {
+      ).then(async (repoFile) => {
         if (repoFile === undefined) return;
         if (repoFile) {
+          // What the repository's file does, read at its default branch.
+          const file = await api.get(`/apps/${seg(app.slug)}/workflows`, { signal }).catch(() => null);
           replaceChildren(element,
             cardTitle('Workflow'),
-            h('p', { class: 'card-headline' }, 'Builds use the repository’s .hangar.yml'),
-            h('p', { class: 'card-detail' }, 'Defining the workflow in Hangar instead takes over from the file.'),
+            file?.workflows ? workflowList(file.workflows) : null,
+            h('p', { class: 'card-note' }, 'From the repository’s .hangar.yml. Defining it in Hangar instead takes over from the file.'),
             h('div', { class: 'card-actions' },
               h('a', { href: editor, 'data-link': true, class: 'button button-secondary' }, 'Define in Hangar Instead')));
           return;
         }
         replaceChildren(element,
           cardTitle('Workflow'),
-          h('p', { class: 'card-headline' }, 'Set up the workflow'),
+          h('p', { class: 'card-headline' }, 'Not set up yet'),
           h('p', { class: 'card-detail' }, repoFile === false
-            ? 'The repository has no .hangar.yml. Hangar fills the workflow in from its Xcode project.'
+            ? 'Deploy needs a workflow. Hangar fills it in from the Xcode project in the repository.'
             : 'Hangar fills it in from the Xcode project in the repository.'),
           h('div', { class: 'card-actions' },
             h('a', { href: `${editor}?suggest=1`, 'data-link': true, class: 'button button-primary' }, 'Set Up Workflow')));
@@ -222,9 +309,12 @@ function workflowCard(app, signal) {
 
 // MARK: Recent builds
 
-function buildsList(app, signal) {
+/** The latest builds; `onChange(builds)` runs whenever the list changes (the latest-build card follows it). */
+function buildsList(app, signal, onChange) {
   const element = h('div', { class: 'builds' }, h('div', { class: 'list list-loading' }, spinner('Loading builds')));
   let builds = null;
+  let rows = [];
+  const rowsByID = new Map(); // build id → row, kept so a focused row keeps its focus through live updates
 
   async function reload() {
     try {
@@ -247,29 +337,47 @@ function buildsList(app, signal) {
     render();
   }
 
+  function tick() {
+    const now = new Date();
+    rows.forEach((row) => row.tick(now));
+  }
+
   function render() {
+    onChange(builds);
+    // Without builds the latest-build card already says so; the empty list would only say it again.
+    const sectionElement = element.closest('.section');
+    if (sectionElement) sectionElement.hidden = builds.length === 0;
     if (builds.length === 0) {
-      replaceChildren(element, h('div', { class: 'list' },
-        emptyState({
-          title: 'No Builds Yet',
-          message: 'Deploy a workflow and its build shows up here.',
-          action: button('Deploy', { kind: 'primary', onClick: () => openDeploySheet(app) }),
-        })));
+      rows = [];
+      replaceChildren(element);
       return;
     }
-    replaceChildren(element, h('ul', { class: 'list' }, builds.map((build) => h('li', null,
-      h('a', { href: `/builds/${seg(build.id)}`, 'data-link': true, class: 'row build-row' },
-        h('span', { class: 'build-number' }, String(build.buildNumber)),
-        h('span', { class: 'row-main' },
-          h('span', { class: 'row-title' }, build.workflow),
-          h('span', { class: 'row-detail build-ref' }, `${build.ref} · ${String(build.commit ?? '').slice(0, 7)}`)),
-        h('span', { class: 'build-trailing' },
-          statusBadge(build.status),
-          h('span', { class: 'row-detail' }, relativeTime(build.createdAt))))))));
+    rows = builds.map((build) => {
+      let row = rowsByID.get(build.id);
+      if (row) {
+        if (row.build !== build) row.update(build);
+      } else {
+        row = buildRow(build);
+        rowsByID.set(build.id, row);
+      }
+      return row;
+    });
+    const ids = new Set(builds.map((build) => build.id));
+    for (const id of rowsByID.keys()) if (!ids.has(id)) rowsByID.delete(id);
+    let list = element.querySelector('.build-list');
+    if (!list) {
+      list = h('ul', { class: 'list build-list' });
+      replaceChildren(element, list);
+    }
+    // Moves rows into order without recreating them (moving a node keeps it, unlike rebuilding it).
+    rows.forEach((row, index) => {
+      if (list.children[index] !== row.element) list.insertBefore(row.element, list.children[index] ?? null);
+    });
+    while (list.children.length > rows.length) list.lastChild.remove();
   }
 
   reload();
-  return { element, reload, upsert };
+  return { element, reload, upsert, tick };
 }
 
 // MARK: Remove

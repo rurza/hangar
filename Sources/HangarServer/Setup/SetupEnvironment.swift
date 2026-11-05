@@ -73,8 +73,9 @@ public struct SetupEnvironment: Sendable {
     }
 
     /// A worker already set up here: its configuration file exists, or its launchd agent is loaded for this user
-    /// (not asked under `HANGAR_NO_LAUNCHD=1`, where the script leaves launchd alone). Nil when neither.
-    func installedWorker() async -> InstalledWorker? {
+    /// (not asked under `HANGAR_NO_LAUNCHD=1`, where the script leaves launchd alone). Nil when neither. A
+    /// `launchctl print` that does not answer within `probeTimeout` counts as no agent, so the page never hangs.
+    func installedWorker(probeTimeout: Duration = .seconds(5)) async -> InstalledWorker? {
         var serverURL: String?
         let hasConfig = FileManager.default.fileExists(atPath: workerConfigPath)
         if hasConfig, let data = FileManager.default.contents(atPath: workerConfigPath),
@@ -84,10 +85,7 @@ public struct SetupEnvironment: Sendable {
         }
         var loaded = false
         if environment["HANGAR_NO_LAUNCHD"] != "1" {
-            let command = ProcessCommand(
-                executable: "/bin/launchctl", arguments: ["print", "gui/\(getuid())/app.hangar.worker"],
-                environment: childEnvironment)
-            loaded = (try? await runner.run(command, onLine: { _ in }))?.exitCode == 0
+            loaded = await output("/bin/launchctl", ["print", "gui/\(getuid())/app.hangar.worker"], timeout: probeTimeout) != nil
         }
         guard hasConfig || loaded else { return nil }
         return InstalledWorker(serverURL: serverURL, agentLoaded: loaded)

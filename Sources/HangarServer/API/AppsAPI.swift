@@ -20,6 +20,15 @@ extension HangarServerApp {
             try apps.delete(id: app(context).id)
             return Response(status: .noContent)
         }
+        api.get("apps/:id/branches") { _, context in
+            let app = try app(context)
+            let branches = try await repositoryBranches.branches(app.id) {
+                try await withAppToken(app) { token in
+                    try await repositoryDetector.sourceHost.branches(repoURL: app.repoURL, token: token).defaultFirst
+                }
+            }
+            return try Response.json(branches)
+        }
         api.get("apps/:id/workflows") { request, context in
             let app = try app(context)
             // Without a ref: the repository's default branch.

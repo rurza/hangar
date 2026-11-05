@@ -2,7 +2,9 @@
 // API returns names and flags only, and the editor never shows or pre-fills a value.
 
 import { api, seg } from '../api.js';
-import { button, confirm, field, h, relativeTime, replaceChildren, sheet, spinner, switchField, toast } from '../ui.js';
+import {
+  button, confirm, field, h, plusIcon, relativeTime, replaceChildren, sheet, spinner, switchField, toast,
+} from '../ui.js';
 
 const NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -71,7 +73,7 @@ export function variablesEditor({ scope, signal }) {
           : rows,
         h('li', { class: 'row row-add' },
           h('button', { type: 'button', class: 'add-row-button', onClick: () => openSheet(null) },
-            h('span', { class: 'add-row-plus', 'aria-hidden': 'true' }, '+'),
+            h('span', { class: 'add-row-plus', 'aria-hidden': 'true' }, plusIcon()),
             'Add Variable'))));
   }
 

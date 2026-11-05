@@ -579,12 +579,26 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { response throws in
                 #expect(response.status == .conflict)
-                #expect(try decode(APIError.self, response).code == "worker_already_installed")
+                let error = try decode(APIError.self, response)
+                #expect(error.code == "worker_already_installed")
+                // Its server is unknown, so no command would be right: none is suggested.
+                #expect(!error.message.contains("curl"))
+                #expect(!error.message.contains("/install"))
             }
         }
         #expect(installer.runs.isEmpty)
         let probe = try #require(runner.commands.first { $0.executable == "/bin/launchctl" })
         #expect(probe.arguments == ["print", "gui/\(getuid())/app.hangar.worker"])
+    }
+
+    @Test func aHungLaunchctlProbeTimesOut() async throws {
+        let keys = try KeyHome()
+        let runner = RecordingProcessRunner()
+        runner.scriptHang { $0.executable == "/bin/launchctl" }
+        let environment = setupEnvironment(keys, runner: runner)
+        let started = ContinuousClock.now
+        #expect(await environment.installedWorker(probeTimeout: .milliseconds(200)) == nil)
+        #expect(ContinuousClock.now - started < .seconds(5))
     }
 
     @Test func installingOnAnEphemeralPortIsRefused() async throws {

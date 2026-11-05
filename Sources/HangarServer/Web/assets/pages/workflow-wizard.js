@@ -1,13 +1,14 @@
 // The new-workflow wizard: three short steps, prefilled from what Hangar found in the repository. 1. What to
 // build: each app scheme with Archive and Run Tests. 2. Where builds go: TestFlight (with its groups), Developer ID
-// or nowhere. 3. Review: the workflow in one sentence, and its name. Create Workflow saves it; the editor is for
+// or nowhere. 3. Review: the steps each deploy runs (as Deploy shows them), and its name. Create Workflow saves it; the editor is for
 // fine-tuning afterwards.
 
 import { confirm, field, h, replaceChildren, sheet, spinner, svg } from '../ui.js';
 import {
-  describeWorkflow, platformName, testDestinationText, uniqueName, wizardModel,
+  platformName, testDestinationText, toWorkflow, uniqueName, wizardModel,
 } from '../workflow-model.js';
-import { choiceCards, groupPicker, sentence, tile } from './workflow-parts.js';
+import { workflowSteps } from '../workflow-summary.js';
+import { choiceCards, groupPicker, tile } from './workflow-parts.js';
 
 const STEPS = [['build', 'What to Build'], ['distribute', 'Where Builds Go'], ['review', 'Review']];
 
@@ -39,9 +40,19 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       title: 'Discard This Workflow?',
       message: 'It has not been created yet.',
       confirmLabel: 'Discard',
+      cancelLabel: 'Keep Editing',
       destructive: true,
     }) : true),
   });
+  handle.element.classList.add('wf-wizard-sheet');
+  // Cancel on every step, on the left; it asks first once something was chosen.
+  const cancel = { label: 'Cancel', kind: 'cancel', onClick: async () => (state.touched ? confirm({
+    title: 'Discard This Workflow?',
+    message: 'It has not been created yet.',
+    confirmLabel: 'Discard',
+    cancelLabel: 'Keep Editing',
+    destructive: true,
+  }) : true) };
   groups.load().then(() => { if (state.step === 'distribute') render(); });
 
   function load() {
@@ -49,7 +60,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
     render();
     loadSuggestion().then((suggestion) => {
       state.suggestion = suggestion;
-      state.choices = initialChoices(suggestion);
+      state.choices = initialChoices(suggestion, app.name);
     }, (error) => {
       if (error.code === 'aborted') return;
       state.error = error;
@@ -94,7 +105,6 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
   // MARK: 1. What to build
 
   function renderBuild() {
-    const cancel = { label: 'Cancel', kind: 'cancel' };
     if (state.error) {
       replaceChildren(content,
         h('p', { class: 'wf-note wf-note-warning', role: 'alert' }, `Hangar couldn’t read the repository. ${state.error.message}`));
@@ -111,17 +121,20 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       handle.setActions([cancel]);
       return;
     }
-    const primary = state.choices.filter((choice) => choice.isApplication);
-    const others = state.choices.filter((choice) => !choice.isApplication);
-    const shown = primary.length === 0 || state.showAll ? state.choices : primary;
+    // This app's schemes first; other apps' and non-app schemes wait behind a disclosure.
+    const mine = state.choices.filter((choice) => choice.group === 'app');
+    const others = state.choices.filter((choice) => choice.group !== 'app');
+    const shown = mine.length === 0 || state.showAll ? state.choices : mine;
+    const warning = duplicateWarning();
     replaceChildren(content,
-      h('p', { class: 'wf-wizard-intro' }, `Choose what each deploy builds from ${repositoryName(app)}.`),
+      h('p', { class: 'wf-wizard-intro' }, `What should each deploy do? Hangar found these in ${repositoryName(app)}.`),
       h('ul', { class: 'wf-targets' }, shown.map(targetRow)),
-      primary.length && others.length && !state.showAll
+      warning ? h('p', { class: 'wf-note wf-note-warning', role: 'status' }, warning) : null,
+      mine.length && others.length && !state.showAll
         ? h('button', {
           type: 'button', class: 'wf-more',
           onClick: () => { state.showAll = true; render(); },
-        }, `Show ${others.length} More ${others.length === 1 ? 'Scheme' : 'Schemes'}`)
+        }, `Show ${others.length} More from This Repository`)
         : null);
     const next = archived().length ? 'distribute' : 'review';
     handle.setActions([cancel, {
@@ -145,27 +158,36 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       return h('label', { class: 'wf-pill' }, input, label);
     };
     const platform = choice.platform;
-    const kind = choice.isApplication ? `${platformName(platform)} app` : platform ? `${platformName(platform)} scheme` : 'Scheme';
+    const what = choice.group === 'other-app' ? 'Another app in this repository'
+      : choice.group === 'not-app' ? 'Not an app: it can only run tests'
+        : choice.alternative ? `Another ${platformName(platform)} scheme in this repository`
+          : null;
     return h('li', { class: 'wf-target', dataset: { scheme: choice.scheme } },
-      tile(platform ?? 'macos', 'platform'),
+      tile(platform, 'platform'),
       h('span', { class: 'wf-target-text' },
-        h('span', { class: 'wf-target-title' }, choice.scheme),
-        h('span', { class: 'wf-target-detail' }, choice.hasTests ? `${kind} · has tests` : kind)),
+        h('span', { class: 'wf-target-title' }, `${choice.scheme} · ${platformName(platform)}`),
+        what ? h('span', { class: 'wf-target-detail' }, what) : null),
       h('div', { class: 'wf-target-options', role: 'group', 'aria-label': `What to do with ${choice.scheme}` },
-        pill('archive', 'Archive', !choice.isApplication),
-        pill('test', 'Run Tests', false)),
+        pill('test', 'Run Tests', false),
+        pill('archive', 'Archive', choice.group === 'not-app')),
       h('p', { class: ['wf-target-outcome', !(choice.archive || choice.test) && 'wf-off'] }, outcome(choice)));
   }
 
+  /** Two archives for one platform upload two builds with the same number, so App Store Connect takes only one. */
+  function duplicateWarning() {
+    const byPlatform = new Map();
+    for (const choice of archived()) byPlatform.set(choice.platform, [...(byPlatform.get(choice.platform) ?? []), choice.scheme]);
+    const twice = [...byPlatform.entries()].find(([, schemes]) => schemes.length > 1);
+    if (!twice) return null;
+    return `${listOf(twice[1])} both archive for ${platformName(twice[0])}. Each deploy gives them the same build number, so App Store Connect accepts only one: archive one of them, or put the other in its own workflow.`;
+  }
+
   function outcome(choice) {
-    const parts = [];
-    if (choice.test) {
-      const where = testDestinationText({ platform: choice.platform ?? 'macos', destination: '' });
-      parts.push(`Runs its tests on ${where}${choice.hasTests ? '' : ' (no test target found, so check the scheme has tests)'}`);
-    }
-    if (choice.archive) parts.push(parts.length ? 'archives it, signed for distribution' : 'Archives it, signed for distribution');
-    if (!parts.length) return choice.isApplication ? 'Not built.' : 'Not built. This scheme isn’t an app, so it can only run tests.';
-    return `${parts.join(', and ')}.`;
+    const where = testDestinationText({ platform: choice.platform, destination: '' });
+    if (choice.test && choice.archive) return `Runs its tests on ${where}, then archives it.${choice.hasTests ? '' : ' No test target was found, so check it has tests.'}`;
+    if (choice.test) return `Runs its tests on ${where}.${choice.hasTests ? '' : ' No test target was found, so check it has tests.'}`;
+    if (choice.archive) return 'Archives it for distribution.';
+    return 'Not built.';
   }
 
   // MARK: 2. Where builds go
@@ -186,10 +208,10 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
     const options = [
       {
         value: 'testflight',
-        title: 'TestFlight — Internal Testers',
+        title: 'Send to Testers with TestFlight',
         detail: ascMissing
           ? 'Needs the App Store Connect key. Add it in Settings first.'
-          : 'Uploads each build to App Store Connect and adds it to the groups you pick.',
+          : 'Each build goes to App Store Connect and to the people in the groups you pick. They install it with the TestFlight app.',
         disabled: ascMissing,
         extra: groupPicker({
           store: groups, selected: state.groups, internalOnly: true,
@@ -198,20 +220,20 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       },
       {
         value: 'developer-id',
-        title: 'Developer ID (Outside the App Store)',
+        title: 'Share the Mac App Yourself',
         detail: macOnly
-          ? 'Signs the Mac app for direct download. It can’t go to TestFlight.'
-          : `Mac apps only: ${listOf(notMac)} ${notMac.length === 1 ? 'is' : 'are'} not.`,
+          ? 'Signs it with Developer ID: download it from the build page and hand it out, outside the App Store.'
+          : `Mac apps only, and ${listOf(notMac)} ${notMac.length === 1 ? 'isn’t one' : 'aren’t'}.`,
         disabled: !macOnly,
       },
       {
         value: 'keep',
         title: 'Just Keep the Build',
-        detail: `Signs it for the App Store and keeps the ${files.join(' and ')} on the build page. Nothing is uploaded.`,
+        detail: `Nothing leaves Hangar: the ${files.join(' and ')} ${files.length === 1 ? 'waits' : 'wait'} on the build page for you to download.`,
       },
     ];
     replaceChildren(content,
-      h('p', { class: 'wf-wizard-intro' }, `Where the ${archived().length === 1 ? 'archive goes' : 'archives go'} after each deploy.`),
+      h('p', { class: 'wf-wizard-intro' }, `After each deploy, where should ${archived().length === 1 ? 'the build' : 'the builds'} go?`),
       groupState
         ? choiceCards({
           legend: 'Where builds go', value: state.distribution, options,
@@ -219,6 +241,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
         })
         : h('p', { class: 'wf-status-line' }, spinner('Checking App Store Connect'), 'Checking App Store Connect…'));
     handle.setActions([
+      cancel,
       { label: 'Back', kind: 'secondary', onClick: () => { go('build'); return false; } },
       { label: 'Next', kind: 'primary', disabled: !state.distribution, onClick: () => { go('review'); return false; } },
     ]);
@@ -247,13 +270,16 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       ...(draft.tools.length ? [['Tools', draft.tools.join(', ')]] : []),
     ];
     replaceChildren(content,
-      h('p', { class: 'wf-explain' }, sentence(describeWorkflow(draft))),
+      // The same steps the Deploy sheet and the app page show for this workflow.
+      h('ul', { class: 'wf-explain wf-steps-list', 'aria-label': 'What each deploy does' },
+        workflowSteps(toWorkflow(draft)).map((step) => h('li', null, step))),
       field({ label: 'Name', control: nameInput }),
       h('div', { class: 'wf-field' },
         h('dl', { class: 'wf-facts' }, facts.map(([label, value]) => h('div', { class: 'wf-fact' }, h('dt', null, label), h('dd', null, value)))),
         h('p', { class: 'wf-field-hint' }, 'Found in the repository. Change these and more in the editor once the workflow exists.')));
     const back = archived().length ? 'distribute' : 'build';
     handle.setActions([
+      cancel,
       { label: 'Back', kind: 'secondary', onClick: () => { go(back); return false; } },
       {
         label: 'Create Workflow', kind: 'primary',
@@ -287,25 +313,43 @@ function firstWorkflow(suggestion) {
 }
 
 /** Each detected scheme as a choice: the suggested ones archived, and tested when they have tests. */
-function initialChoices(suggestion) {
+function initialChoices(suggestion, appName) {
   const suggested = firstWorkflow(suggestion).actions ?? [];
-  const byScheme = new Map(suggested.map((action) => [action.scheme, action]));
+  const mine = new Set(suggested.map((action) => action.scheme));
   const schemes = suggestion.schemes?.length
     ? suggestion.schemes
     : suggested.map((action) => ({ name: action.scheme, platform: action.platform, isApplication: true, hasTests: false }));
   const choices = schemes.map((scheme) => {
-    const action = byScheme.get(scheme.name);
+    const action = suggested.find((item) => item.scheme === scheme.name);
     return {
       scheme: scheme.name,
-      platform: scheme.platform ?? action?.platform ?? null,
+      platform: scheme.platform ?? action?.platform ?? 'macos',
       isApplication: scheme.isApplication,
       hasTests: Boolean(scheme.hasTests),
-      archive: Boolean(action) && scheme.isApplication,
-      test: Boolean(action) && Boolean(scheme.hasTests),
+      // app: this app's; other-app: an app with another bundle ID; not-app: tests, a framework...
+      group: !scheme.isApplication ? 'not-app' : mine.has(scheme.name) || mine.size === 0 ? 'app' : 'other-app',
+      alternative: false,
+      archive: false,
+      test: false,
     };
   });
-  // Apps first, then by name.
-  return choices.sort((a, b) => Number(b.isApplication) - Number(a.isApplication) || a.scheme.localeCompare(b.scheme));
+  // One archive per platform by default: the scheme named like the app, else the shortest name. The others (a
+  // "Beta" scheme, say) start off, since two archives for one platform would upload the same build number twice.
+  const lower = (text) => text.toLowerCase();
+  for (const platform of new Set(choices.map((choice) => choice.platform))) {
+    const candidates = choices.filter((choice) => choice.group === 'app' && choice.platform === platform);
+    if (!candidates.length) continue;
+    const primary = candidates.find((choice) => lower(choice.scheme) === lower(appName ?? ''))
+      ?? [...candidates].sort((a, b) => a.scheme.length - b.scheme.length || a.scheme.localeCompare(b.scheme))[0];
+    for (const choice of candidates) {
+      choice.alternative = choice !== primary;
+      choice.archive = choice === primary;
+      choice.test = choice === primary && choice.hasTests;
+    }
+  }
+  const rank = { app: 0, 'other-app': 1, 'not-app': 2 };
+  return choices.sort((a, b) => rank[a.group] - rank[b.group] || Number(a.alternative) - Number(b.alternative)
+    || a.scheme.localeCompare(b.scheme));
 }
 
 function unique(items) {

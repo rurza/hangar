@@ -153,14 +153,17 @@ function problems(models) {
 }
 
 // MARK: Words
+//
+// The whole workflow in words (the title's summary, the wizard's review, Deploy) is workflow-summary.js's job; this
+// file only says what each action and the TestFlight step do.
 
 const PLATFORMS = [['ios', 'iOS'], ['macos', 'macOS'], ['visionos', 'visionOS'], ['tvos', 'tvOS'], ['watchos', 'watchOS']];
-const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
 /** The simulator a test of the platform runs on when no destination is set. */
 const SIMULATOR_DEVICES = { ios: 'iPhone', visionos: 'Apple Vision Pro', tvos: 'Apple TV', watchos: 'Apple Watch' };
 
 function platformName(platform) {
-  return PLATFORM_NAMES[platform] ?? String(platform ?? '');
+  const found = PLATFORMS.find(([value]) => value === platform);
+  return found ? found[1] : String(platform ?? '');
 }
 
 /** "Archive – iOS", "Test – macOS". */
@@ -202,21 +205,6 @@ function groupsText(groups) {
   return listText(groups.map((group) => group.trim()).filter(Boolean));
 }
 
-/** The one-line summary under the title: "Manual start · Archive iOS, macOS · Test iOS · TestFlight Internal". */
-function workflowSummary(model) {
-  const parts = ['Manual start'];
-  const archived = unique(archives(model).map((action) => platformName(action.platform)));
-  const tested = unique(tests(model).map((action) => platformName(action.platform)));
-  if (archived.length) parts.push(`Archive ${archived.join(', ')}`);
-  if (tested.length) parts.push(`Test ${tested.join(', ')}`);
-  if (model.testflightOn && archived.length) {
-    const groups = groupsText(model.testflight.groups);
-    parts.push(groups ? `TestFlight ${groups}` : 'TestFlight');
-  }
-  if (!archived.length && !tested.length) parts.push('No actions');
-  return parts.join(' · ');
-}
-
 // Sentences are lists of pieces: plain strings, and `{ strong: text }` for names the UI shows in bold.
 const strong = (text) => ({ strong: text });
 
@@ -251,56 +239,12 @@ function describeTestFlight(model) {
   const platforms = unique(archives(model).filter((action) => action.export !== 'developer-id')
     .map((action) => platformName(action.platform)));
   const groups = groupsText(model.testflight.groups);
-  const after = platforms.length ? `After each archive for ${listText(platforms)}, uploads` : 'Uploads each archive';
+  if (!platforms.length) return ['Has nothing to upload: no archive of this workflow is signed for the App Store.'];
+  const after = `After each archive for ${listText(platforms)}, uploads`;
   if (!model.testflight.waitForProcessing) {
     return [`${after} the build to TestFlight and stops there: App Store Connect processes it on its own.`];
   }
   return [`${after} the build to TestFlight`, groups ? [' and adds it to ', strong(groups), '.'] : '. Only App Store Connect users with access see it.'].flat();
-}
-
-/** The whole workflow as a sentence, for the wizard's review: "Runs tests for LegiloMobile on the newest iPhone
- * simulator, archives Legilo (macOS) and LegiloMobile (iOS), uploads both to TestFlight for Internal." */
-function describeWorkflow(model) {
-  const clauses = [];
-  const tested = tests(model);
-  if (tested.length) {
-    // Tests that run in the same place are named together.
-    const places = unique(tested.map(testDestinationText));
-    const parts = places.map((place) => {
-      const schemes = unique(tested.filter((action) => testDestinationText(action) === place).map((action) => action.scheme.trim()));
-      return [...joinPieces(schemes.map(strong)), ` on ${place}`];
-    });
-    clauses.push(['Runs tests for ', ...joinPieces(parts)]);
-  }
-  const archived = archives(model);
-  if (archived.length) {
-    const named = archived.map((action) => [strong(action.scheme.trim()), ` (${platformName(action.platform)})`]);
-    clauses.push([clauses.length ? 'archives ' : 'Archives ', ...joinPieces(named)]);
-    if (model.testflightOn) {
-      const uploaded = archived.filter((action) => action.export !== 'developer-id');
-      const which = uploaded.length === 1 ? 'it' : uploaded.length === 2 ? 'both' : 'them';
-      const groups = groupsText(model.testflight.groups);
-      clauses.push([`uploads ${which} to TestFlight`, ...(groups ? [' for ', strong(groups)] : [])]);
-    } else if (archived.every((action) => action.export === 'developer-id')) {
-      clauses.push(['signs ', archived.length === 1 ? 'it' : 'them', ' with Developer ID']);
-    } else {
-      clauses.push(['keeps the builds on the build page']);
-    }
-  }
-  if (!clauses.length) return ['Does nothing yet: add an action.'];
-  const flat = joinPieces(clauses, ', ', ', ');
-  return [...flat, '.'];
-}
-
-/** `lists` (each a piece or a list of pieces) joined with ", " and " and ". */
-function joinPieces(lists, comma = ', ', and = ' and ') {
-  const result = [];
-  lists.forEach((item, index) => {
-    if (index > 0) result.push(index === lists.length - 1 ? and : comma);
-    if (Array.isArray(item)) result.push(...item);
-    else result.push(item);
-  });
-  return result;
 }
 
 /** A sentence's pieces as plain text. */
@@ -380,4 +324,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, describeWorkflow, fileFromModels, itemProblems, modelsFromFile, plainText, platformName, problems, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel, workflowSummary };
+export { ACTION_KINDS, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformName, problems, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };

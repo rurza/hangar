@@ -6,7 +6,7 @@
 import { api, events } from '../api.js';
 import { navigate } from '../router.js';
 import {
-  button, card, field, h, page, relativeTime, replaceChildren, spinner, toast,
+  button, card, checkBadge, field, h, page, relativeTime, replaceChildren, spinner, toast,
 } from '../ui.js';
 import { machineWidget, openAddMacSheet, openAddMachineSheet, removeMachine } from './machines.js';
 
@@ -44,11 +44,10 @@ export function externalLink(href, text) {
   return h('a', { href, target: '_blank', rel: 'noopener noreferrer' }, text);
 }
 
-/** "✓" in a green circle and `text`: a finished step's headline. */
+/** A finished step's headline. */
 export function doneLine(text) {
-  return h('p', { class: 'setup-done' },
-    h('span', { class: 'setup-done-icon', 'aria-hidden': 'true' }, '✓'),
-    h('span', null, text));
+  // The step's badge already shows the check; the line itself is the headline.
+  return h('p', { class: 'setup-done' }, text);
 }
 
 /** An inline problem with what to do about it. */
@@ -80,12 +79,12 @@ export async function withBusy(control, busyLabel, work) {
 
 /**
  * The Issuer ID field App Store Connect asks for when a key is a team key. `onSubmit(issuerID)` runs on Connect
- * or Return.
+ * or Return; `value` pre-fills it (the one tried last).
  */
-export function issuerField(onSubmit) {
+export function issuerField(onSubmit, value = '') {
   const input = h('input', {
     class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
-    autocorrect: 'off', placeholder: '69a6de70-03db-47e3-e053-5b8c7c11a4d1',
+    autocorrect: 'off', placeholder: '69a6de70-03db-47e3-e053-5b8c7c11a4d1', value,
     onInput: () => input.removeAttribute('aria-invalid'),
     onKeydown: (event) => {
       if (event.key === 'Enter' && !event.isComposing) {
@@ -238,7 +237,7 @@ function stepCard(number, title) {
     element,
     body,
     setDone(done) {
-      badge.textContent = done ? '✓' : String(number);
+      replaceChildren(badge, done ? checkBadge('step-badge-check').firstChild : String(number));
       badge.classList.toggle('step-badge-done', done);
       state.textContent = done ? ' (done)' : '';
     },
@@ -651,6 +650,11 @@ function machinesStep(getStatus, onChange, context) {
       replaceChildren(local, head, log,
         install.state === 'failed' ? h('div', { class: 'card-actions' }, useThisMacButton('Try Again')) : null);
       queueMicrotask(() => { log.scrollTop = log.scrollHeight; });
+      return;
+    }
+    // With a Mac building already, offering this one (or explaining why not) is only noise.
+    if (status.machines > 0 && (!status.viewerIsLocal || !status.workerInstallAvailable)) {
+      replaceChildren(local);
       return;
     }
     if (!status.viewerIsLocal) {

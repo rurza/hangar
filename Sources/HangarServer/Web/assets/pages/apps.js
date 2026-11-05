@@ -3,7 +3,7 @@
 import { api, events, seg } from '../api.js';
 import { navigate } from '../router.js';
 import {
-  button, emptyState, h, page, relativeTime, replaceChildren, statusBadge,
+  button, emptyState, h, page, plusIcon, relativeTime, replaceChildren, statusBadge,
 } from '../ui.js';
 import { openAddAppSheet } from './add-app.js';
 import { openDeploySheet } from './deploy.js';
@@ -92,11 +92,14 @@ export async function appsPage(params, context) {
   }
 
   let setupLeft = false; // with no apps: setup still has a step to do
+  // The page's Add App; the empty state has its own, so this one shows once there are apps.
+  const addButton = button('Add App', { kind: 'primary', onClick: () => addApp() });
 
   function render() {
+    addButton.hidden = apps.length === 0;
     if (apps.length === 0) {
       replaceChildren(content, emptyState({
-        icon: h('span', { class: 'empty-plus' }, '+'),
+        icon: h('span', { class: 'empty-plus' }, plusIcon()),
         title: 'No Apps Yet',
         message: setupLeft
           ? 'Finish setting up Hangar first: App Store Connect, GitHub and a Mac to build on.'
@@ -107,11 +110,7 @@ export async function appsPage(params, context) {
       }));
       return;
     }
-    replaceChildren(grid,
-      apps.map((app) => appCard(app, latest.get(app.id))),
-      h('button', { type: 'button', class: 'card app-card add-card', onClick: addApp },
-        h('span', { class: 'add-card-plus', 'aria-hidden': 'true' }, '+'),
-        h('span', { class: 'add-card-label' }, 'Add App')));
+    replaceChildren(grid, apps.map((app) => appCard(app, latest.get(app.id))));
     replaceChildren(content, grid);
   }
 
@@ -158,7 +157,7 @@ export async function appsPage(params, context) {
     onReconnect: () => load().then(render, () => {}),
   }));
 
-  return page({ title: 'Apps' }, content);
+  return page({ title: 'Apps', actions: addButton }, content);
 }
 
 function appCard(app, build) {

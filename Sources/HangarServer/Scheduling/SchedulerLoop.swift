@@ -106,8 +106,7 @@ public actor SchedulerLoop {
     }
 
     private func assignQueuedJobs(_ machines: [Machine], now: Date) throws {
-        let active = try builds.jobs(status: [.assigned, .running]).compactMap(\.machineID)
-        let running = Dictionary(grouping: active, by: { $0 }).mapValues(\.count)
+        let running = try Self.runningCounts(builds)
         let snapshots = machines.map { Self.snapshot($0, runningJobs: running[$0.id] ?? 0, now: now) }
 
         let queued = try builds.jobs(status: [.queued])
@@ -129,11 +128,9 @@ public actor SchedulerLoop {
                 continue
             }
             candidates.append(
-                QueuedJob(
-                    id: job.id, buildID: job.buildID, createdAt: job.createdAt, xcode: workflow.xcode,
-                    tools: workflow.tools, pinnedMachineID: pinned,
-                    simulatorPlatform: job.action.kind == .test && job.action.platform != .macOS ? job.action.platform : nil,
-                    requiredCapabilities: workflow.needsCapabilities(for: job.action)))
+                Self.queuedJob(
+                    id: job.id, buildID: job.buildID, createdAt: job.createdAt, action: job.action, workflow: workflow,
+                    pinned: pinned))
         }
 
         let plan = Scheduler.plan(jobs: candidates, machines: snapshots, minFreeDiskGB: config.minFreeDiskGB)
@@ -157,6 +154,23 @@ public actor SchedulerLoop {
     private func publishChange(jobID: UUID, buildID: UUID) throws {
         if let job = try builds.job(id: jobID) { events.publish(.server(.job(job))) }
         events.publish(.server(.build(try builds.refreshBuildStatus(buildID: buildID))))
+    }
+
+    /// The job as the scheduler judges it: what its action needs of a machine. Shared with the deploy dry run.
+    static func queuedJob(
+        id: UUID, buildID: UUID, createdAt: Date, action: WorkflowAction, workflow: Workflow, pinned: UUID?
+    ) -> QueuedJob {
+        QueuedJob(
+            id: id, buildID: buildID, createdAt: createdAt, xcode: workflow.xcode, tools: workflow.tools,
+            pinnedMachineID: pinned,
+            simulatorPlatform: action.kind == .test && action.platform != .macOS ? action.platform : nil,
+            requiredCapabilities: workflow.needsCapabilities(for: action))
+    }
+
+    /// Machine id → its assigned and running jobs, as a tick counts them.
+    static func runningCounts(_ builds: BuildRepository) throws -> [UUID: Int] {
+        let active = try builds.jobs(status: [.assigned, .running]).compactMap(\.machineID)
+        return Dictionary(grouping: active, by: { $0 }).mapValues(\.count)
     }
 
     /// Machines without a report are offline for scheduling.

@@ -40,6 +40,7 @@ extension HangarServerApp {
         addSettingsRoutes(to: api)
         addSetupRoutes(to: api)
         addWorkflowFileRoutes(to: api)
+        addDeployCheckRoutes(to: api)
         addNumberRoutes(to: api)
         addBuildRoutes(to: api)
         addJobRoutes(to: api)

@@ -58,6 +58,16 @@ export function svg(tag, attrs, ...children) {
   return build(document.createElementNS(SVG_NS, tag), attrs, children);
 }
 
+/**
+ * The plus of an add button, drawn from the centre of a 24-unit box with SF Symbols' plus.circle proportions: the
+ * plus spans 45% of the box and its stroke is 7.5% of it, so it scales with the circle the box fills (1.8 px on a
+ * 24 px circle). The circle itself is the container's background; no text, so nothing shifts the lines.
+ */
+export function plusIcon(className = 'plus-icon') {
+  return svg('svg', { class: className, viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
+    svg('path', { d: 'M12 6.6V17.4M6.6 12H17.4' }));
+}
+
 /** Replaces all children of `element`. */
 export function replaceChildren(element, ...children) {
   element.replaceChildren();
@@ -73,13 +83,16 @@ export function replaceChildren(element, ...children) {
  * title scrolls away.
  */
 export function page({ title, subtitle, actions, leading }, ...content) {
+  // The actions share the title's row, so they centre on its first line on every page, with or without a
+  // subtitle or a leading icon.
   return h('div', { class: 'page' },
     h('header', { class: 'page-header' },
       leading ? h('div', { class: 'page-leading' }, leading) : null,
       h('div', { class: 'page-heading' },
-        h('h1', { class: 'large-title' }, title),
-        subtitle ? h('p', { class: 'page-subtitle' }, subtitle) : null),
-      actions ? h('div', { class: 'page-actions' }, actions) : null),
+        h('div', { class: 'page-title-row' },
+          h('h1', { class: 'large-title' }, title),
+          actions ? h('div', { class: 'page-actions' }, actions) : null),
+        subtitle ? h('p', { class: 'page-subtitle' }, subtitle) : null)),
     content);
 }
 
@@ -106,6 +119,12 @@ export function emptyState({ icon, title, message, action }) {
     h('p', { class: 'empty-state-title' }, title),
     message ? h('p', { class: 'empty-state-message' }, message) : null,
     action ? h('div', { class: 'empty-state-action' }, action) : null);
+}
+
+/** A check mark in a filled circle, as on finished steps. */
+export function checkBadge(className = 'check-badge') {
+  return h('span', { class: className, 'aria-hidden': 'true' },
+    svg('svg', { viewBox: '0 0 20 20', focusable: 'false' }, svg('path', { d: 'M5.5 10.5l3 3 6-7' })));
 }
 
 /** A button. `kind`: `primary`, `secondary` (default), `destructive` or `plain`. */
@@ -202,10 +221,11 @@ let sheetCount = 0;
  * `submitOnEnter`, Return in a single-line input runs the first primary action, as in a form. `beforeDismiss`
  * (async, resolving to a boolean) is asked before Esc, the close button or the backdrop closes the sheet; false
  * keeps it open. Actions and `close()` are not asked. `setActions(actions)` on the returned handle replaces the
- * footer's buttons.
+ * footer's buttons. `anchor: 'top'` pins the sheet's top edge, so a sheet that changes height grows downwards.
  */
 export function sheet({
   title, body, actions = [{ label: 'Done', kind: 'primary' }], onClose, submitOnEnter = false, beforeDismiss,
+  anchor = 'center',
 } = {}) {
   const id = `sheet-title-${++sheetCount}`;
   const returnFocus = document.activeElement;
@@ -240,7 +260,8 @@ export function sheet({
     footer);
   setActions(actions);
 
-  const backdrop = h('div', { class: 'sheet-backdrop' }, panel);
+  // `anchor: 'top'` keeps the top edge fixed for a sheet whose height changes (a stepped flow).
+  const backdrop = h('div', { class: ['sheet-backdrop', anchor === 'top' && 'sheet-backdrop-top'] }, panel);
   backdrop.addEventListener('mousedown', (event) => {
     if (event.target === backdrop) backdrop.dataset.pressed = 'true';
   });
@@ -346,15 +367,15 @@ export function closeAllSheets() {
   [...openSheets].reverse().forEach((entry) => entry.handle.close());
 }
 
-/** Asks a yes/no question in a sheet. Resolves to true when confirmed. */
-export function confirm({ title, message, confirmLabel = 'OK', destructive = false }) {
+/** Asks a yes/no question in a sheet. Resolves to true when confirmed. `cancelLabel` names the way out. */
+export function confirm({ title, message, confirmLabel = 'OK', cancelLabel = 'Cancel', destructive = false }) {
   return new Promise((resolve) => {
     let confirmed = false;
     sheet({
       title,
       body: message ? h('p', { class: 'sheet-message' }, message) : null,
       actions: [
-        { label: 'Cancel', kind: 'cancel' },
+        { label: cancelLabel, kind: 'cancel' },
         { label: confirmLabel, kind: destructive ? 'destructive' : 'primary', onClick: () => { confirmed = true; } },
       ],
       onClose: () => resolve(confirmed),
@@ -435,14 +456,15 @@ export function selectContents(element) {
 
 /**
  * A circular gauge for a fraction from 0 to 1 (null when unknown), with the percentage in the middle. `label`
- * names it for assistive technology, e.g. "CPU 42%". Colour: accent below 70 %, warning below 90 %, failure above.
+ * names it for assistive technology, e.g. "1 of 1 job running". Always the accent colour: a full machine is busy,
+ * not in trouble, so red stays for offline and failures.
  */
 export function ring(fraction, label) {
   const known = typeof fraction === 'number' && Number.isFinite(fraction);
   const value = known ? Math.min(Math.max(fraction, 0), 1) : 0;
   const radius = 15.5;
   const circumference = 2 * Math.PI * radius;
-  const level = !known ? 'unknown' : value >= 0.9 ? 'high' : value >= 0.7 ? 'medium' : 'low';
+  const level = known ? 'known' : 'unknown';
   return svg('svg', { class: ['ring', `ring-${level}`], viewBox: '0 0 40 40', role: 'img', 'aria-label': label },
     svg('circle', { class: 'ring-track', cx: 20, cy: 20, r: radius }),
     svg('circle', {
