@@ -287,7 +287,7 @@ function ascStep(getStatus, onChange, signal) {
         h('p', { class: 'card-note' }, key.kind === 'team'
           ? `Team key ${key.keyID}. Builds sign with the key (cloud-managed signing).`
           : `Individual key ${key.keyID}. Builds sign with the Apple account signed in to Xcode on each build Mac.`),
-        h('div', { class: 'card-actions' }, button('Use a Different Key', {
+        h('div', { class: 'card-actions' }, button('Replace Key', {
           kind: 'plain', class: 'button button-plain button-small',
           onClick: () => {
             replacing = true;
@@ -518,7 +518,7 @@ function githubStep(getStatus, onChange, signal) {
       replaceChildren(step.body,
         doneLine(github.login ? `Connected as ${github.login}` : 'Token saved (GitHub could not be reached to check it)'),
         h('p', { class: 'card-note' }, github.source === 'gh' ? GH_NOTE : 'Using the token you pasted.'),
-        h('div', { class: 'card-actions' }, button('Use a Different Account', {
+        h('div', { class: 'card-actions' }, button('Replace Token', {
           kind: 'plain', class: 'button button-plain button-small',
           onClick: () => {
             replacing = true;

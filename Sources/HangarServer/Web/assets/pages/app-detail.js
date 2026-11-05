@@ -293,8 +293,9 @@ function workflowCard(app, signal) {
   }
 
   function showStored(stored) {
+    const count = Object.keys(stored.workflows?.workflows ?? {}).length;
     replaceChildren(element,
-      cardTitle('Workflow'),
+      cardTitle(count > 1 ? 'Workflows' : 'Workflow'),
       workflowList(stored.workflows),
       h('p', { class: 'card-note' }, `Defined in Hangar · updated ${relativeTime(stored.updatedAt)}`),
       h('div', { class: 'card-actions' },
@@ -317,7 +318,7 @@ function workflowCard(app, signal) {
           // What the repository's file does, read at its default branch.
           const file = await api.get(`/apps/${seg(app.slug)}/workflows`, { signal }).catch(() => null);
           replaceChildren(element,
-            cardTitle('Workflow'),
+            cardTitle(Object.keys(file?.workflows?.workflows ?? {}).length > 1 ? 'Workflows' : 'Workflow'),
             file?.workflows ? workflowList(file.workflows) : null,
             h('p', { class: 'card-note' }, 'From the repository’s .hangar.yml. Defining it in Hangar instead takes over from the file.'),
             h('div', { class: 'card-actions' },

@@ -258,7 +258,7 @@ function githubCard(getStatus, refresh) {
       replaceChildren(element, form(isSet));
       return;
     }
-    const replace = button('Replace', {
+    const replace = button('Replace Token', {
       onClick: () => {
         editing = true;
         render();

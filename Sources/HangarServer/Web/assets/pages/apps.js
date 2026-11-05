@@ -103,7 +103,7 @@ export async function appsPage(params, context) {
         title: 'No Apps Yet',
         message: setupLeft
           ? 'Finish setting up Hangar first: App Store Connect, GitHub and a Mac to build on.'
-          : 'Pick its GitHub repository: Hangar finds the app in it and in App Store Connect.',
+          : 'Pick the app’s GitHub repository: Hangar finds the app in it and in App Store Connect.',
         action: setupLeft
           ? h('a', { href: '/setup', 'data-link': true, class: 'button button-primary' }, 'Finish Setup')
           : button('Add App', { kind: 'primary', onClick: addApp }),
