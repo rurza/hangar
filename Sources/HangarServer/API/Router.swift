@@ -77,7 +77,7 @@ extension Response {
 extension Request {
     /// The integer query parameter, nil when absent; 400 when it is not a non-negative integer.
     func integer(_ name: String) throws -> Int? {
-        guard let text = uri.queryParameters.get(name) else { return nil }
+        guard let text = query.get(name) else { return nil }
         guard let value = Int(text), value >= 0 else {
             throw APIError(code: "invalid_request", message: "'\(name)' must be a non-negative integer.")
         }

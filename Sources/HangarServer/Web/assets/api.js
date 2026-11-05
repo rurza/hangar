@@ -1,5 +1,7 @@
 // The Hangar REST API (docs/api.md): JSON requests under /api/v1 and the two server-sent event streams.
 
+import { withQuery } from './query.js';
+
 const BASE = '/api/v1';
 const TIMEOUT_MS = 30_000;
 
@@ -208,12 +210,10 @@ export function events(onEvent, { onReconnect } = {}) {
  * the function that stops following.
  */
 export function followLog(jobID, step, onEntries, onEnd, onError) {
-  const query = new URLSearchParams({ follow: '1' });
-  if (step) query.set('step', step);
   let delivered = 0;
   let toSkip = 0;
   let stopped = false;
-  const close = stream(`${BASE}/jobs/${seg(jobID)}/log?${query}`, {
+  const close = stream(withQuery(`${BASE}/jobs/${seg(jobID)}/log`, { follow: '1', step: step || null }), {
     log: (entries) => {
       if (!Array.isArray(entries)) return;
       const skipped = Math.min(toSkip, entries.length);

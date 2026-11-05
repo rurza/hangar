@@ -151,6 +151,23 @@ private let clock = Date(timeIntervalSince1970: 1_800_000_000)
         #expect(HangarServerApp.label(action) == "\(action.kindLabel) · Legilo")
     }
 
+    /// Names as the wizard allows them, sent the way URLSearchParams (`+` for a space) and encodeURIComponent (`%20`) send them.
+    @Test(arguments: [
+        ("UX Review Keep", ["UX+Review+Keep", "UX%20Review%20Keep"]),
+        ("A+B", ["A%2BB"]),
+        ("R&D", ["R%26D"]),
+        ("Wydanie łódź", ["Wydanie+%C5%82%C3%B3d%C5%BA", "Wydanie%20%C5%82%C3%B3d%C5%BA"]),
+    ])
+    func aWorkflowNameIsReadAsAFormEncodesIt(name: String, encodings: [String]) async throws {
+        let fixture = try fixture()
+        let yaml = testWorkflow.replacingOccurrences(of: "  ci:", with: "  \"\(name)\":")
+        fixture.host.state.withLock { $0.files[WorkflowFile.path] = yaml }
+        _ = try addMachine(fixture, "mini", report: report())
+        for encoded in encodings {
+            #expect(try await check(fixture, "workflow=\(encoded)&ref=main").canDeploy, "\(encoded)")
+        }
+    }
+
     @Test func anUnknownWorkflowIsAnError() async throws {
         let fixture = try fixture()
         try await fixture.test { client in

@@ -4,6 +4,7 @@
 // YAML and the editor is rebuilt from what the server parsed.
 
 import { api, ApiError, seg } from '../api.js';
+import { withQuery } from '../query.js';
 import { addLeaveGuard, navigate } from '../router.js';
 import {
   button, card, confirm, copyText, emptyState, h, page, plusIcon, relativeTime, replaceChildren, selectContents, sheet, switchField,
@@ -76,9 +77,8 @@ function workflowEditor({ app, stored: initial, context }) {
 
   function loadSuggestion() {
     if (!suggestionPromise) {
-      const bundleID = context.query?.get('bundleID');
-      const query = bundleID ? `?bundleID=${encodeURIComponent(bundleID)}` : '';
-      suggestionPromise = api.get(`${base}/workflow-suggestion${query}`, { signal: context.signal }).then((result) => {
+      const bundleID = context.query?.get('bundleID') || null;
+      suggestionPromise = api.get(withQuery(`${base}/workflow-suggestion`, { bundleID }), { signal: context.signal }).then((result) => {
         suggestion = result;
         if (element.isConnected && models.length) renderEditor();
         return result;

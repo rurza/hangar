@@ -4,6 +4,7 @@
 // server's call (`deploy-check`, the scheduler's own rules and clock), asked again as machines change.
 
 import { api, events, seg } from '../api.js';
+import { withQuery } from '../query.js';
 import { navigate } from '../router.js';
 import { h, replaceChildren, sheet, spinner } from '../ui.js';
 import { allowsBranch, listText, suggestedBranch, workflowSteps } from '../workflow-summary.js';
@@ -189,7 +190,7 @@ export function openDeploySheet(app) {
     renderWorkflows();
     update();
     try {
-      const response = await api.get(`${base}/workflows?ref=${encodeURIComponent(ref)}`, { signal: controller.signal });
+      const response = await api.get(withQuery(`${base}/workflows`, { ref }), { signal: controller.signal });
       if (workflowsRequest !== controller) return;
       workflows = response;
     } catch (error) {
@@ -282,10 +283,9 @@ export function openDeploySheet(app) {
     const controller = new AbortController();
     checkRequest = controller;
     // The commit /workflows resolved: the server then asks GitHub nothing, however often the sheet checks.
-    const query = new URLSearchParams({ workflow: workflowSelect.value, ref });
-    if (workflows?.commit) query.set('commit', workflows.commit);
+    const query = { workflow: workflowSelect.value, ref, commit: workflows?.commit || null };
     try {
-      const answer = await api.get(`${base}/deploy-check?${query}`, { signal: controller.signal });
+      const answer = await api.get(withQuery(`${base}/deploy-check`, query), { signal: controller.signal });
       if (checkRequest !== controller) return;
       check = answer;
       machineCount = answer.machines.length;

@@ -10,7 +10,7 @@ extension HangarServerApp {
     func addDeployCheckRoutes(to api: APIGroup) {
         api.get("apps/:id/deploy-check") { request, context in
             let app = try app(context)
-            let query = request.uri.queryParameters
+            let query = request.query
             let name = query.get("workflow").map { String($0) } ?? ""
             let ref = query.get("ref").flatMap { $0.isEmpty ? nil : String($0) } ?? "HEAD"
             var pinned: Machine?

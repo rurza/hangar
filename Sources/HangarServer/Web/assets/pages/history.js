@@ -1,6 +1,7 @@
 // The History page (`/builds`): the latest builds across apps, filtered by app, kept live from the event stream.
 
 import { api, ApiError, events, seg } from '../api.js';
+import { withQuery } from '../query.js';
 import { emptyState, h, page, replaceChildren, spinner, button } from '../ui.js';
 import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
@@ -48,10 +49,8 @@ export async function historyPage(params, context) {
     const current = ++generation;
     builds = null;
     replaceChildren(list, h('div', { class: 'list list-loading' }, spinner('Loading builds')));
-    const query = new URLSearchParams({ limit: String(LIMIT) });
-    if (filter) query.set('app', filter);
     try {
-      const result = await api.get(`/builds?${query}`, { signal });
+      const result = await api.get(withQuery('/builds', { limit: LIMIT, app: filter || null }), { signal });
       if (current !== generation) return;
       builds = result;
       render();

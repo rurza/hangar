@@ -9,6 +9,7 @@ import {
   filterRepositories, parseRepositoryURL, rankAppStoreConnectApps, rankRepositories,
 } from '../repo-ranking.js';
 import { appIcon, expectIcon, isHTTPS } from './apps.js';
+import { queryString } from '../query.js';
 
 const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
 const ASC_APPS_URL = 'https://appstoreconnect.apple.com/apps';
@@ -427,8 +428,7 @@ export function openAddAppSheet({ onAdded } = {}) {
   function detectedIcon(app) {
     const fallback = () => appIcon({ name: app.appStoreConnect?.name ?? app.name, iconURL: app.appStoreConnect?.iconURL }, 'medium');
     if (app.icon?.kind !== 'appiconset' || !state.inspection?.commit) return fallback();
-    // encodeURIComponent, not URLSearchParams: the server reads `+` as a plus, not a space.
-    const query = `commit=${encodeURIComponent(state.inspection.commit)}&path=${encodeURIComponent(app.icon.path)}`;
+    const query = queryString({ commit: state.inspection.commit, path: app.icon.path });
     const image = h('img', {
       class: 'app-icon app-icon-medium', alt: '', loading: 'lazy',
       src: `/api/v1/github/repos/${seg(state.repo.owner)}/${seg(state.repo.repo)}/icon?${query}`,

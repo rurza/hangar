@@ -102,6 +102,14 @@ import Testing
         #expect(urls[2] == "http://mini:8787/api/v1/jobs/\(jobID.uuidString)/log?step=post-action:testflight&tail=40")
     }
 
+    @Test func queryValuesSurviveFormDecoding() async throws {
+        let transport = StubTransport(responses: [try Self.json([Build]())])
+        let api = HangarAPI(baseURL: Self.base, transport: transport)
+        _ = try await api.builds(app: "A+B & Łódź", limit: nil)
+        #expect(transport.requests.first?.url?.absoluteString
+            == "http://mini.tailnet:8787/api/v1/builds?app=A%2BB%20%26%20%C5%81%C3%B3d%C5%BA")
+    }
+
     @Test func eventsDecodeServerEventsFromFrames() async throws {
         let build = Self.build(status: .running)
         let data = String(decoding: try JSONCoding.encoder.encode(ServerEvent.build(build)), as: UTF8.self)

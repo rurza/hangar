@@ -179,6 +179,8 @@ public struct HangarAPI: Sendable {
         let items = query.sorted { Self.queryOrder($0.key) < Self.queryOrder($1.key) }
             .compactMap { key, value in value.map { URLQueryItem(name: key, value: $0) } }
         components.queryItems = items.isEmpty ? nil : items
+        // URLComponents leaves `+` as it is, which the server (like any form decoder) reads as a space.
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         var request = URLRequest(url: components.url ?? baseURL)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")

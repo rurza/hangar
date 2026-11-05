@@ -13,7 +13,7 @@ extension HangarServerApp {
         }
         api.get("builds") { request, _ in
             var appID: UUID?
-            if let key = request.uri.queryParameters.get("app") {
+            if let key = request.query.get("app") {
                 guard let app = try apps.find(slugOrID: key) else {
                     throw APIError(code: "app_not_found", message: "No app '\(key)'.")
                 }
@@ -30,8 +30,8 @@ extension HangarServerApp {
         api.get("jobs/:id") { _, context in try Response.json(job(context)) }
         api.get("jobs/:id/log") { request, context in
             let job = try job(context)
-            let step = request.uri.queryParameters.get("step")
-            if let follow = request.uri.queryParameters.get("follow"), follow == "1" || follow == "true" {
+            let step = request.query.get("step")
+            if let follow = request.query.get("follow"), follow == "1" || follow == "true" {
                 return logFollowResponse(jobID: job.id, step: step)
             }
             return try await Response.json(logStore.read(jobID: job.id, step: step, tail: request.integer("tail")))

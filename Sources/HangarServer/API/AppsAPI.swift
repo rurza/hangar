@@ -32,7 +32,7 @@ extension HangarServerApp {
         api.get("apps/:id/workflows") { request, context in
             let app = try app(context)
             // Without a ref: the repository's default branch.
-            let ref = request.uri.queryParameters.get("ref").flatMap { $0.isEmpty ? nil : String($0) } ?? "HEAD"
+            let ref = request.query.get("ref").flatMap { $0.isEmpty ? nil : String($0) } ?? "HEAD"
             let (commit, file, source) = try await withAppToken(app) { _ in try await buildService.workflows(app: app, ref: ref) }
             return try Response.json(WorkflowsResponse(commit: commit, workflows: file, source: source))
         }

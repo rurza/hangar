@@ -9,7 +9,7 @@ extension HangarServerApp {
     func addWorkflowFileRoutes(to api: APIGroup) {
         api.get("apps/:id/workflow-source") { request, context in
             // `?repository=1`: ask the repository even when a workflow is stored (the editor's Remove says what follows).
-            let always = request.uri.queryParameters.get("repository") == "1"
+            let always = request.query.get("repository") == "1"
             return try Response.json(try await workflowSource(app(context), askRepository: always))
         }
         api.get("apps/:id/workflow-file") { _, context in
