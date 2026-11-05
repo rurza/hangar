@@ -38,13 +38,22 @@ import Testing
         defer { try? FileManager.default.removeItem(atPath: root) }
         let data = root + "/Application Support/worker", work = root + "/work"
         try Self.write(data + "/workspaces/legilo/repository/.git/HEAD", "ref")
+        try Self.write(data + "/workspaces/legilo/DerivedData/SourcePackages/repositories/x-1/HEAD")
         try Self.write(data + "/workspaces/legilo/DerivedData/SourcePackages/checkouts/x/Package.swift")
+        try Self.write(data + "/workspaces/legilo/DerivedData/SourcePackages/artifacts/x/X.artifactbundle/info.json")
+        try Self.write(data + "/workspaces/legilo/DerivedData/SourcePackages/workspace-state.json", data)
+        try Self.write(data + "/workspaces/legilo/DerivedData/Build/Intermediates.noindex/XCBuildData/PIFCache/t-json", data)
 
         let lines = try WorkDirectoryMigration.run(from: data, to: work)
 
         #expect(lines == ["moved the workspaces from \(data)/workspaces to \(work)/workspaces"])
         #expect(try String(contentsOfFile: work + "/workspaces/legilo/repository/.git/HEAD", encoding: .utf8) == "ref")
-        #expect(FileManager.default.fileExists(atPath: work + "/workspaces/legilo/DerivedData/SourcePackages/checkouts/x/Package.swift"))
+        // The git mirrors survive; everything that names the old absolute path is dropped.
+        let derived = work + "/workspaces/legilo/DerivedData"
+        #expect(FileManager.default.fileExists(atPath: derived + "/SourcePackages/repositories/x-1/HEAD"))
+        for gone in ["/SourcePackages/checkouts", "/SourcePackages/artifacts", "/SourcePackages/workspace-state.json", "/Build"] {
+            #expect(!FileManager.default.fileExists(atPath: derived + gone), "\(gone) should be dropped")
+        }
         #expect(!FileManager.default.fileExists(atPath: data + "/workspaces"))
         // A second run has nothing to do.
         #expect(try WorkDirectoryMigration.run(from: data, to: work).isEmpty)
@@ -56,6 +65,7 @@ import Testing
         let data = root + "/data", work = root + "/work"
         try Self.write(data + "/workspaces/legilo/repository/old")
         try Self.write(data + "/workspaces/batfi/repository/f")
+        try Self.write(data + "/workspaces/batfi/DerivedData/SourcePackages/workspace-state.json", data)
         try Self.write(work + "/workspaces/legilo/repository/new")
 
         let lines = try WorkDirectoryMigration.run(from: data, to: work)
@@ -65,6 +75,7 @@ import Testing
             "kept \(work)/workspaces/legilo; the older \(data)/workspaces/legilo was left in place",
         ])
         #expect(FileManager.default.fileExists(atPath: work + "/workspaces/batfi/repository/f"))
+        #expect(!FileManager.default.fileExists(atPath: work + "/workspaces/batfi/DerivedData/SourcePackages/workspace-state.json"))
         #expect(FileManager.default.fileExists(atPath: work + "/workspaces/legilo/repository/new"))
         #expect(FileManager.default.fileExists(atPath: data + "/workspaces/legilo/repository/old"))
     }

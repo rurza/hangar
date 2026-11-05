@@ -2,7 +2,11 @@ import Foundation
 
 /// Moves the cached per-app workspaces (git checkout and DerivedData) from the data directory into the work
 /// directory the first time a worker runs with a separate one, so the next build fetches instead of cloning and keeps
-/// its resolved Swift packages. A rename on the same volume, so it is instant whatever the size.
+/// its Swift package clones. A rename on the same volume, so it is instant whatever the size.
+///
+/// DerivedData records absolute paths (SwiftPM's `workspace-state.json` names its checkouts and artifact bundles, the
+/// build's PIF cache names the sources), so a moved one fails with "artifact bundle info.json not found at <old path>".
+/// Those path-bound parts are dropped after the move; the git mirrors in `SourcePackages/repositories` are kept.
 ///
 /// An app whose workspace already exists in the work directory keeps that one; the old copy is left where it was and
 /// named in the log. Job directories are not moved: whatever a crashed run left there is swept at start.
@@ -21,6 +25,9 @@ public enum WorkDirectoryMigration {
             attributes: [.posixPermissions: 0o700])
         guard fileManager.fileExists(atPath: new) else {
             try fileManager.moveItem(atPath: old, toPath: new)
+            for name in (try? fileManager.contentsOfDirectory(atPath: new)) ?? [] where !name.hasPrefix(".") {
+                dropPathBoundCaches(inWorkspace: new + "/" + name)
+            }
             return ["moved the workspaces from \(old) to \(new)"]
         }
         var lines: [String] = []
@@ -31,6 +38,7 @@ public enum WorkDirectoryMigration {
                 lines.append("kept \(destination); the older \(source) was left in place")
             } else {
                 try fileManager.moveItem(atPath: source, toPath: destination)
+                dropPathBoundCaches(inWorkspace: destination)
                 lines.append("moved the workspace \(name) from \(old) to \(new)")
             }
         }
@@ -38,5 +46,19 @@ public enum WorkDirectoryMigration {
             try? fileManager.removeItem(atPath: old)
         }
         return lines
+    }
+
+    /// The parts of a workspace's DerivedData that name absolute paths, relative to the workspace.
+    static let pathBoundCaches = [
+        "DerivedData/Build",
+        "DerivedData/SourcePackages/workspace-state.json",
+        "DerivedData/SourcePackages/artifacts",
+        "DerivedData/SourcePackages/checkouts",
+    ]
+
+    static func dropPathBoundCaches(inWorkspace workspace: String) {
+        for path in pathBoundCaches {
+            try? FileManager.default.removeItem(atPath: workspace + "/" + path)
+        }
     }
 }
