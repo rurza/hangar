@@ -7,6 +7,7 @@ extension HangarServerApp {
     static let maxWorkflowFileBytes = 64 * 1024
 
     func addWorkflowFileRoutes(to api: APIGroup) {
+        api.get("apps/:id/workflow-source") { _, context in try Response.json(try await workflowSource(app(context))) }
         api.get("apps/:id/workflow-file") { _, context in
             let app = try app(context)
             guard let stored = try workflowFiles.get(appID: app.id) else { throw Self.workflowFileNotFound(app) }
@@ -22,12 +23,35 @@ extension HangarServerApp {
             }
             _ = try WorkflowFileParser.parse(input.yaml)
             try workflowFiles.set(appID: app.id, yaml: input.yaml)
+            repositoryWorkflowFiles.forget(app.id)
             guard let stored = try workflowFiles.get(appID: app.id) else { throw Self.workflowFileNotFound(app) }
             return try Response.json(try Self.storedFile(stored))
         }
         api.delete("apps/:id/workflow-file") { _, context in
-            try workflowFiles.delete(appID: app(context).id)
+            let app = try app(context)
+            try workflowFiles.delete(appID: app.id)
+            repositoryWorkflowFiles.forget(app.id)
             return Response(status: .noContent)
+        }
+    }
+
+    /// Where builds take the workflow from. The repository is asked (commit, then the file) only without a stored
+    /// workflow, and its answer is cached; a GitHub failure reads as unknown and is not cached.
+    func workflowSource(_ app: App) async throws -> WorkflowSourceStatus {
+        if try workflowFiles.get(appID: app.id) != nil { return WorkflowSourceStatus(stored: true, repositoryHasWorkflowFile: nil) }
+        if let present = repositoryWorkflowFiles.get(app.id) {
+            return WorkflowSourceStatus(stored: false, repositoryHasWorkflowFile: present)
+        }
+        do {
+            let present = try await withAppToken(app) { token in
+                let commit = try await repositoryDetector.sourceHost.resolveCommit(repoURL: app.repoURL, ref: "HEAD", token: token)
+                return try await repositoryDetector.sourceHost.readFile(
+                    repoURL: app.repoURL, commit: commit, path: WorkflowFile.path, token: token) != nil
+            }
+            repositoryWorkflowFiles.set(app.id, present: present)
+            return WorkflowSourceStatus(stored: false, repositoryHasWorkflowFile: present)
+        } catch {
+            return WorkflowSourceStatus(stored: false, repositoryHasWorkflowFile: nil)
         }
     }
 

@@ -419,4 +419,59 @@ private func legiloRepo(_ host: FakeSourceHost) {
         }
         #expect(fixture.host.state.withLock { $0.refs } == ["HEAD"])
     }
+
+    // MARK: Fix round 2
+
+    @Test func workflowSourceIsCachedAndForgottenOnChange() async throws {
+        let fixture = try APIFixture()
+        try fixture.createApp()
+        let uri = "/api/v1/apps/legilo/workflow-source"
+        try await fixture.test { client in
+            for _ in 0..<2 {
+                try await client.execute(uri: uri, method: .get) { response throws in
+                    #expect(try decode(WorkflowSourceStatus.self, response) == WorkflowSourceStatus(stored: false, repositoryHasWorkflowFile: true))
+                }
+            }
+            #expect(fixture.host.state.withLock { $0.refs } == ["HEAD"])
+            // A stored workflow wins and GitHub is not asked; deleting it asks again.
+            let yaml = fixture.host.state.withLock { $0.files[WorkflowFile.path]! }
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-file", method: .put, headers: jsonHeaders, body: try body(PutWorkflowFileRequest(yaml: yaml))) { _ in }
+            try await client.execute(uri: uri, method: .get) { response throws in
+                #expect(try decode(WorkflowSourceStatus.self, response) == WorkflowSourceStatus(stored: true, repositoryHasWorkflowFile: nil))
+            }
+            fixture.host.state.withLock { $0.files[WorkflowFile.path] = nil }
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-file", method: .delete) { _ in }
+            try await client.execute(uri: uri, method: .get) { response throws in
+                #expect(try decode(WorkflowSourceStatus.self, response).repositoryHasWorkflowFile == false)
+            }
+            #expect(fixture.host.state.withLock { $0.refs }.count == 2)
+            // A GitHub failure is unknown, and not remembered.
+            fixture.host.state.withLock { $0.unknownRefs = ["HEAD"] }
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-file", method: .delete) { _ in }
+            try await client.execute(uri: uri, method: .get) { response throws in
+                #expect(try decode(WorkflowSourceStatus.self, response).repositoryHasWorkflowFile == nil)
+            }
+        }
+    }
+
+    @Test func rateLimitSendsRetryAfter() async throws {
+        let fixture = try inspectFixture(asc: nil)
+        fixture.host.state.withLock { $0.treeError = .rateLimited(resetAt: Date().addingTimeInterval(120)) }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/github/repos/rurza/Legilo/inspect", method: .get) { response throws in
+                let seconds = try #require(response.headers[.retryAfter].flatMap { Int($0) })
+                #expect((100...121).contains(seconds))
+            }
+        }
+    }
+
+    @Test func olderResponsesDecodeWithoutTheNewFlags() throws {
+        let inspection = try JSONCoding.decoder.decode(
+            RepositoryInspection.self, from: Data(#"{"commit":"c","apps":[],"projects":[],"notes":[]}"#.utf8))
+        #expect(!inspection.hasWorkflowFile && !inspection.appStoreConnectUnavailable)
+        let suggestion = try JSONCoding.decoder.decode(WorkflowSuggestion.self, from: Data("""
+            {"commit":"c","yaml":"","notes":[],"schemes":[],"workflows":{"version":1,"workflows":{}}}
+            """.utf8))
+        #expect(!suggestion.hasWorkflowFile)
+    }
 }

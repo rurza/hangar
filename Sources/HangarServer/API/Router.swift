@@ -94,7 +94,11 @@ struct APIErrorMiddleware: RouterMiddleware {
             if status == .internalServerError {
                 context.logger.error("\(request.method) \(request.uri.path) failed: \(error)")
             }
-            return try Response.json(body, status: status)
+            var response = try Response.json(body, status: status)
+            if case SourceHostError.rateLimited(let reset?) = error {
+                response.headers[.retryAfter] = "\(max(1, Int(reset.timeIntervalSinceNow.rounded(.up))))"
+            }
+            return response
         }
     }
 }

@@ -26,6 +26,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /variables` | | `200` `[VariableSummary]` (global scope) |
 | `PUT /variables/{name}` | `VariableInput` | `204` |
 | `DELETE /variables/{name}` | | `204` |
+| `GET /apps/{id}/workflow-source` | | `200` `WorkflowSourceStatus` `{stored, repositoryHasWorkflowFile?}`: whether a workflow is defined in Hangar and, without one, whether the repository has a `.hangar.yml` at its default branch (with the app's token). The repository's answer is cached for 10 minutes per app and forgotten when the app's workflow file is stored or deleted; `repositoryHasWorkflowFile` is absent when GitHub could not be asked (not cached) or a workflow is stored (not asked) |
 | `GET /apps/{id}/workflow-file` | | `200` `StoredWorkflowFile` `{yaml, workflows, updatedAt}`; `404` `workflow_file_not_found` when the app has none |
 | `PUT /apps/{id}/workflow-file` | `PutWorkflowFileRequest` `{yaml}` | `200` `StoredWorkflowFile`; the YAML is parsed first and `400` `invalid_workflow_file` stores nothing (also above 64 KB) |
 | `DELETE /apps/{id}/workflow-file` | | `204`; the repository's `.hangar.yml` is used again |
@@ -100,7 +101,7 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | `429` | `too_many_attempts` (`POST /enroll`) |
 | `502` | `app_store_connect_not_configured`, `build_number_source_unavailable` (the message names the source), `build_number_not_integer`, `source_host_error` (also a GitHub response Hangar cannot read), `file_too_large`, `github_unauthorized` (GitHub refused the token; the message says whether it was the app's own `HANGAR_GITHUB_TOKEN`), `upstream_unavailable` |
 | `500` | `internal_error` |
-| `503` | `worker_binary_missing` (`GET /install/hangar-worker`), `github_rate_limited` (the message says when to try again) |
+| `503` | `worker_binary_missing` (`GET /install/hangar-worker`), `github_rate_limited` (the message says when to try again; `Retry-After` gives the seconds) |
 | `504` | `detection_timeout` (GitHub did not answer within 15 s) |
 
 A deploy that fails with any of these reserves no build number.

@@ -91,9 +91,10 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   let repoFile = stored ? null : undefined;
   let autoDetect = context.query?.get('suggest') === '1';
   if (!stored) {
-    api.get(`${base}/workflows`, { signal: context.signal }).then(
-      (response) => { repoFile = response?.source === 'repository'; },
-      (error) => { repoFile = error.code === 'workflow_file_missing' ? false : null; },
+    // The server remembers the answer for a while, so this is not a GitHub call on every visit.
+    api.get(`${base}/workflow-source`, { signal: context.signal }).then(
+      (status) => { repoFile = status?.repositoryHasWorkflowFile ?? null; },
+      (error) => { if (error.code !== 'aborted') repoFile = null; },
     ).then(() => {
       if (models === null && element.isConnected) render();
     });
@@ -210,6 +211,10 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   // MARK: Start
 
   function startView() {
+    if (repoFile === undefined) {
+      return card({ class: 'workflow-start' },
+        h('p', { class: 'workflow-detecting' }, spinner('Checking the repository'), ' Checking the repository…'));
+    }
     const message = h('p', { class: 'inline-error-message', role: 'alert', hidden: true });
     const progress = h('p', { class: 'workflow-detecting', hidden: true });
     const repoName = app.repoURL.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/, '');

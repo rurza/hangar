@@ -232,7 +232,8 @@ export function openAddAppSheet({ onAdded } = {}) {
         : null,
       h('div', { class: 'add-app-links' }, showManual),
       state.manualFor === null ? manual.element : null);
-    handle.setActions(manual ? [backToRepo, next] : [backToRepo]);
+    const takeSelected = { label: 'Next', kind: 'primary', onClick: () => { go('review'); return false; } };
+    handle.setActions(manual ? [backToRepo, next] : state.app?.appStoreConnect ? [backToRepo, takeSelected] : [backToRepo]);
     listKeys(null, content.querySelector('.detected-list'));
     if (manual) manual.focus();
     else if (state.picking) content.querySelector('.asc-search')?.focus();
@@ -255,14 +256,16 @@ export function openAddAppSheet({ onAdded } = {}) {
       state.picking = null;
       state.manualFor = undefined;
       if (state.step !== 'app') return;
-      // Exactly one app found in App Store Connect and not added yet: that is the one (Back shows the others).
+      // The repository builds one app, found in App Store Connect and not added yet: nothing to choose.
       const ready = inspection.apps.filter((app) => app.appStoreConnect && !app.appStoreConnect.registered);
-      if (ready.length === 1) {
+      state.manual = null;
+      if (inspection.apps.length === 1 && ready.length === 1) {
         state.app = ready[0];
-        state.manual = null;
         go('review');
         return;
       }
+      // Several apps: the only matched one is pre-selected, and Next takes it.
+      state.app = ready.length === 1 ? ready[0] : null;
       render();
     } catch (error) {
       if (error.code === 'aborted' || inspecting !== controller || state.step !== 'app') return;
@@ -468,6 +471,7 @@ export function openAddAppSheet({ onAdded } = {}) {
     const ascID = asc?.id ?? state.manual?.ascID ?? '';
     // The repository's bundle ID picks the schemes to build; App Store Connect's is shown when there is none.
     const bundleID = app?.bundleIDs?.[0] ?? asc?.bundleID ?? null;
+    const mismatch = Boolean(asc && app?.bundleIDs?.length && !app.bundleIDs.includes(asc.bundleID));
     const repoURL = state.repo.htmlURL ?? `https://github.com/${state.repo.fullName}`;
     const hasWorkflowFile = Boolean(state.inspection?.hasWorkflowFile);
     const row = (label, value, mono = false) => h('div', { class: 'review-row' },
@@ -482,9 +486,14 @@ export function openAddAppSheet({ onAdded } = {}) {
               ? h('p', { class: 'secondary' }, app.platforms.map((platform) => PLATFORM_NAMES[platform] ?? platform).join(' · '))
               : null)),
         h('dl', { class: 'review-rows' },
-          row('Bundle ID', bundleID ?? '—', true),
+          row(mismatch ? 'Bundle ID (repository)' : 'Bundle ID', bundleID ?? '—', true),
+          mismatch ? row('Bundle ID (App Store Connect)', asc.bundleID, true) : null,
           row('App Store Connect ID', ascID, true),
           row('Repository', state.repo.fullName))),
+      mismatch
+        ? h('div', { class: 'add-app-callout warning', role: 'note' },
+          `The App Store Connect app’s bundle ID is ${asc.bundleID} — the repository builds ${app.bundleIDs.join(', ')}. Builds upload to the App Store Connect app only if they match.`)
+        : null,
       h('p', { class: 'section-footer' }, hasWorkflowFile
         ? 'Builds use the repository’s .hangar.yml.'
         : 'Next, Hangar sets up the workflow from what it found in the repository.'));
@@ -535,8 +544,10 @@ function lockBadge() {
  */
 function listKeys(search, list) {
   if (!list) return;
+  // Only this list's own items: a picker nested in a card has a list (and a handler) of its own.
   const items = () => [...list.querySelectorAll(
-    'button.pick-item:not(:disabled), button.detected-item:not(:disabled), button.detected-pick')];
+    'button.pick-item:not(:disabled), button.detected-item:not(:disabled), button.detected-pick')]
+    .filter((item) => item.closest('ul') === list);
   search?.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
@@ -557,6 +568,7 @@ function listKeys(search, list) {
     else if (event.key === 'End') target = all.at(-1);
     else return;
     event.preventDefault();
+    event.stopPropagation(); // an outer list must not move focus again
     target?.focus();
     target?.scrollIntoView?.({ block: 'nearest' });
   });

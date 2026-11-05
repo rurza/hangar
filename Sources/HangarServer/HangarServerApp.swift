@@ -36,6 +36,8 @@ public struct HangarServerApp: Sendable {
     public let githubRepositories: GitHubRepositories
     /// Reads repositories for workflow and app detection.
     public let repositoryDetector: RepositoryDetector
+    /// Whether each app's repository has a `.hangar.yml`, for the app page and the workflow editor.
+    public let repositoryWorkflowFiles: RepositoryWorkflowFileCache
     let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
@@ -85,6 +87,7 @@ public struct HangarServerApp: Sendable {
         pairings = PairingCodes(now: now)
         githubRepositories = GitHubRepositories(transport: githubTransport, now: now)
         repositoryDetector = RepositoryDetector(sourceHost: sourceHost, clock: clock, now: now)
+        repositoryWorkflowFiles = RepositoryWorkflowFileCache(now: now)
     }
 
     /// Starts resolving icons for every app without one (at start-up); returns at once.

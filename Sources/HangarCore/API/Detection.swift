@@ -85,6 +85,20 @@ public struct WorkflowSuggestion: Codable, Equatable, Sendable {
         self.icon = icon
         self.hasWorkflowFile = hasWorkflowFile
     }
+
+    private enum CodingKeys: String, CodingKey { case commit, yaml, notes, workflows, schemes, icon, hasWorkflowFile }
+
+    /// A response from a server before `hasWorkflowFile` reads it as false.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        commit = try container.decode(String.self, forKey: .commit)
+        yaml = try container.decode(String.self, forKey: .yaml)
+        notes = try container.decode([String].self, forKey: .notes)
+        workflows = try container.decode(WorkflowFile.self, forKey: .workflows)
+        schemes = try container.decode([DetectedScheme].self, forKey: .schemes)
+        icon = try container.decodeIfPresent(DetectedIcon.self, forKey: .icon)
+        hasWorkflowFile = try container.decodeIfPresent(Bool.self, forKey: .hasWorkflowFile) ?? false
+    }
 }
 
 /// A repository's file listing at a commit: every file and directory path, relative to the root.
@@ -156,5 +170,35 @@ public struct RepositoryInspection: Codable, Equatable, Sendable {
         self.hasWorkflowFile = hasWorkflowFile
         self.appStoreConnectUnavailable = appStoreConnectUnavailable
         self.appStoreConnectError = appStoreConnectError
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case commit, apps, projects, notes, hasWorkflowFile, appStoreConnectUnavailable, appStoreConnectError
+    }
+
+    /// A response from a server before the flags reads them as false.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        commit = try container.decode(String.self, forKey: .commit)
+        apps = try container.decode([DetectedApp].self, forKey: .apps)
+        projects = try container.decode([String].self, forKey: .projects)
+        notes = try container.decode([String].self, forKey: .notes)
+        hasWorkflowFile = try container.decodeIfPresent(Bool.self, forKey: .hasWorkflowFile) ?? false
+        appStoreConnectUnavailable = try container.decodeIfPresent(Bool.self, forKey: .appStoreConnectUnavailable) ?? false
+        appStoreConnectError = try container.decodeIfPresent(String.self, forKey: .appStoreConnectError)
+    }
+}
+
+/// `GET /apps/{id}/workflow-source`: where the app's builds take their workflow from, without reading it.
+public struct WorkflowSourceStatus: Codable, Equatable, Sendable {
+    /// A workflow is defined in Hangar; it wins over the repository's file.
+    public var stored: Bool
+    /// The repository has a `.hangar.yml` at its default branch; nil when GitHub could not be asked (or, with a
+    /// stored workflow, was not asked).
+    public var repositoryHasWorkflowFile: Bool?
+
+    public init(stored: Bool, repositoryHasWorkflowFile: Bool?) {
+        self.stored = stored
+        self.repositoryHasWorkflowFile = repositoryHasWorkflowFile
     }
 }

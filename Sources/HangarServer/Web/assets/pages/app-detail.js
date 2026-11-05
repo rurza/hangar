@@ -187,9 +187,12 @@ function workflowCard(app, signal) {
     if (error.code === 'aborted') return;
     if (error.code === 'workflow_file_not_found') {
       // No workflow in Hangar: does the repository have its own .hangar.yml (at its default branch)?
-      api.get(`/apps/${seg(app.slug)}/workflows`, { signal }).then(
-        (response) => response?.source === 'repository',
-        (failure) => (failure.code === 'aborted' ? undefined : failure.code === 'workflow_file_missing' ? false : null),
+      replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Checking the repository')),
+        h('p', { class: 'card-detail' }, 'Checking the repository…'));
+      // Remembered by the server for a while, so not a GitHub call on every view.
+      api.get(`/apps/${seg(app.slug)}/workflow-source`, { signal }).then(
+        (status) => status?.repositoryHasWorkflowFile ?? null,
+        (failure) => (failure.code === 'aborted' ? undefined : null),
       ).then((repoFile) => {
         if (repoFile === undefined) return;
         if (repoFile) {
