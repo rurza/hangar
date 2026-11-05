@@ -90,7 +90,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
                 app: App(
                     id: UUID(), slug: "demo", name: "Demo", repoURL: "https://example.com/demo.git",
                     appStoreConnectAppID: "1234", createdAt: Date(timeIntervalSince1970: 0)),
-                action: ArchiveAction(scheme: "Demo", platform: platform, export: .appStoreConnect),
+                action: WorkflowAction(scheme: "Demo", platform: platform, export: .appStoreConnect),
                 buildNumber: 311, archivePath: layout.archive(scheme: "Demo"), exportedArtifactPath: nil,
                 repository: directory + "/repo", projectDirectory: projectDirectory, environment: [:],
                 layout: layout, developerDir: "/Xcode", teamID: teamID, key: key, appStoreConnect: client, runner: runner,

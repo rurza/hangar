@@ -9,8 +9,14 @@ public struct QueuedJob: Sendable {
     public var xcode: String
     public var tools: [String]
     public var pinnedMachineID: UUID?
+    /// Set for a test on a simulator platform: the machine needs a runtime of it.
+    public var simulatorPlatform: Platform?
 
-    public init(id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?) {
+    public init(
+        id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?,
+        simulatorPlatform: Platform? = nil
+    ) {
+        self.simulatorPlatform = simulatorPlatform
         self.id = id
         self.buildID = buildID
         self.createdAt = createdAt
@@ -33,11 +39,15 @@ public struct MachineSnapshot: Sendable {
     public var performanceCores: Int
     public var onACPower: Bool
     public var canSign: Bool
+    /// "iOS 27.2"…, as the machine reports them.
+    public var simulatorRuntimes: [String]
 
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
-        tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool
+        tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
+        simulatorRuntimes: [String] = []
     ) {
+        self.simulatorRuntimes = simulatorRuntimes
         self.id = id
         self.name = name
         self.isOnline = isOnline
@@ -61,6 +71,8 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case toolMissing(String)
     case cannotSign
     case notPinned
+    /// No simulator runtime of this platform ("iOS").
+    case simulatorMissing(String)
 
     public var description: String {
         switch self {
@@ -71,6 +83,7 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
         case .toolMissing(let tool): "\(tool) not installed"
         case .cannotSign: "cannot sign without a prompt"
         case .notPinned: "job is pinned to another machine"
+        case .simulatorMissing(let platform): "no \(platform) simulator"
         }
     }
 
@@ -148,6 +161,11 @@ public enum Scheduler {
         }
         reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing)
         if !machine.canSign { reasons.append(.cannotSign) }
+        if let platform = job.simulatorPlatform,
+            !machine.simulatorRuntimes.contains(where: { $0.hasPrefix(platform.ciName + " ") })
+        {
+            reasons.append(.simulatorMissing(platform.ciName))
+        }
         return reasons
     }
 

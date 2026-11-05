@@ -13,8 +13,8 @@ import Testing
         "testflight": Workflow(
             project: "Legilo.xcodeproj", xcode: "27.2", teamID: "YL78V8PY6H", tools: ["brew"],
             actions: [
-                ArchiveAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
-                ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
+                WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
+                WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
             ],
             postActions: [PostActionSpec(name: "testflight", settings: ["groups": .array([.string("Internal")])])]),
     ])
@@ -22,17 +22,17 @@ import Testing
     static let workspaceInSubdirectory = WorkflowFile(version: 1, workflows: [
         "release": Workflow(
             workspace: "apps/Mac/Hangar.xcworkspace", xcode: "27",
-            actions: [ArchiveAction(scheme: "Hangar", platform: .macOS, export: .developerID)]),
+            actions: [WorkflowAction(scheme: "Hangar", platform: .macOS, export: .developerID)]),
         "beta": Workflow(
             project: "Beta.xcodeproj", xcode: "26.4.1",
-            actions: [ArchiveAction(scheme: "Beta", platform: .visionOS, export: .appStoreConnect)],
+            actions: [WorkflowAction(scheme: "Beta", platform: .visionOS, export: .appStoreConnect)],
             postActions: [PostActionSpec(name: "testflight")]),
     ])
 
     static let testFlightSettings = WorkflowFile(version: 1, workflows: [
         "testflight": Workflow(
             project: "App.xcodeproj", xcode: "27.2",
-            actions: [ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)],
+            actions: [WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect)],
             postActions: [PostActionSpec(name: "testflight", settings: [
                 "processing-timeout-minutes": .int(30),
                 "wait-for-processing": .bool(false),
@@ -47,12 +47,24 @@ import Testing
             project: "My App/My App.xcodeproj", xcode: "27.10", teamID: "1ABCDE2345",
             tools: ["yes", "-x", "brew#2"],
             actions: [
-                ArchiveAction(scheme: "App: Release", platform: .tvOS, export: .appStoreConnect),
-                ArchiveAction(scheme: "2024 \"Edition\" \\ beta", platform: .watchOS, export: .appStoreConnect),
-                ArchiveAction(scheme: "true", platform: .iOS, export: .appStoreConnect),
-                ArchiveAction(scheme: "Line\u{85}Next\u{2028}Sep\u{2029}End", platform: .iOS, export: .appStoreConnect),
+                WorkflowAction(scheme: "App: Release", platform: .tvOS, export: .appStoreConnect),
+                WorkflowAction(scheme: "2024 \"Edition\" \\ beta", platform: .watchOS, export: .appStoreConnect),
+                WorkflowAction(scheme: "true", platform: .iOS, export: .appStoreConnect),
+                WorkflowAction(scheme: "Line\u{85}Next\u{2028}Sep\u{2029}End", platform: .iOS, export: .appStoreConnect),
             ],
             postActions: [PostActionSpec(name: "testflight", settings: ["groups": .array([.string("A, B"), .string("[x]")])])]),
+    ])
+
+    static let withTests = WorkflowFile(version: 1, workflows: [
+        "ci": Workflow(
+            project: "Legilo.xcodeproj", xcode: "27.2",
+            actions: [
+                .test(scheme: "LegiloTests", platform: .iOS, destination: "iPhone 17 Pro", testPlan: "Smoke"),
+                .test(scheme: "Legilo", platform: .macOS),
+                .test(scheme: "Vision: Tests", platform: .visionOS, testPlan: "true"),
+                WorkflowAction(scheme: "Legilo", platform: .macOS, export: .developerID),
+            ],
+            postActions: [PostActionSpec(name: "testflight")]),
     ])
 
     @Test(arguments: [
@@ -60,6 +72,7 @@ import Testing
         ("workspace in a subdirectory", workspaceInSubdirectory),
         ("testflight settings", testFlightSettings),
         ("strings needing quotes", needsQuotes),
+        ("test actions", withTests),
     ])
     func roundTrip(name: String, file: WorkflowFile) throws {
         let yaml = try Self.workflowToYAML(file)
@@ -79,6 +92,7 @@ import Testing
         ("workspace in a subdirectory", workspaceInSubdirectory),
         ("testflight settings", testFlightSettings),
         ("strings needing quotes", needsQuotes),
+        ("test actions", withTests),
     ])
     func roundTripThroughTheForm(name: String, file: WorkflowFile) throws {
         let yaml = try Self.runJXA(file, "workflowToYAML(fileFromModels(modelsFromFile(input)))")
@@ -135,6 +149,39 @@ import Testing
                       groups: [Internal]
 
             """)
+    }
+
+    @Test func testActionsMatchTheDocumentedShape() throws {
+        let yaml = try Self.workflowToYAML(Self.withTests)
+        #expect(yaml.contains("""
+                actions:
+                  - test: { scheme: LegiloTests, platform: ios, destination: iPhone 17 Pro, test-plan: Smoke }
+                  - test: { scheme: Legilo, platform: macos }
+                  - test: { scheme: "Vision: Tests", platform: visionos, test-plan: "true" }
+                  - { scheme: Legilo, platform: macos, export: developer-id }
+
+            """), "\(yaml)")
+    }
+
+    /// Switching an action's kind in the form keeps only the fields of the new kind.
+    @Test func formSwitchesKinds() throws {
+        let output = try Self.runJXA(
+            Self.withTests,
+            """
+            (() => {
+              const models = modelsFromFile(input);
+              const actions = models[0].actions;
+              setActionKind(actions[0], 'archive');
+              setActionKind(actions[3], 'test');
+              actions[3].destination = '  ';
+              const blank = blankAction('test');
+              return JSON.stringify([fileFromModels(models).workflows.ci.actions[0], fileFromModels(models).workflows.ci.actions[3],
+                blank, problems(models)]);
+            })()
+            """)
+        #expect(output == #"[{"kind":"archive","scheme":"LegiloTests","platform":"ios","export":"app-store-connect"},"#
+            + #"{"kind":"test","scheme":"Legilo","platform":"macos"},"#
+            + #"{"kind":"test","scheme":"","platform":"ios","export":"app-store-connect","destination":"","testPlan":""},[]]"#)
     }
 
     @Test func defaultTestFlightSettingsAreLeftOut() throws {

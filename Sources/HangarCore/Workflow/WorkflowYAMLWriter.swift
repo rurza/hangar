@@ -14,10 +14,7 @@ public enum WorkflowYAMLWriter {
             if let team = workflow.teamID { lines.append("    team: \(quoted(team))") }
             if !workflow.tools.isEmpty { lines.append("    tools: [\(workflow.tools.map(scalar).joined(separator: ", "))]") }
             lines.append("    actions:")
-            for action in workflow.actions {
-                lines.append(
-                    "      - { scheme: \(scalar(action.scheme)), platform: \(action.platform.rawValue), export: \(action.export.rawValue) }")
-            }
+            for action in workflow.actions { lines.append("      - " + Self.action(action)) }
             if !workflow.postActions.isEmpty {
                 lines.append("    post-actions:")
                 for spec in workflow.postActions {
@@ -34,6 +31,20 @@ public enum WorkflowYAMLWriter {
             }
         }
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// Archives in the flat form, tests as `test: { ... }` with only the fields they set.
+    private static func action(_ action: WorkflowAction) -> String {
+        var fields = ["scheme: \(scalar(action.scheme))", "platform: \(action.platform.rawValue)"]
+        switch action.kind {
+        case .archive:
+            fields.append("export: \((action.export ?? .appStoreConnect).rawValue)")
+            return "{ \(fields.joined(separator: ", ")) }"
+        case .test:
+            if let destination = action.destination { fields.append("destination: \(scalar(destination))") }
+            if let testPlan = action.testPlan { fields.append("test-plan: \(scalar(testPlan))") }
+            return "test: { \(fields.joined(separator: ", ")) }"
+        }
     }
 
     private static func value(_ value: JSONValue) -> String {

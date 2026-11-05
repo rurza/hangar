@@ -43,8 +43,8 @@ private func yaml(project: String = "project: A.xcodeproj", actions: String = "-
         #expect(workflow.teamID == "YL78V8PY6H")
         #expect(workflow.tools == ["brew"])
         #expect(workflow.actions == [
-            ArchiveAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
-            ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
+            WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
+            WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
         ])
         #expect(workflow.postActions == [
             PostActionSpec(name: "testflight", settings: ["groups": .array([.string("Internal")])], requiresApproval: false)
@@ -218,5 +218,87 @@ private func yaml(project: String = "project: A.xcodeproj", actions: String = "-
     @Test func rejectsUnquotedTeam() {
         let text = yaml().replacingOccurrences(of: "    xcode:", with: "    team: 0123456789\n    xcode:")
         #expect(invalidYAMLMessage(text)?.contains("team") == true)
+    }
+
+    // MARK: Test actions
+
+    @Test func flatFormIsStillAnArchive() throws {
+        let workflow = try #require(WorkflowFileParser.parse(yaml()).workflows["testflight"])
+        #expect(workflow.actions == [WorkflowAction(scheme: "A", platform: .iOS, export: .appStoreConnect)])
+        #expect(workflow.actions[0].kind == .archive)
+    }
+
+    @Test func explicitArchiveAndTestForms() throws {
+        let actions = """
+            - archive: { scheme: A, platform: ios, export: developer-id }
+                  - test: { scheme: ATests, platform: ios, destination: "iPhone 17 Pro", test-plan: Smoke }
+                  - test: { scheme: Mac, platform: macos }
+                  - test: { scheme: B, platform: visionos, destination: recommended }
+            """
+        let workflow = try #require(WorkflowFileParser.parse(yaml(actions: actions)).workflows["testflight"])
+        #expect(workflow.actions == [
+            WorkflowAction(scheme: "A", platform: .iOS, export: .developerID),
+            .test(scheme: "ATests", platform: .iOS, destination: "iPhone 17 Pro", testPlan: "Smoke"),
+            .test(scheme: "Mac", platform: .macOS),
+            .test(scheme: "B", platform: .visionOS),
+        ])
+        #expect(workflow.actions.map(\.kind) == [.archive, .test, .test, .test])
+    }
+
+    @Test(arguments: [
+        ("- test: { scheme: A, platform: ios, export: app-store-connect }", "export"),
+        ("- { scheme: A, platform: ios, export: app-store-connect, destination: X }", "destination"),
+        ("- archive: { scheme: A, platform: ios, export: app-store-connect, test-plan: P }", "test-plan"),
+        ("- test: { scheme: A, platform: ios, flavour: x }", "flavour"),
+        ("- test: { platform: ios }", "scheme"),
+        ("- archive: { scheme: A, platform: ios }", "export"),
+        ("- test: A", "map"),
+        ("- { test: { scheme: A, platform: ios }, archive: { scheme: A, platform: ios, export: app-store-connect } }", "test"),
+        ("- test: { scheme: A, platform: macos, destination: \"iPhone 17\" }", "macOS"),
+    ])
+    func rejectsInvalidActionCombinations(action: String, mentioned: String) {
+        let message = invalidYAMLMessage(yaml(actions: action))
+        #expect(message?.contains(mentioned) == true, "\(action): \(message ?? "parsed")")
+    }
+
+    @Test func testActionJSONRoundTripsAndOldJSONDecodesAsArchive() throws {
+        let test = WorkflowAction.test(scheme: "T", platform: .iOS, destination: "iPhone 17", testPlan: "Smoke")
+        let data = try JSONEncoder().encode(test)
+        #expect(try JSONDecoder().decode(WorkflowAction.self, from: data) == test)
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.contains(#""kind":"test""#) && text.contains(#""testPlan":"Smoke""#) && !text.contains("export"))
+
+        let old = Data(#"{"scheme":"A","platform":"ios","export":"app-store-connect"}"#.utf8)
+        #expect(try JSONDecoder().decode(WorkflowAction.self, from: old)
+            == WorkflowAction(scheme: "A", platform: .iOS, export: .appStoreConnect))
+        let archiveWithoutExport = Data(#"{"kind":"archive","scheme":"A","platform":"ios"}"#.utf8)
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(WorkflowAction.self, from: archiveWithoutExport) }
+    }
+
+    @Test func writerEmitsTheTestForm() throws {
+        var file = try WorkflowFileParser.parse(yaml())
+        file.workflows["testflight"]?.actions.append(
+            .test(scheme: "A Tests", platform: .iOS, destination: "iPhone 17 Pro", testPlan: "Smoke"))
+        file.workflows["testflight"]?.actions.append(.test(scheme: "Mac", platform: .macOS))
+        let text = WorkflowYAMLWriter.yaml(file)
+        #expect(text.contains(#"      - test: { scheme: "A Tests", platform: ios, destination: "iPhone 17 Pro", test-plan: Smoke }"#))
+        #expect(text.contains("      - test: { scheme: Mac, platform: macos }"))
+        #expect(text.contains("      - { scheme: A, platform: ios, export: app-store-connect }"))
+        #expect(try WorkflowFileParser.parse(text) == file)
+    }
+
+    @Test func stepNamesFollowTheKind() {
+        #expect(StepName.sequence(for: WorkflowAction(scheme: "A", platform: .iOS, export: .appStoreConnect), postActions: ["testflight"]) == [
+            "checkout", "post-clone", "pre-xcodebuild", "archive", "stamp", "export", "post-xcodebuild",
+            "post-action:testflight", "upload-artifacts", "cleanup",
+        ])
+        #expect(StepName.sequence(for: .test(scheme: "A", platform: .iOS), postActions: ["testflight"]) == [
+            "checkout", "post-clone", "pre-xcodebuild", "test", "post-xcodebuild", "upload-artifacts", "cleanup",
+        ])
+    }
+
+    @Test func actionLabels() {
+        #expect(WorkflowAction(scheme: "A", platform: .iOS, export: .appStoreConnect).kindLabel == "Archive – iOS")
+        #expect(WorkflowAction.test(scheme: "A", platform: .visionOS).kindLabel == "Test – visionOS")
     }
 }

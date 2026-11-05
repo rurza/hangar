@@ -8,22 +8,37 @@ import Testing
     static let start = Date(timeIntervalSince1970: 1_800_000_000)
 
     func job(
-        _ offset: TimeInterval = 0, xcode: String = "27.2", tools: [String] = [], pinned: UUID? = nil
+        _ offset: TimeInterval = 0, xcode: String = "27.2", tools: [String] = [], pinned: UUID? = nil,
+        simulator: Platform? = nil
     ) -> QueuedJob {
         QueuedJob(
             id: UUID(), buildID: UUID(), createdAt: Self.start.addingTimeInterval(offset), xcode: xcode, tools: tools,
-            pinnedMachineID: pinned)
+            pinnedMachineID: pinned, simulatorPlatform: simulator)
     }
 
     func machine(
         _ name: String, isOnline: Bool = true, freeSlots: Int = 1, runningJobs: Int = 0,
         xcodeVersions: [String] = ["27.2.1"], tools: Set<String> = ["git"], freeDiskGB: Double = 100,
-        performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true
+        performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = []
     ) -> MachineSnapshot {
         MachineSnapshot(
             id: UUID(), name: name, isOnline: isOnline, freeSlots: freeSlots, runningJobs: runningJobs,
             xcodeVersions: xcodeVersions, tools: tools, freeDiskGB: freeDiskGB, performanceCores: performanceCores,
-            onACPower: onACPower, canSign: canSign)
+            onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes)
+    }
+
+    @Test func aSimulatorTestNeedsARuntimeOfItsPlatform() throws {
+        let queued = job(simulator: .iOS)
+        let vision = machine("Vision", simulatorRuntimes: ["visionOS 27.1"])
+        let phone = machine("Phone", performanceCores: 1, simulatorRuntimes: ["iOS 27.2", "visionOS 27.1"])
+        let plan = Scheduler.plan(jobs: [queued], machines: [vision, phone], minFreeDiskGB: 20)
+        #expect(plan.assignments == [Assignment(jobID: queued.id, machineID: phone.id)])
+
+        let waiting = Scheduler.plan(jobs: [queued], machines: [vision], minFreeDiskGB: 20)
+        #expect(waiting.waiting[queued.id] == ["Vision": [.simulatorMissing("iOS")]])
+        #expect(Scheduler.queueNote(try #require(waiting.waiting[queued.id])) == "Vision: no iOS simulator")
+        // Archives and macOS tests need none.
+        #expect(Scheduler.plan(jobs: [job()], machines: [vision], minFreeDiskGB: 20).assignments.count == 1)
     }
 
     @Test func prefersIdleThenCoresThenDiskThenAC() {

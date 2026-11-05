@@ -245,8 +245,8 @@ private let batFi = Fixture(
         #expect(workflow.xcode == "27.2")
         #expect(workflow.postActions.isEmpty)
         #expect(workflow.actions == [
-            ArchiveAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
-            ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
+            WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
+            WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
         ])
         #expect(suggestion.schemes == [
             DetectedScheme(name: "Legilo", platform: .macOS, isApplication: true),
@@ -288,8 +288,8 @@ private let batFi = Fixture(
         #expect(workflow.teamID == "ABCDE12345")
         #expect(workflow.xcode == "27")
         #expect(workflow.actions == [
-            ArchiveAction(scheme: "BatFi", platform: .macOS, export: .appStoreConnect),
-            ArchiveAction(scheme: "Companion", platform: .iOS, export: .appStoreConnect),
+            WorkflowAction(scheme: "BatFi", platform: .macOS, export: .appStoreConnect),
+            WorkflowAction(scheme: "Companion", platform: .iOS, export: .appStoreConnect),
         ])
         #expect(suggestion.schemes == [
             DetectedScheme(name: "BatFi", platform: .macOS, isApplication: true),
@@ -319,7 +319,7 @@ private let batFi = Fixture(
         #expect(workflow.workspace == "iOS/Winyl.xcworkspace")
         #expect(workflow.project == nil)
         #expect(workflow.teamID == nil)
-        #expect(workflow.actions == [ArchiveAction(scheme: "Winyl", platform: .iOS, export: .appStoreConnect)])
+        #expect(workflow.actions == [WorkflowAction(scheme: "Winyl", platform: .iOS, export: .appStoreConnect)])
         #expect(suggestion.schemes.map(\.name) == ["Winyl"])
         #expect(try WorkflowFileParser.parse(suggestion.yaml) == suggestion.workflows)
     }
@@ -338,7 +338,7 @@ private let batFi = Fixture(
         let suggestion = try fixture.detect()
         let workflow = try #require(suggestion.workflows.workflows["release"])
         #expect(workflow.project == "App.xcodeproj")
-        #expect(workflow.actions == [ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
+        #expect(workflow.actions == [WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
         #expect(suggestion.schemes.map(\.name) == ["App"])
         #expect(suggestion.notes.contains { $0.contains("No shared schemes") })
     }
@@ -373,9 +373,9 @@ private let batFi = Fixture(
             "release": Workflow(
                 project: "My App/My App.xcodeproj", xcode: "27.10", teamID: "1ABCDE2345", tools: ["yes"],
                 actions: [
-                    ArchiveAction(scheme: "App: Release", platform: .iOS, export: .appStoreConnect),
-                    ArchiveAction(scheme: "true", platform: .macOS, export: .appStoreConnect),
-                    ArchiveAction(scheme: "Line\u{2028}\"x\" \\", platform: .tvOS, export: .developerID),
+                    WorkflowAction(scheme: "App: Release", platform: .iOS, export: .appStoreConnect),
+                    WorkflowAction(scheme: "true", platform: .macOS, export: .appStoreConnect),
+                    WorkflowAction(scheme: "Line\u{2028}\"x\" \\", platform: .tvOS, export: .developerID),
                 ]),
         ])
         #expect(try WorkflowFileParser.parse(WorkflowYAMLWriter.yaml(file)) == file)

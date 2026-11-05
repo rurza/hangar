@@ -8,7 +8,7 @@ struct ModelCodingTests {
     static func job() -> Job {
         Job(
             id: UUID(), buildID: UUID(),
-            action: ArchiveAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
+            action: WorkflowAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
             status: .running, machineID: UUID(),
             steps: [StepRecord(name: StepName.archive, status: .running, startedAt: when)],
             outputs: ["ipa": "a.ipa"], createdAt: when, startedAt: when)
@@ -19,7 +19,7 @@ struct ModelCodingTests {
             job: Self.job(),
             app: App(id: UUID(), slug: "legilo", name: "Legilo", repoURL: "u", appStoreConnectAppID: "1", createdAt: Self.when),
             workflow: Workflow(
-                xcode: "27.2", actions: [ArchiveAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect)],
+                xcode: "27.2", actions: [WorkflowAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect)],
                 postActions: [PostActionSpec(name: "testflight", settings: ["groups": .array([.string("QA")])])]),
             workflowName: "release", buildNumber: 42, commit: "abc", ref: "main",
             environment: [EnvEntry(name: "A", value: "b", isSecret: true)])
@@ -27,6 +27,19 @@ struct ModelCodingTests {
         #expect(try JSONCoding.decoder.decode(JobAssignment.self, from: data) == assignment)
         #expect(String(decoding: data, as: UTF8.self).contains("2027-01-15T08:00:00.125Z"))
         #expect(String(decoding: data, as: UTF8.self).contains(#""workflowName":"release""#))
+    }
+
+    @Test func machineReportDecodesWithoutSimulatorRuntimes() throws {
+        let report = MachineReport(
+            macOSVersion: "27.0", xcodes: [], chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: 100,
+            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [],
+            simulatorRuntimes: ["iOS 27.2", "visionOS 27.1"])
+        let data = try JSONCoding.encoder.encode(report)
+        #expect(try JSONCoding.decoder.decode(MachineReport.self, from: data) == report)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "simulatorRuntimes")
+        let old = try JSONCoding.decoder.decode(MachineReport.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(old.simulatorRuntimes == [])
     }
 
     @Test func datesKeepMilliseconds() throws {

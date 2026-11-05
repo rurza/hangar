@@ -38,7 +38,8 @@ public struct Doctor: Sendable {
             onACPower: await onACPower(),
             tools: await tools(),
             canSignWithoutPrompt: await canSign,
-            runningJobIDs: runningJobIDs)
+            runningJobIDs: runningJobIDs,
+            simulatorRuntimes: await simulatorRuntimes())
     }
 
     // MARK: Probes
@@ -73,6 +74,12 @@ public struct Doctor: Sendable {
         guard let text = await output("/usr/bin/pmset", ["-g", "batt"]) else { return false }
         if text.contains("'AC Power'") { return true }
         return !text.contains("'Battery Power'")
+    }
+
+    /// Runtimes with an available simulator, through the Xcode `xcode-select` points at.
+    private func simulatorRuntimes() async -> [String] {
+        guard let json = await output("/usr/bin/xcrun", SimulatorCatalog.listArguments) else { return [] }
+        return SimulatorCatalog.runtimeNames(SimulatorCatalog.devices(fromJSON: Data(json.utf8)))
     }
 
     private func tools() async -> [String: String] {

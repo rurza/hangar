@@ -301,7 +301,7 @@ public struct BuildRepository: Sendable {
     private static func job(_ row: Row) throws -> Job {
         Job(
             id: UUID(uuidString: row["id"])!, buildID: UUID(uuidString: row["build_id"])!,
-            action: try decode(ArchiveAction.self, row["action_json"]),
+            action: try decode(WorkflowAction.self, row["action_json"]),
             status: JobStatus(rawValue: row["status"])!,
             machineID: (row["machine_id"] as String?).flatMap(UUID.init(uuidString:)),
             steps: try decode([StepRecord].self, row["steps_json"]), queueNote: row["queue_note"],

@@ -36,8 +36,10 @@ enum Format {
         (prefix.map { "[\($0)] " } ?? "") + "\(time(entry.t, timeZone: timeZone)) [\(entry.step)] \(entry.line)"
     }
 
-    /// `scheme/platform`, as `.hangar.yml` names an action.
-    static func label(_ action: ArchiveAction) -> String { "\(action.scheme)/\(action.platform.rawValue)" }
+    /// `scheme/platform`, as `.hangar.yml` names an action, with ` (test)` after a test action.
+    static func label(_ action: WorkflowAction) -> String {
+        "\(action.scheme)/\(action.platform.rawValue)" + (action.kind == .test ? " (test)" : "")
+    }
 
     static func shortID(_ id: UUID) -> String { String(id.uuidString.lowercased().prefix(8)) }
     static func shortCommit(_ commit: String) -> String { String(commit.prefix(7)) }

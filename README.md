@@ -3,6 +3,7 @@
 Hangar is a self-hosted build fleet for Apple apps. It runs the workflows you would otherwise run on Xcode Cloud, on Macs you own.
 
 - **Xcode Cloud compatible.** Your `ci_scripts/` hooks (`ci_post_clone.sh`, `ci_pre_xcodebuild.sh`, `ci_post_xcodebuild.sh`) run unchanged and see the usual `CI_*` variables. `CI_HANGAR=TRUE` is also set so a script can tell the two apart; `CI_XCODE_CLOUD` is not.
+- **Archive and test actions.** Like Xcode Cloud, a workflow archives schemes (and uploads to TestFlight) and runs their tests on the Mac or a simulator, with the pass/fail totals and failing tests on the build page.
 - **Self-hosted.** A server and one or more workers on your tailnet. Nothing is exposed outside it.
 - **Build numbers that never collide with Xcode Cloud.** The next number is one more than the highest known in Hangar, App Store Connect and Xcode Cloud, so you can use both systems on the same app.
 

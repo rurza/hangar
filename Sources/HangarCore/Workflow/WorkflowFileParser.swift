@@ -48,7 +48,7 @@ public enum WorkflowFileParser {
         let tools = try stringList(map["tools"], key: "tools", workflow: name)
 
         guard case .array(let rawActions)? = map["actions"], !rawActions.isEmpty else { throw .noActions(workflow: name) }
-        let actions = try rawActions.map { raw throws(WorkflowFileError) in try archiveAction(raw, workflow: name) }
+        let actions = try rawActions.map { raw throws(WorkflowFileError) in try action(raw, workflow: name) }
 
         var postActions: [PostActionSpec] = []
         if let rawPost = map["post-actions"] {
@@ -67,21 +67,69 @@ public enum WorkflowFileParser {
         )
     }
 
-    private static func archiveAction(_ value: JSONValue, workflow: String) throws(WorkflowFileError) -> ArchiveAction {
+    /// `- { scheme, platform, export }` (an archive), `- archive: { scheme, platform, export }` or
+    /// `- test: { scheme, platform, destination?, test-plan? }`.
+    private static func action(_ value: JSONValue, workflow: String) throws(WorkflowFileError) -> WorkflowAction {
         guard case .object(let map) = value else { throw .invalidYAML("workflow '\(workflow)': each action must be a map") }
-        try rejectUnknownKeys(map, allowed: ["scheme", "platform", "export"], context: "an action in workflow '\(workflow)'")
-        func required(_ key: String) throws(WorkflowFileError) -> String {
-            guard let text = try optionalString(map[key], key: key, workflow: workflow) else {
-                throw .invalidYAML("workflow '\(workflow)': action is missing '\(key)'")
-            }
-            return text
+        let explicit = map.keys.filter { $0 == "archive" || $0 == "test" }
+        guard !explicit.isEmpty else { return try archiveFields(map, context: "an action in workflow '\(workflow)'", workflow: workflow) }
+        guard map.count == 1, let (key, body) = map.first else {
+            throw .invalidYAML("workflow '\(workflow)': an action is either '- archive: {...}' or '- test: {...}', not both")
         }
-        let scheme = try required("scheme")
-        let platformName = try required("platform")
-        let exportName = try required("export")
-        guard let platform = Platform(rawValue: platformName) else { throw .unknownPlatform(platformName) }
+        guard case .object(let fields) = body else {
+            throw .invalidYAML("workflow '\(workflow)': '\(key)' must be a map, e.g. - \(key): { scheme: App, platform: ios }")
+        }
+        let context = "a \(key) action in workflow '\(workflow)'"
+        return key == "archive"
+            ? try archiveFields(fields, context: context, workflow: workflow)
+            : try testFields(fields, context: context, workflow: workflow)
+    }
+
+    private static func archiveFields(
+        _ map: [String: JSONValue], context: String, workflow: String
+    ) throws(WorkflowFileError) -> WorkflowAction {
+        if let testKey = ["destination", "test-plan"].first(where: { map[$0] != nil }) {
+            throw .invalidYAML("\(context): '\(testKey)' only applies to test actions")
+        }
+        try rejectUnknownKeys(map, allowed: ["scheme", "platform", "export"], context: context)
+        let (scheme, platform) = try schemeAndPlatform(map, workflow: workflow)
+        let exportName = try required(map, "export", workflow: workflow)
         guard let export = ExportMethod(rawValue: exportName) else { throw .unknownExportMethod(exportName) }
-        return ArchiveAction(scheme: scheme, platform: platform, export: export)
+        return WorkflowAction(scheme: scheme, platform: platform, export: export)
+    }
+
+    private static func testFields(
+        _ map: [String: JSONValue], context: String, workflow: String
+    ) throws(WorkflowFileError) -> WorkflowAction {
+        if map["export"] != nil { throw .invalidYAML("\(context): 'export' is not allowed on a test action") }
+        try rejectUnknownKeys(map, allowed: ["scheme", "platform", "destination", "test-plan"], context: context)
+        let (scheme, platform) = try schemeAndPlatform(map, workflow: workflow)
+        var destination = try optionalString(map["destination"], key: "destination", workflow: workflow)
+        if let text = destination, text.trimmingCharacters(in: .whitespaces).isEmpty || text.lowercased() == "recommended" {
+            destination = nil
+        }
+        if platform == .macOS, let destination {
+            throw .invalidYAML(
+                "\(context): macOS tests run on the Mac itself; remove destination '\(destination)' or set it to recommended")
+        }
+        let testPlan = try optionalString(map["test-plan"], key: "test-plan", workflow: workflow)
+        return .test(scheme: scheme, platform: platform, destination: destination, testPlan: testPlan)
+    }
+
+    private static func required(_ map: [String: JSONValue], _ key: String, workflow: String) throws(WorkflowFileError) -> String {
+        guard let text = try optionalString(map[key], key: key, workflow: workflow) else {
+            throw .invalidYAML("workflow '\(workflow)': action is missing '\(key)'")
+        }
+        return text
+    }
+
+    private static func schemeAndPlatform(
+        _ map: [String: JSONValue], workflow: String
+    ) throws(WorkflowFileError) -> (String, Platform) {
+        let scheme = try required(map, "scheme", workflow: workflow)
+        let platformName = try required(map, "platform", workflow: workflow)
+        guard let platform = Platform(rawValue: platformName) else { throw .unknownPlatform(platformName) }
+        return (scheme, platform)
     }
 
     private static func postAction(_ value: JSONValue, workflow: String) throws(WorkflowFileError) -> PostActionSpec {

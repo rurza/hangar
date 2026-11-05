@@ -310,7 +310,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
                 struct Payload: Decodable { var commit: String; var workflows: WorkflowFile; var source: WorkflowSource }
                 let payload = try decode(Payload.self, response)
                 #expect(payload.commit == "0123456789abcdef0123456789abcdef01234567")
-                #expect(payload.workflows.workflows.keys.sorted() == ["beta", "testflight"])
+                #expect(payload.workflows.workflows.keys.sorted() == ["beta", "ci", "testflight"])
                 #expect(payload.source == .repository)
             }
         }

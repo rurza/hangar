@@ -42,9 +42,13 @@ private final class PipelineRunner: ProcessRunner {
     func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
         onCommand.withLock { $0 }?(command)
         let outcome = try await recording.run(command, onLine: onLine)
-        guard outcome.exitCode == 0 else { return outcome }
         let arguments = command.arguments
         let fileManager = FileManager.default
+        // `xcodebuild test` leaves a result bundle whether the tests pass or not.
+        if arguments.first == "test", let result = arguments.firstIndex(of: "-resultBundlePath") {
+            try fileManager.createDirectory(atPath: arguments[result + 1], withIntermediateDirectories: true)
+        }
+        guard outcome.exitCode == 0 else { return outcome }
         if arguments.first == "clone", let repository = arguments.last {
             try fileManager.createDirectory(atPath: repository + "/.git", withIntermediateDirectories: true)
             try fileManager.createDirectory(atPath: repository + "/ci_scripts", withIntermediateDirectories: true)
@@ -107,7 +111,7 @@ private final class Shared<Value: Sendable>: Sendable {
             try XcodeLocatorTests.makeXcode(
                 in: URL(fileURLWithPath: applications), name: "Xcode.app", version: xcode, build: "27C100")
             let job = Job(
-                id: UUID(), buildID: UUID(), action: ArchiveAction(scheme: "Demo", platform: .iOS, export: .appStoreConnect),
+                id: UUID(), buildID: UUID(), action: WorkflowAction(scheme: "Demo", platform: .iOS, export: .appStoreConnect),
                 status: .assigned, createdAt: Date(timeIntervalSince1970: 0))
             assignment = JobAssignment(
                 job: job,
@@ -130,11 +134,28 @@ private final class Shared<Value: Sendable>: Sendable {
             WorkspaceLayout(dataDirectory: dataDirectory, appSlug: "demo", jobID: assignment.job.id)
         }
 
+        /// Makes the job a test action of `DemoTests` and scripts the simulator list and the result summary.
+        mutating func makeTestJob(
+            _ action: WorkflowAction = .test(scheme: "DemoTests", platform: .iOS, testPlan: "Smoke"),
+            simulators: String = "simctl-devices", summary: String? = "xcresult-summary-passed"
+        ) throws {
+            assignment.job.action = action
+            assignment.workflow.actions = [action]
+            let devices = String(decoding: try SimulatorCatalogTests.fixture(simulators), as: UTF8.self)
+            runner.recording.script({ $0.arguments.starts(with: ["simctl", "list"]) }, lines: [devices])
+            if let summary {
+                let json = String(decoding: try SimulatorCatalogTests.fixture(summary), as: UTF8.self)
+                runner.recording.script({ $0.arguments.first == "xcresulttool" }, lines: [json])
+            } else {
+                runner.recording.script({ $0.arguments.first == "xcresulttool" }, lines: ["Error: no result bundle"], exitCode: 1)
+            }
+        }
+
         func run(cancelled: @escaping @Sendable () -> Bool = { false }) async -> JobResult {
             let jobRunner = JobRunner(
                 connection: connection, runner: runner,
                 locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: applications),
-                dataDirectory: dataDirectory, clock: clock,
+                dataDirectory: dataDirectory, machineName: "Studio", clock: clock,
                 appStoreConnectFactory: { [credentials, appStoreConnect] received in
                     credentials.update { $0.append(received) }
                     return appStoreConnect
@@ -214,6 +235,135 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.runner.commands.last?.arguments == ["-C", layout.repository, "clean", "-ffdx"])
         #expect(!FileManager.default.fileExists(atPath: layout.jobDirectory))
         #expect(FileManager.default.fileExists(atPath: fixture.dataDirectory + "/jobs"))
+    }
+
+    // MARK: Test jobs
+
+    private static let testSteps = ["checkout", "post-clone", "pre-xcodebuild", "test", "post-xcodebuild", "upload-artifacts", "cleanup"]
+    private static func isTest(_ command: ProcessCommand) -> Bool { command.arguments.first == "test" }
+
+    @Test func testJobRunsItsStepsWithTheChosenSimulatorAndReportsTheSummary() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob()
+
+        let result = await fixture.run()
+
+        #expect(result == JobResult(status: .succeeded, outputs: [
+            "test.passed": "42", "test.failed": "0", "test.skipped": "0", "test.total": "42", "test.failures": "[]",
+        ]))
+        // No stamp, export or post-actions, though the workflow has a TestFlight post-action.
+        #expect(fixture.connection.finalStatuses.map(\.name) == Self.testSteps)
+        #expect(fixture.connection.finalStatuses.allSatisfy { $0.status == .succeeded })
+
+        let layout = fixture.layout
+        let test = try #require(fixture.command(Self.isTest))
+        #expect(test.arguments.contains("platform=iOS Simulator,id=98DAE3C9-6916-4BC4-89CD-DB0A8BC793CD"))
+        #expect(test.arguments.contains("-testPlan"))
+        #expect(test.environment["CI_XCODEBUILD_ACTION"] == "test")
+        #expect(test.environment["CI_TEST_DESTINATION_DEVICE_TYPE"] == "iPhone 17")
+        #expect(test.environment["CI_TEST_DESTINATION_RUNTIME"] == "iOS 27.2")
+        #expect(test.environment["CI_TEST_PLAN"] == "Smoke")
+        #expect(test.environment["CI_ARCHIVE_PATH"] == nil)
+        #expect(test.environment["CI_RESULT_BUNDLE_PATH"] == layout.resultBundle)
+        #expect(test.environment["HANGAR_GITHUB_TOKEN"] == nil)
+        #expect(test.environment["HANGAR_ASC_KEY_PATH"] == nil)
+        #expect(!test.environment.values.contains { $0.contains(Self.githubToken) || $0.contains(Self.pemBody) })
+        let simctl = try #require(fixture.command { $0.arguments.starts(with: ["simctl"]) })
+        #expect(simctl.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
+        #expect(simctl.environment["HANGAR_GITHUB_TOKEN"] == nil)
+        let summary = try #require(fixture.command { $0.arguments.first == "xcresulttool" })
+        #expect(summary.environment["HANGAR_GITHUB_TOKEN"] == nil)
+        #expect(fixture.hook(.postXcodebuild)?.environment["CI_XCODEBUILD_ACTION"] == "test")
+        #expect(fixture.hook(.postXcodebuild)?.environment["CI_XCODEBUILD_EXIT_CODE"] == "0")
+        #expect(!fixture.runner.commands.contains(where: Self.isArchive))
+        #expect(fixture.connection.logLines.contains("Tests: 42 passed · 0 failed · 0 skipped"))
+        #expect(fixture.connection.uploads == ["DemoTests.xcresult.zip"])
+    }
+
+    @Test func failingTestsFailTheJobWithTheirCountAndList() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob(summary: "xcresult-summary-failed")
+        fixture.runner.recording.script(Self.isTest, lines: ["** TEST FAILED **"], exitCode: 65)
+
+        let result = await fixture.run()
+
+        #expect(result.status == .failed)
+        #expect(result.failureReason == "test: 3 tests failed")
+        #expect(result.outputs["test.failed"] == "3")
+        #expect(result.outputs["test.passed"] == "1")
+        let failures = try JSONDecoder().decode([TestFailure].self, from: Data(try #require(result.outputs["test.failures"]).utf8))
+        #expect(failures.count == 3)
+        #expect(failures[0].message == "XCTAssertTrue failed")
+        #expect(fixture.connection.status(of: "test") == .failed)
+        #expect(fixture.connection.status(of: "post-xcodebuild") == .succeeded)
+        #expect(fixture.hook(.postXcodebuild)?.environment["CI_XCODEBUILD_EXIT_CODE"] == "65")
+        #expect(fixture.connection.logLines.contains { $0.contains("SwiftUIRecorderTests/testTabFromAFieldReachesTheRecorder()") })
+    }
+
+    @Test func aTestRunThatBreaksKeepsTheXcodebuildReason() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob(summary: nil)
+        fixture.runner.recording.script(Self.isTest, lines: ["error: build failed"], exitCode: 70)
+
+        let result = await fixture.run()
+
+        #expect(result == JobResult(status: .failed, failureReason: "test: xcodebuild exited with 70"))
+    }
+
+    /// A build that fails before any test ran leaves a result bundle with no tests in it: no Tests section then.
+    @Test func aBuildFailureReportsNoEmptyTotals() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob(summary: "xcresult-summary-empty")
+        fixture.runner.recording.script(Self.isTest, lines: ["** TEST FAILED **"], exitCode: 65)
+
+        let result = await fixture.run()
+
+        #expect(result == JobResult(status: .failed, failureReason: "test: xcodebuild exited with 65"))
+        #expect(!fixture.connection.logLines.contains { $0.hasPrefix("Tests:") })
+    }
+
+    @Test func noSimulatorFailsBeforeCheckout() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob(.test(scheme: "DemoTests", platform: .visionOS))
+
+        let result = await fixture.run()
+
+        #expect(result.failureReason
+            == "No visionOS simulator available on Studio; install one in Xcode › Settings › Components")
+        #expect(!fixture.runner.commands.contains { $0.arguments.first == "clone" })
+        #expect(fixture.connection.finalStatuses.map(\.name) == Self.testSteps)
+        #expect(fixture.connection.status(of: "test") == .skipped)
+    }
+
+    @Test func anUnknownNamedSimulatorSaysWhichOnesExist() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob(.test(scheme: "DemoTests", platform: .iOS, destination: "iPhone 99"))
+
+        let result = await fixture.run()
+
+        #expect(result.failureReason?.hasPrefix("No iOS simulator named “iPhone 99” on Studio") == true)
+        #expect(result.failureReason?.contains("iPhone 17") == true)
+    }
+
+    @Test func macOSTestsNeedNoSimulatorNorAppStoreConnectKey() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try fixture.makeTestJob(.test(scheme: "DemoTests", platform: .macOS))
+        fixture.assignment.environment = [EnvEntry(name: "HANGAR_GITHUB_TOKEN", value: Self.githubToken, isSecret: true)]
+
+        let result = await fixture.run()
+
+        #expect(result.status == .succeeded)
+        #expect(!fixture.runner.commands.contains { $0.arguments.starts(with: ["simctl"]) })
+        let test = try #require(fixture.command(Self.isTest))
+        #expect(test.arguments.contains("platform=macOS"))
+        #expect(!test.arguments.contains("-authenticationKeyPath"))
     }
 
     @Test func archiveFailureStillRunsPostXcodebuildAndUploads() async throws {

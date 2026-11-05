@@ -8,8 +8,31 @@ const DEFAULT_TIMEOUT = 60;
 
 let nextKey = 0;
 
-function blankAction() {
-  return { scheme: '', platform: 'ios', export: 'app-store-connect' };
+const ACTION_KINDS = [['archive', 'Archive'], ['test', 'Test']];
+
+/** A new action of `kind`. Actions keep every field of both kinds, so switching kinds back and forth loses nothing;
+ * `toWorkflow` writes only the fields of the action's kind. */
+function blankAction(kind = 'archive') {
+  return { kind, scheme: '', platform: 'ios', export: 'app-store-connect', destination: '', testPlan: '' };
+}
+
+function setActionKind(action, kind) {
+  action.kind = kind;
+}
+
+/** An action in the API's JSON shape: archives `{kind, scheme, platform, export}`, tests
+ * `{kind, scheme, platform, destination?, testPlan?}`. An empty or "recommended" destination is left out, as is any
+ * destination of a macOS test (it runs on the Mac). */
+function actionToJSON(action) {
+  const base = { kind: action.kind, scheme: action.scheme.trim(), platform: action.platform };
+  if (action.kind !== 'test') return { ...base, kind: 'archive', export: action.export };
+  const destination = (action.destination ?? '').trim();
+  if (destination && destination.toLowerCase() !== 'recommended' && action.platform !== 'macos') {
+    base.destination = destination;
+  }
+  const testPlan = (action.testPlan ?? '').trim();
+  if (testPlan) base.testPlan = testPlan;
+  return base;
 }
 
 function blankTestFlight() {
@@ -39,7 +62,15 @@ function fromWorkflow(name, workflow) {
     xcode: workflow.xcode ?? '',
     team: workflow.teamID ?? '',
     tools: [...(workflow.tools ?? [])],
-    actions: (workflow.actions ?? []).map((action) => ({ ...action })),
+    actions: (workflow.actions ?? []).map((action) => {
+      const kind = action.kind === 'test' ? 'test' : 'archive';
+      return {
+        ...blankAction(kind), ...action, kind,
+        export: action.export ?? 'app-store-connect',
+        destination: action.destination ?? '',
+        testPlan: action.testPlan ?? '',
+      };
+    }),
     testflightOn: Boolean(spec),
     testflight: spec
       ? {
@@ -63,9 +94,7 @@ function toWorkflow(model) {
   const team = model.team.trim();
   if (team) workflow.teamID = team;
   workflow.tools = [...model.tools];
-  workflow.actions = model.actions.map((action) => ({
-    scheme: action.scheme.trim(), platform: action.platform, export: action.export,
-  }));
+  workflow.actions = model.actions.map(actionToJSON);
   const postActions = [...model.otherPostActions];
   if (model.testflightOn) {
     const t = model.testflight;
@@ -123,4 +152,4 @@ function problems(models) {
   return found;
 }
 
-export { blankAction, fileFromModels, modelsFromFile, problems, scratchWorkflow };
+export { ACTION_KINDS, blankAction, fileFromModels, modelsFromFile, problems, scratchWorkflow, setActionKind };

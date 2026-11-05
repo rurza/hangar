@@ -54,6 +54,15 @@ import Testing
         #expect(await Self.doctor(runner).report(runningJobIDs: []).onACPower)
     }
 
+    @Test func reportsSimulatorRuntimes() async throws {
+        let runner = Self.scriptedRunner()
+        let devices = String(decoding: SimulatorCatalogTests.several, as: UTF8.self)
+        runner.script({ $0.arguments == ["simctl", "list", "devices", "available", "--json"] }, lines: [devices])
+        let report = await Self.doctor(runner).report(runningJobIDs: [])
+        #expect(report.simulatorRuntimes == ["iOS 26.4", "iOS 27.2", "visionOS 27.1"])
+        #expect(await Self.doctor(Self.scriptedRunner()).report(runningJobIDs: []).simulatorRuntimes == [])
+    }
+
     @Test func runningJobsAreEchoed() async {
         let ids = [UUID(), UUID()]
         #expect(await Self.doctor(Self.scriptedRunner()).report(runningJobIDs: ids).runningJobIDs == ids)

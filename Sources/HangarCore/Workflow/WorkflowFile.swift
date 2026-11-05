@@ -29,15 +29,76 @@ public enum ExportMethod: String, Codable, Sendable {
     case developerID = "developer-id"
 }
 
-public struct ArchiveAction: Codable, Hashable, Sendable {
+/// What an action does: archive and export a scheme, or run its tests.
+public enum ActionKind: String, Codable, Sendable, CaseIterable {
+    case archive, test
+
+    /// "Archive", "Test".
+    public var label: String {
+        switch self {
+        case .archive: "Archive"
+        case .test: "Test"
+        }
+    }
+}
+
+/// One action of a workflow; each becomes one job of a build.
+///
+/// Archive actions have an `export` method and no test fields; test actions have no `export`, an optional simulator
+/// `destination` (nil means the recommended one) and an optional `testPlan`. The parser enforces this. JSON without
+/// `kind` (stored before test actions existed) decodes as an archive.
+public struct WorkflowAction: Codable, Hashable, Sendable {
+    public var kind: ActionKind
     public var scheme: String
     public var platform: Platform
-    public var export: ExportMethod
+    /// Set for archives, nil for tests.
+    public var export: ExportMethod?
+    /// Tests only: a simulator name such as "iPhone 17 Pro"; nil picks the recommended one.
+    public var destination: String?
+    /// Tests only: the test plan passed to `xcodebuild -testPlan`.
+    public var testPlan: String?
 
+    /// An archive action.
     public init(scheme: String, platform: Platform, export: ExportMethod) {
+        self.kind = .archive
         self.scheme = scheme
         self.platform = platform
         self.export = export
+    }
+
+    private init(test scheme: String, platform: Platform, destination: String?, testPlan: String?) {
+        self.kind = .test
+        self.scheme = scheme
+        self.platform = platform
+        self.destination = destination
+        self.testPlan = testPlan
+    }
+
+    public static func test(
+        scheme: String, platform: Platform, destination: String? = nil, testPlan: String? = nil
+    ) -> WorkflowAction {
+        WorkflowAction(test: scheme, platform: platform, destination: destination, testPlan: testPlan)
+    }
+
+    /// "Archive – iOS", "Test – macOS".
+    public var kindLabel: String { "\(kind.label) – \(platform.ciName)" }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, scheme, platform, export, destination, testPlan
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(ActionKind.self, forKey: .kind) ?? .archive
+        scheme = try container.decode(String.self, forKey: .scheme)
+        platform = try container.decode(Platform.self, forKey: .platform)
+        switch kind {
+        case .archive:
+            export = try container.decode(ExportMethod.self, forKey: .export)
+        case .test:
+            destination = try container.decodeIfPresent(String.self, forKey: .destination)
+            testPlan = try container.decodeIfPresent(String.self, forKey: .testPlan)
+        }
     }
 }
 
@@ -59,12 +120,13 @@ public struct Workflow: Codable, Equatable, Sendable {
     public var xcode: String
     public var teamID: String?
     public var tools: [String]
-    public var actions: [ArchiveAction]
+    /// Archive and test actions, in file order; post-actions apply to archive actions only.
+    public var actions: [WorkflowAction]
     public var postActions: [PostActionSpec]
 
     public init(
         project: String? = nil, workspace: String? = nil, xcode: String, teamID: String? = nil,
-        tools: [String] = [], actions: [ArchiveAction], postActions: [PostActionSpec] = []
+        tools: [String] = [], actions: [WorkflowAction], postActions: [PostActionSpec] = []
     ) {
         self.project = project
         self.workspace = workspace

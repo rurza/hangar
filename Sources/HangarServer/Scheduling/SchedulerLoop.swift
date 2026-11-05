@@ -131,7 +131,8 @@ public actor SchedulerLoop {
             candidates.append(
                 QueuedJob(
                     id: job.id, buildID: job.buildID, createdAt: job.createdAt, xcode: workflow.xcode,
-                    tools: workflow.tools, pinnedMachineID: pinned))
+                    tools: workflow.tools, pinnedMachineID: pinned,
+                    simulatorPlatform: job.action.kind == .test && job.action.platform != .macOS ? job.action.platform : nil))
         }
 
         let plan = Scheduler.plan(jobs: candidates, machines: snapshots, minFreeDiskGB: config.minFreeDiskGB)
@@ -169,6 +170,6 @@ public actor SchedulerLoop {
             id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now), freeSlots: freeSlots,
             runningJobs: runningJobs, xcodeVersions: report.xcodes.map(\.version), tools: Set(report.tools.keys),
             freeDiskGB: report.freeDiskGB, performanceCores: report.performanceCores, onACPower: report.onACPower,
-            canSign: report.canSignWithoutPrompt)
+            canSign: report.canSignWithoutPrompt, simulatorRuntimes: report.simulatorRuntimes)
     }
 }

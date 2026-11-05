@@ -1,5 +1,21 @@
 import Foundation
 
+/// Where a test action runs: the `xcodebuild -destination` value and, when known, Xcode Cloud's descriptions of it.
+public struct TestDestination: Sendable, Equatable {
+    /// `platform=iOS Simulator,id=<udid>` or `platform=macOS`.
+    public var xcodebuildDestination: String
+    /// `CI_TEST_DESTINATION_DEVICE_TYPE`, e.g. "iPhone 17".
+    public var deviceType: String?
+    /// `CI_TEST_DESTINATION_RUNTIME`, e.g. "iOS 27.2".
+    public var runtime: String?
+
+    public init(xcodebuildDestination: String, deviceType: String? = nil, runtime: String? = nil) {
+        self.xcodebuildDestination = xcodebuildDestination
+        self.deviceType = deviceType
+        self.runtime = runtime
+    }
+}
+
 /// Builds the Xcode Cloud-compatible environment every job runs with.
 public struct CIEnvironment: Sendable {
     public struct Paths: Sendable, Equatable {
@@ -62,20 +78,20 @@ public struct CIEnvironment: Sendable {
 
     /// `processEnvironment` defaults to the worker's own; tests inject a fixed one.
     public static func make(
-        app: App, workflow name: String, action: ArchiveAction, buildNumber: Int, jobID: UUID, buildID: UUID,
+        app: App, workflow name: String, action: WorkflowAction, buildNumber: Int, jobID: UUID, buildID: UUID,
         commit: String, ref: String, teamID: String?, paths: Paths, developerDir: String, basePATH: String,
+        testDestination: TestDestination? = nil,
         processEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var env: [String: String] = [
             "CI": "TRUE",
             "CI_HANGAR": "TRUE",
             "CI_START_CONDITION": "manual",
-            "CI_XCODEBUILD_ACTION": "archive",
+            "CI_XCODEBUILD_ACTION": action.kind.rawValue,
             "CI_PRIMARY_REPOSITORY_PATH": paths.repository,
             "CI_WORKSPACE": paths.workspace,
             "CI_PROJECT_FILE_PATH": paths.projectFile,
             "CI_DERIVED_DATA_PATH": paths.derivedData,
-            "CI_ARCHIVE_PATH": paths.archive,
             "CI_RESULT_BUNDLE_PATH": paths.resultBundle,
             "CI_BUILD_NUMBER": String(buildNumber),
             "CI_BUILD_ID": jobID.uuidString,
@@ -90,6 +106,14 @@ public struct CIEnvironment: Sendable {
             "PATH": dedupedPATH(basePATH + ":/opt/homebrew/bin:/usr/local/bin"),
             "GIT_TERMINAL_PROMPT": "0",
         ]
+        switch action.kind {
+        case .archive:
+            env["CI_ARCHIVE_PATH"] = paths.archive
+        case .test:
+            if let testPlan = action.testPlan { env["CI_TEST_PLAN"] = testPlan }
+            if let deviceType = testDestination?.deviceType { env["CI_TEST_DESTINATION_DEVICE_TYPE"] = deviceType }
+            if let runtime = testDestination?.runtime { env["CI_TEST_DESTINATION_RUNTIME"] = runtime }
+        }
         if !isFullSHA(ref) { env["CI_BRANCH"] = ref }
         if let teamID { env["CI_TEAM_ID"] = teamID }
         env.merge(identityEnvironment(from: processEnvironment)) { ci, _ in ci }
@@ -99,13 +123,14 @@ public struct CIEnvironment: Sendable {
     }
 
     public static func postXcodebuildAdditions(
-        exitCode: Int32, action: ArchiveAction, exportedAppPath: String?
+        exitCode: Int32, action: WorkflowAction, exportedAppPath: String?
     ) -> [String: String] {
         var additions = ["CI_XCODEBUILD_EXIT_CODE": String(exitCode)]
         if let exportedAppPath {
             switch action.export {
-            case .appStoreConnect: additions["CI_APP_STORE_SIGNED_APP_PATH"] = exportedAppPath
-            case .developerID: additions["CI_DEVELOPER_ID_SIGNED_APP_PATH"] = exportedAppPath
+            case nil: break
+            case .appStoreConnect?: additions["CI_APP_STORE_SIGNED_APP_PATH"] = exportedAppPath
+            case .developerID?: additions["CI_DEVELOPER_ID_SIGNED_APP_PATH"] = exportedAppPath
             }
         }
         return additions
