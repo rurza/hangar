@@ -1435,7 +1435,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 }
 
 .steps { margin: 0; padding: 0; list-style: none; display: grid; }
-.step { display: flex; align-items: center; gap: 10px; min-height: 32px; font: var(--callout); letter-spacing: -0.32px; }
+.step { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; min-height: 32px; font: var(--callout); letter-spacing: -0.32px; }
 .step-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .step-row-pending .step-name, .step-row-skipped .step-name { color: var(--secondary); }
 .step-row-running .step-name { font-weight: 600; }
@@ -1454,6 +1454,27 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .step-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
 .step-succeeded { --tone: var(--success); }
 .step-failed { --tone: var(--failure); }
+.step-warning { --tone: var(--warning); }
+.step-cancelled { --tone: var(--fill-strong); color: var(--secondary); }
+.step-row-cancelled .step-name { color: var(--secondary); }
+/* The cause or warning under a step: indented past the icon, wrapping long compiler lines. */
+.step-detail {
+  flex-basis: 100%;
+  margin: 0 0 6px 30px;
+  font: var(--footnote);
+  overflow-wrap: anywhere;
+  color: var(--secondary);
+}
+.step-detail-failed { color: var(--failure); }
+.step-detail-warning { color: color-mix(in srgb, var(--warning) 70%, var(--text)); }
+.step-stages { flex-basis: 100%; margin: 0 0 6px 30px; padding: 0; list-style: none; display: grid; gap: 4px; }
+.step-stage { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; font: var(--footnote); }
+.step-stage .step-icon { width: 16px; height: 16px; }
+.step-stage .step-icon svg { width: 11px; height: 11px; }
+.step-stage-name { font-weight: 600; }
+.step-stage-detail { color: var(--secondary); overflow-wrap: anywhere; min-width: 0; }
+.step-stage.step-row-warning .step-stage-detail { color: color-mix(in srgb, var(--warning) 70%, var(--text)); }
+.step-stage.step-row-failed .step-stage-detail { color: var(--failure); }
 .step-skipped { --tone: var(--fill-strong); color: var(--secondary); }
 .step-pending { background: none; box-shadow: inset 0 0 0 1.5px var(--tertiary); }
 .step-running { --tone: var(--running); background: none; box-shadow: inset 0 0 0 1.5px var(--tone); }

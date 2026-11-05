@@ -6,6 +6,7 @@ import {
   button, card, confirm, duration, emptyState, h, page, relativeTime, replaceChildren, section, spinner, statusBadge,
   svg, toast,
 } from '../ui.js';
+import { jobRunLine, stepDetail, stepDisplayStatus, stepStages, stepStatusWords } from '../build-model.js';
 import { appIcon } from './apps.js';
 
 const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
@@ -128,6 +129,8 @@ function stepIcon(status) {
     succeeded: [['path', { d: 'M7 12.5l3.2 3.2L17 9' }]],
     failed: [['path', { d: 'M8.5 8.5l7 7M15.5 8.5l-7 7' }]],
     skipped: [['path', { d: 'M8 12h8' }]],
+    warning: [['path', { d: 'M12 7v6' }], ['path', { d: 'M12 16.5v.5' }]],
+    cancelled: [['path', { d: 'M8 8l8 8' }]],
     pending: [],
     running: [],
   };
@@ -340,7 +343,7 @@ function jobCardView(initial, { machines, live, signal }) {
       h('div', { class: 'job-title-block' },
         h('h3', { class: 'job-title' }, actionLabel(job.action)),
         h('p', { class: 'card-detail' },
-          machine ? machine.name : job.machineID ? 'Unknown machine' : 'No machine yet',
+          jobRunLine(job, machine),
           job.startedAt
             ? [' · ', live(h('span', null), () => duration(job.startedAt, isTerminal(job.status) ? (job.finishedAt ?? job.startedAt) : null))]
             : null)),
@@ -371,16 +374,29 @@ function jobCardView(initial, { machines, live, signal }) {
 }
 
 function stepRow(step, job, live) {
+  const status = stepDisplayStatus(step, job);
   const time = h('span', { class: 'step-duration' });
   if (step.startedAt && step.finishedAt) time.textContent = duration(step.startedAt, step.finishedAt);
   // A step left running by a job that ended (a lost worker, say) stops at the job's end instead of ticking on.
   else if (step.startedAt && isTerminal(job.status)) time.textContent = duration(step.startedAt, job.finishedAt ?? step.startedAt);
   else if (step.startedAt) live(time, () => duration(step.startedAt));
-  return h('li', { class: ['step', `step-row-${step.status}`] },
-    stepIcon(step.status),
+  const detail = stepDetail(step, job);
+  const stages = stepStages(step, job);
+  return h('li', { class: ['step', `step-row-${status}`] },
+    stepIcon(status),
     h('span', { class: 'step-name' }, stepLabel(step.name)),
-    h('span', { class: 'visually-hidden' }, `, ${step.status}`),
-    time);
+    h('span', { class: 'visually-hidden' }, `, ${stepStatusWords(status)}`),
+    time,
+    detail ? h('p', { class: ['step-detail', `step-detail-${status}`] }, detail) : null,
+    stages.length
+      ? h('ol', { class: 'step-stages', 'aria-label': `${stepLabel(step.name)} stages` }, stages.map((stage) => h('li', {
+        class: ['step-stage', `step-row-${stage.status}`],
+      },
+      stepIcon(stage.status),
+      h('span', { class: 'step-stage-name' }, stage.name),
+      h('span', { class: 'visually-hidden' }, `, ${stepStatusWords(stage.status)}`),
+      stage.detail ? h('span', { class: 'step-stage-detail' }, stage.detail) : null)))
+      : null);
 }
 
 // MARK: Log panel
