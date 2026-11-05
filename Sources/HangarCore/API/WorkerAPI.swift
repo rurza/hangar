@@ -10,11 +10,15 @@ public struct JobAssignment: Codable, Equatable, Sendable {
     public var commit: String
     public var ref: String
     public var environment: [EnvEntry]
+    /// The server's Apple Development identity: only in the assignment of an archive on a VM machine, whose guest
+    /// installs it in a keychain made for the job. Host workers never get it.
+    public var signingIdentity: JobSigningIdentity?
 
     public init(
         job: Job, app: App, workflow: Workflow, workflowName: String, buildNumber: Int, commit: String, ref: String,
-        environment: [EnvEntry]
+        environment: [EnvEntry], signingIdentity: JobSigningIdentity? = nil
     ) {
+        self.signingIdentity = signingIdentity
         self.job = job
         self.app = app
         self.workflow = workflow

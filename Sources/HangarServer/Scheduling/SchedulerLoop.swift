@@ -32,6 +32,8 @@ public actor SchedulerLoop {
     let now: @Sendable () -> Date
     /// Whether the App Store Connect key a build of this app gets is a team key (it has an issuer ID).
     let teamKey: @Sendable (_ appID: UUID) -> Bool
+    /// Why a VM archive cannot sign with the server's identity right now; nil when it can.
+    let signingProblem: @Sendable () -> String?
     private let logger = Logger(label: "app.hangar.server.scheduler")
     private let wakes: AsyncStream<Void>
     private let wake: AsyncStream<Void>.Continuation
@@ -39,9 +41,11 @@ public actor SchedulerLoop {
     public init(
         builds: BuildRepository, machines: MachineRepository, events: EventBus, config: SchedulerConfig = .init(),
         clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = Date.init,
-        teamKey: @escaping @Sendable (_ appID: UUID) -> Bool = { _ in true }
+        teamKey: @escaping @Sendable (_ appID: UUID) -> Bool = { _ in true },
+        signingProblem: @escaping @Sendable () -> String? = { nil }
     ) {
         self.teamKey = teamKey
+        self.signingProblem = signingProblem
         self.builds = builds
         self.machines = machines
         self.events = events
@@ -114,6 +118,7 @@ public actor SchedulerLoop {
         let snapshots = machines.map { Self.snapshot($0, runningJobs: running[$0.id] ?? 0, now: now) }
 
         let queued = try builds.jobs(status: [.queued])
+        let signingProblem = queued.isEmpty ? nil : signingProblem()
         var requirements: [UUID: (workflow: Workflow?, pinned: UUID?, teamKey: Bool)] = [:]
         var candidates: [QueuedJob] = []
         for job in queued {
@@ -135,7 +140,7 @@ public actor SchedulerLoop {
             candidates.append(
                 Self.queuedJob(
                     id: job.id, buildID: job.buildID, createdAt: job.createdAt, action: job.action, workflow: workflow,
-                    pinned: pinned, teamKey: teamKey))
+                    pinned: pinned, teamKey: teamKey, signingProblem: signingProblem))
         }
 
         let plan = Scheduler.plan(jobs: candidates, machines: snapshots, minFreeDiskGB: config.minFreeDiskGB)
@@ -162,17 +167,19 @@ public actor SchedulerLoop {
     }
 
     /// The job as the scheduler judges it: what its action needs of a machine. Shared with the deploy dry run.
-    /// `teamKey`: the app's App Store Connect key has an issuer ID.
+    /// `teamKey`: the app's App Store Connect key has an issuer ID. `signingProblem`: why the server's signing
+    /// identity is not usable (it matters to archives only).
     static func queuedJob(
         id: UUID, buildID: UUID, createdAt: Date, action: WorkflowAction, workflow: Workflow, pinned: UUID?,
-        teamKey: Bool
+        teamKey: Bool, signingProblem: String? = nil
     ) -> QueuedJob {
         QueuedJob(
             id: id, buildID: buildID, createdAt: createdAt, xcode: workflow.xcode, tools: workflow.tools,
             pinnedMachineID: pinned,
             simulatorPlatform: action.kind == .test && action.platform != .macOS ? action.platform : nil,
             requiredCapabilities: workflow.needsCapabilities(for: action),
-            needsXcodeAccount: action.kind == .archive && !teamKey)
+            needsXcodeAccount: action.kind == .archive && !teamKey,
+            signingProblem: action.kind == .archive ? signingProblem : nil)
     }
 
     /// Whether `entries` (an app's resolved variables) hold a team key: a non-empty `HANGAR_ASC_ISSUER_ID`, as the
@@ -206,7 +213,7 @@ public actor SchedulerLoop {
                 onACPower: report.onACPower, canSign: report.canSignWithoutPrompt,
                 simulatorRuntimes: Array(Set(vm.images.flatMap(\.simulatorRuntimes))).sorted(),
                 capabilities: Set(report.capabilities), headless: true, paused: machine.paused, vm: true,
-                vmNotReady: vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready"))
+                vmNotReady: vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready"), vmOwnIdentity: vm.ownIdentity)
         }
         return MachineSnapshot(
             id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now), freeSlots: freeSlots,

@@ -196,6 +196,32 @@ enum Migrations {
                 CREATE INDEX variables_owner ON variables(scope, owner_id);
                 """)
         }
+        // The server's one Apple Development identity for VM archives (VM builds design, *Signing*): the `.p12` and its
+        // password sealed with the master key, as variables are, and what the certificate says about itself.
+        // `signing_certificate_creations` records every certificate Hangar asked App Store Connect for, for the
+        // 24-hour guard; it outlives the identity.
+        migrator.registerMigration("v10") { db in
+            try db.execute(sql: """
+                CREATE TABLE signing_identity (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    sealed_p12 BLOB NOT NULL,
+                    sealed_password BLOB NOT NULL,
+                    name TEXT NOT NULL,
+                    team_id TEXT,
+                    serial_number TEXT NOT NULL,
+                    expires_at DOUBLE NOT NULL,
+                    created_at DOUBLE NOT NULL,
+                    origin TEXT NOT NULL,
+                    asc_certificate_id TEXT
+                );
+
+                CREATE TABLE signing_certificate_creations (
+                    id TEXT PRIMARY KEY,
+                    started_at DOUBLE NOT NULL,
+                    asc_certificate_id TEXT
+                );
+                """)
+        }
         return migrator
     }
 }

@@ -6,6 +6,7 @@ import HangarCore
 /// takes no jobs, rather than building on the host next to its owner's tools.
 public struct VMDoctor: Sendable {
     public var host: VMHost
+    /// This worker's own identity, if any: it overrides the server's, which comes with each archive's assignment.
     public var identity: VMIdentityStore
     /// Reads the network filter's state; the marker check by default.
     public var networkFilterProblem: @Sendable () -> String?
@@ -27,7 +28,7 @@ public struct VMDoctor: Sendable {
         return VMReport(
             slots: slots, configuredSlots: host.settings.slots, freeSlots: max(0, slots - runningJobs),
             storageFreeGB: (VMVolume.freeGB(at: host.storage.root) * 10).rounded() / 10, networkFilter: filterProblem == nil,
-            problem: problem, images: images.map(\.metadata.info))
+            problem: problem, images: images.map(\.metadata.info), ownIdentity: identity.exists)
     }
 
     /// What keeps VM jobs from running right now, or nil; checked before each job.

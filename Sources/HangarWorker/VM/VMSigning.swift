@@ -1,10 +1,10 @@
 import Foundation
 import HangarCore
 
-/// The worker's one Apple Development identity for VM builds (VM builds design, *Signing*). It is kept on the host,
-/// as a `.p12` and its password in two 0600 files next to the worker's configuration, and goes into each job's VM.
-/// Not one per VM or per job: Apple limits development certificates per team, and an `-allowProvisioningUpdates`
-/// archive in a fresh VM without an identity would create a new certificate every time.
+/// An optional per-worker override of the server's Apple Development identity for VM builds (VM builds design,
+/// *Signing*). The server's one identity (Settings › Signing) comes with each VM archive's assignment; when this worker
+/// holds its own, as a `.p12` and its password in two 0600 files next to its configuration, that one goes into the
+/// job's VM instead. Never one per VM or per job: Apple limits development certificates per team.
 public struct VMIdentityStore: Sendable, Equatable {
     public static let fileName = "vm-identity.p12"
     public static let passwordFileName = "vm-identity-password"

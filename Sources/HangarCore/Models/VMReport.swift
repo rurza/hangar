@@ -48,11 +48,15 @@ public struct VMReport: Codable, Equatable, Sendable {
     /// Why no slot is ready, in plain English ("the network filter is not installed: run …"); nil when slots > 0.
     public var problem: String?
     public var images: [VMImageInfo]
+    /// The worker holds its own identity (`hangar-worker vm identity import`), which overrides the server's: its VM
+    /// archives do not need the server's.
+    public var ownIdentity: Bool
 
     public init(
         slots: Int, configuredSlots: Int, freeSlots: Int, storageFreeGB: Double, networkFilter: Bool,
-        problem: String? = nil, images: [VMImageInfo] = []
+        problem: String? = nil, images: [VMImageInfo] = [], ownIdentity: Bool = false
     ) {
+        self.ownIdentity = ownIdentity
         self.slots = slots
         self.configuredSlots = configuredSlots
         self.freeSlots = freeSlots
@@ -63,7 +67,7 @@ public struct VMReport: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case slots, configuredSlots, freeSlots, storageFreeGB, networkFilter, problem, images
+        case slots, configuredSlots, freeSlots, storageFreeGB, networkFilter, problem, images, ownIdentity
     }
 
     public init(from decoder: any Decoder) throws {
@@ -75,6 +79,7 @@ public struct VMReport: Codable, Equatable, Sendable {
         networkFilter = try container.decodeIfPresent(Bool.self, forKey: .networkFilter) ?? false
         problem = try container.decodeIfPresent(String.self, forKey: .problem)
         images = try container.decodeIfPresent([VMImageInfo].self, forKey: .images) ?? []
+        ownIdentity = try container.decodeIfPresent(Bool.self, forKey: .ownIdentity) ?? false
     }
 
     /// The Xcode versions a job can get on this machine: those of its images.

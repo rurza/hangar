@@ -23,6 +23,8 @@ public struct HangarServerApp: Sendable {
     /// Tokens a job's VM uses instead of its machine's; only their hashes are stored.
     public let jobTokens: JobTokenRepository
     public let variables: VariableRepository
+    /// The one Apple Development identity VM archives sign with; created or imported only on the owner's request.
+    public let signing: SigningIdentityService
     public let workflowFiles: WorkflowFileRepository
     public let numbers: BuildNumberService
     public let events: EventBus
@@ -60,7 +62,8 @@ public struct HangarServerApp: Sendable {
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
     /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
     /// carries the public iTunes lookup that finds icons App Store Connect has none for; `githubTransport` the
-    /// repository list and the token's account. `setup` is this Mac as the first-run setup sees it.
+    /// repository list and the token's account. `setup` is this Mac as the first-run setup sees it. `signingRunner`
+    /// runs `/usr/bin/openssl` for the signing identity.
     public init(
         configuration: ServerConfiguration, database: Database,
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient,
@@ -68,7 +71,8 @@ public struct HangarServerApp: Sendable {
         numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil,
         iconTransport: any HTTPTransport = URLSessionTransport(),
         githubTransport: any HTTPTransport = URLSessionTransport(),
-        now: @escaping @Sendable () -> Date = Date.init, setup: SetupEnvironment = .live()
+        now: @escaping @Sendable () -> Date = Date.init, setup: SetupEnvironment = .live(),
+        signingRunner: any ProcessRunner = LiveProcessRunner()
     ) throws {
         self.configuration = configuration
         self.database = database
@@ -81,9 +85,16 @@ public struct HangarServerApp: Sendable {
         apiTokens = APITokenRepository(database: database)
         jobTokens = JobTokenRepository(database: database)
         workflowFiles = WorkflowFileRepository(database: database)
-        let variables = VariableRepository(
-            database: database, box: SecretBox(key: try MasterKey.loadOrCreate(at: configuration.masterKeyPath)))
+        let box = SecretBox(key: try MasterKey.loadOrCreate(at: configuration.masterKeyPath))
+        let variables = VariableRepository(database: database, box: box)
         self.variables = variables
+        SigningWorkspace.sweep(parent: configuration.dataDirectory)
+        let signing = SigningIdentityService(
+            repository: SigningIdentityRepository(database: database, box: box),
+            crypto: SigningCrypto(runner: signingRunner, workParent: configuration.dataDirectory),
+            credentials: { try Self.appStoreConnectCredentials(variables: variables) }, factory: appStoreConnectFactory,
+            now: now)
+        self.signing = signing
         numbers = BuildNumberService(
             repository: builds,
             sources: numberSources ?? { try Self.defaultNumberSources(variables: variables, factory: appStoreConnectFactory) })
@@ -93,7 +104,8 @@ public struct HangarServerApp: Sendable {
             config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock, now: now,
             // An unreadable variable counts as a team key: the worker then says what is wrong, instead of every
             // headless machine refusing the job.
-            teamKey: { appID in (try? variables.resolvedEntries(appID: appID, workflow: nil)).map(SchedulerLoop.hasTeamKey) ?? true })
+            teamKey: { appID in (try? variables.resolvedEntries(appID: appID, workflow: nil)).map(SchedulerLoop.hasTeamKey) ?? true },
+            signingProblem: { signing.jobProblem() })
         cancelRequests = CancelRequests()
         buildService = BuildService(
             apps: apps, builds: builds, machines: machines, variables: variables, workflowFiles: workflowFiles,

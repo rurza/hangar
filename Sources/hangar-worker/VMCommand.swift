@@ -374,7 +374,12 @@ struct VMCommand: AsyncParsableCommand {
 
     struct Identity: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "The worker's one Apple Development identity, injected into each job's VM.",
+            abstract: "An optional per-worker override of the server's signing identity for VM jobs.",
+            discussion: """
+                VM archives sign with the Hangar server's one Apple Development identity (Settings › Signing, or \
+                `hangar signing create|import`), which comes with each archive's assignment. Store one here only to \
+                make this worker use a different identity; `vm identity remove` goes back to the server's.
+                """,
             subcommands: [Import.self, FromKeychain.self, Show.self, Remove.self])
 
         struct Import: AsyncParsableCommand {
@@ -425,12 +430,14 @@ struct VMCommand: AsyncParsableCommand {
             func run() async throws {
                 let directory = (try? WorkerConfiguration.load(from: config))?.dataDirectory ?? defaultSupportDirectory
                 let store = VMIdentityStore(dataDirectory: directory)
-                VMCommand.say(store.exists ? "stored: \(store.file)" : "none: archives in VMs fail until one is imported")
+                VMCommand.say(store.exists
+                    ? "stored: \(store.file) (overrides the server's identity on this worker)"
+                    : "none: VM archives sign with the server's identity (Settings › Signing)")
             }
         }
 
         struct Remove: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(abstract: "Deletes the stored identity.")
+            static let configuration = CommandConfiguration(abstract: "Deletes this worker's override; VM archives then use the server's identity.")
 
             @Option(help: "Worker configuration file.")
             var config: String = defaultConfigPath

@@ -284,6 +284,32 @@ struct ImmediateClock: Clock {
         #expect(setup.pool.freeCount == 1)
     }
 
+    /// The server's identity comes in the assignment and goes to the guest in the bundle, not in the bundle's copy of
+    /// the assignment; a worker's own identity overrides it.
+    @Test func theServersIdentityReachesTheGuestUnlessTheWorkerHasItsOwn() async throws {
+        let server = JobSigningIdentity(p12: Data("server-p12".utf8), password: "server-pw")
+        var assignment = WorkerLoopTests.assignment()
+        assignment.signingIdentity = server
+        var expected = assignment
+        expected.signingIdentity = nil
+
+        let plain = try Setup(identity: false, script: Self.succeeding)
+        defer { plain.fixture.cleanUp() }
+        #expect(await plain.jobRunner().run(assignment, cancelled: { false }, stopReason: { nil }).status == .succeeded)
+        let line = try #require(plain.launcher.sessions.first?.sent.first)
+        let bundle = try JSONCoding.decoder.decode(GuestJobBundle.self, from: Data(line.utf8))
+        #expect(bundle.identity == GuestIdentity(p12: server.p12, password: server.password))
+        #expect(bundle.assignment == expected)
+        #expect(bundle.assignment.signingIdentity == nil)
+
+        let overridden = try Setup(identity: true, script: Self.succeeding)
+        defer { overridden.fixture.cleanUp() }
+        #expect(await overridden.jobRunner().run(assignment, cancelled: { false }, stopReason: { nil }).status == .succeeded)
+        let other = try #require(overridden.launcher.sessions.first?.sent.first)
+        let overriddenBundle = try JSONCoding.decoder.decode(GuestJobBundle.self, from: Data(other.utf8))
+        #expect(overriddenBundle.identity == GuestIdentity(p12: Data("p12".utf8), password: "pw"))
+    }
+
     @Test func nothingStartsWhenVMBuildsAreNotReadyOrTheImageOrIdentityIsMissing() async throws {
         let setup = try Setup(identity: false, script: Self.succeeding)
         defer { setup.fixture.cleanUp() }
@@ -296,9 +322,10 @@ struct ImmediateClock: Clock {
         result = await setup.jobRunner().run(assignment, cancelled: { false }, stopReason: { nil })
         #expect(result.failureReason?.contains("no VM image with Xcode 28.0") == true)
 
-        // An archive needs the worker's development identity: without it a fresh VM would create a certificate.
+        // An archive needs a development identity (the server's, or this worker's own): without one a fresh VM would
+        // create a certificate.
         result = await setup.jobRunner().run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
-        #expect(result.failureReason?.contains("no development identity for VM builds") == true)
+        #expect(result.failureReason?.contains("Settings › Signing") == true)
         #expect(setup.connection.issued.isEmpty)
         #expect(setup.engine.machines.isEmpty)
     }
@@ -373,6 +400,11 @@ struct ImmediateClock: Clock {
         report = doctor.report(runningJobs: 0)
         #expect(report.slots == 0 && report.freeSlots == 0 && !report.networkFilter)
         #expect(report.problem == "the VM network filter is not installed")
+
+        // No identity of its own is needed: the server sends its own. One the worker holds is reported as an override.
+        #expect(!report.ownIdentity)
+        try identity.save(p12: Data("p12".utf8), password: SensitiveText("pw"))
+        #expect(doctor.report(runningJobs: 0).ownIdentity)
     }
 
     @Test func aBaseImageAloneIsNotEnough() throws {

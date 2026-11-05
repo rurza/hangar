@@ -86,12 +86,16 @@ public struct VMJobRunner: JobRunning {
         guard free >= needed else {
             return await fail(jobID, "only \(Int(free)) GB free for VMs on \(host.machineName) (needs \(Int(needed)) GB)")
         }
+        // The server's identity comes in the assignment; this worker's own (`vm identity import`) overrides it.
+        var assignment = assignment
+        let serverIdentity = assignment.signingIdentity.map { GuestIdentity(p12: $0.p12, password: $0.password) }
+        assignment.signingIdentity = nil
         let guestIdentity: GuestIdentity?
-        do { guestIdentity = try identity.load() } catch {
+        do { guestIdentity = try identity.load() ?? serverIdentity } catch {
             return await fail(jobID, "cannot read the VM signing identity on \(host.machineName): \(error)")
         }
         if assignment.job.action.kind == .archive, guestIdentity == nil {
-            return await fail(jobID, "\(host.machineName) has no development identity for VM builds: run `hangar-worker vm identity import` (or `vm identity from-keychain`)")
+            return await fail(jobID, "Hangar sent no signing certificate for this VM archive: create or import one in Settings › Signing")
         }
         // A slot can be held for a minute while its state is saved again; the job waits for it.
         var acquired = slots.acquire()

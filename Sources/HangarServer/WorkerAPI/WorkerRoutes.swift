@@ -243,7 +243,17 @@ extension HangarServerApp {
         else { throw IncompleteJob(jobID: job.id) }
         return JobAssignment(
             job: job, app: app, workflow: workflow.forJob(running: job.action), workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
-            environment: try variables.resolvedEntries(appID: app.id, workflow: build.workflow))
+            environment: try variables.resolvedEntries(appID: app.id, workflow: build.workflow),
+            signingIdentity: try assignmentIdentity(job: job, machineID: machineID))
+    }
+
+    /// The server's signing identity, only for an archive on a machine that runs its jobs in VMs: the guest has no
+    /// keychain of its own. A host worker signs with its own keychain and never gets it.
+    func assignmentIdentity(job: Job, machineID: UUID) throws -> JobSigningIdentity? {
+        guard job.action.kind == .archive,
+            try machines.find(nameOrID: machineID.uuidString)?.report?.vm != nil
+        else { return nil }
+        return try signing.jobIdentity()
     }
 
     /// The `{id}` job, which must be assigned to the authenticated machine, and be the job of a job token's scope.

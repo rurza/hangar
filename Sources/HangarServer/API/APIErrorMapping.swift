@@ -15,6 +15,7 @@ enum APIErrorMapping {
         "asc_not_configured", "github_not_configured", "issuer_required", "worker_already_installed",
         "dedicated_user_required",
         "token_exists", "variable_workflows_overlap", "variable_exists", "variable_group_exists",
+        "signing_identity_exists", "signing_busy", "team_key_required",
     ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {
@@ -43,7 +44,7 @@ enum APIErrorMapping {
         if code == "unauthorized" || code == "invalid_api_token" || code == "invalid_job_token" { return .unauthorized }
         if code == "token_scope" || code == "job_token_scope" { return .forbidden }
         if code == "cross_site_request" || code == "invalid_pairing_code" || code == "local_only" { return .forbidden }
-        if code == "too_many_attempts" { return .tooManyRequests }
+        if code == "too_many_attempts" || code == "signing_rate_limited" { return .tooManyRequests }
         if ["worker_binary_missing", "host_name_unknown", "server_address_unusable"].contains(code) { return .serviceUnavailable }
         if code == "host_not_allowed" { return .misdirectedRequest }
         if code == "unsupported_media_type" { return .unsupportedMediaType }

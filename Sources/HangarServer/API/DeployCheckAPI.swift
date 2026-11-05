@@ -118,10 +118,11 @@ extension HangarServerApp {
         func add(_ reason: String, to list: inout [UUID: [String]], _ id: UUID) {
             if !(list[id] ?? []).contains(reason) { list[id, default: []].append(reason) }
         }
+        let signingProblem = signing.jobProblem()
         for action in workflow.actions {
             let job = SchedulerLoop.queuedJob(
                 id: UUID(), buildID: UUID(), createdAt: now, action: action, workflow: workflow, pinned: pinned?.id,
-                teamKey: teamKey)
+                teamKey: teamKey, signingProblem: signingProblem)
             var reasons: [String: [String]] = [:]
             var runnable = false
             var free = false

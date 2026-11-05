@@ -16,11 +16,16 @@ public struct QueuedJob: Sendable {
     /// An archive whose App Store Connect key has no issuer ID: xcodebuild then signs with the Xcode account on the
     /// machine, which a headless worker does not have.
     public var needsXcodeAccount: Bool
+    /// An archive while the server has no usable signing identity: why (none yet, expired). A VM machine cannot take
+    /// it unless its worker holds its own identity; a host machine signs with its own keychain and ignores it.
+    public var signingProblem: String?
 
     public init(
         id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?,
-        simulatorPlatform: Platform? = nil, requiredCapabilities: Set<String> = [], needsXcodeAccount: Bool = false
+        simulatorPlatform: Platform? = nil, requiredCapabilities: Set<String> = [], needsXcodeAccount: Bool = false,
+        signingProblem: String? = nil
     ) {
+        self.signingProblem = signingProblem
         self.simulatorPlatform = simulatorPlatform
         self.requiredCapabilities = requiredCapabilities
         self.needsXcodeAccount = needsXcodeAccount
@@ -59,13 +64,16 @@ public struct MachineSnapshot: Sendable {
     public var vm: Bool
     /// Why none of the Mac's VM slots is ready; set only for a VM machine that reports no ready slot.
     public var vmNotReady: String?
+    /// The VM machine's worker holds its own signing identity (`VMReport.ownIdentity`), which overrides the server's.
+    public var vmOwnIdentity: Bool
 
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
         tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
         simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false, paused: Bool = false,
-        vm: Bool = false, vmNotReady: String? = nil
+        vm: Bool = false, vmNotReady: String? = nil, vmOwnIdentity: Bool = false
     ) {
+        self.vmOwnIdentity = vmOwnIdentity
         self.vm = vm
         self.vmNotReady = vmNotReady
         self.paused = paused
@@ -107,6 +115,9 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case vmNotReady(String)
     /// A VM machine without an image of this Xcode version.
     case noVMImage(String)
+    /// A VM archive while the server has no usable signing identity, and why ("… create or import one in Settings ›
+    /// Signing").
+    case noSigningIdentity(String)
 
     public var description: String {
         switch self {
@@ -115,6 +126,7 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
         case .paused: "builds paused"
         case .vmNotReady(let problem): "VM builds not ready: \(problem)"
         case .noVMImage(let version): "no VM image with Xcode \(version)"
+        case .noSigningIdentity(let problem): problem
         case .xcodeMissing(let version): "Xcode \(version) not installed"
         case .lowDisk(let free, let minimum): "only \(Self.gigabytes(free)) GB free (needs \(Self.gigabytes(minimum)) GB)"
         case .toolMissing(let tool): "\(tool) not installed"
@@ -209,6 +221,8 @@ public enum Scheduler {
         if !machine.vm { reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing) }
         if !machine.canSign { reasons.append(.cannotSign) }
         if job.needsXcodeAccount, machine.headless { reasons.append(.needsTeamKey) }
+        // A VM signs with the server's identity (or its worker's own); a host with its own keychain, as before.
+        if machine.vm, !machine.vmOwnIdentity, let problem = job.signingProblem { reasons.append(.noSigningIdentity(problem)) }
         if let platform = job.simulatorPlatform,
             !machine.simulatorRuntimes.contains(where: { $0.hasPrefix(platform.ciName + " ") })
         {
