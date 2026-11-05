@@ -1,4 +1,6 @@
 import Foundation
+
+#if arch(arm64)
 import Synchronization
 @preconcurrency import Virtualization
 
@@ -189,3 +191,20 @@ private extension Result where Success == Void {
         return nil
     }
 }
+
+#else
+
+/// macOS guests run only on Apple Silicon; the Intel slice of the universal worker reports why instead.
+public struct LiveVirtualMachineEngine: VirtualMachineEngine {
+    public init() {}
+
+    public func make(_ spec: VMSpec) throws -> any VirtualMachine {
+        throw VMError.failed("macOS VMs need an Apple silicon Mac")
+    }
+
+    public func newMachineIdentifier() -> Data { Data() }
+
+    public func unavailableReason() -> String? { "macOS VMs need an Apple silicon Mac" }
+}
+
+#endif
