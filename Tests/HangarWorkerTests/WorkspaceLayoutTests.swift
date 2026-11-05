@@ -80,6 +80,26 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: data + "/workspaces/legilo/repository/old"))
     }
 
+    @Test func dropsCachesThatNameAnotherFolderBeforeABuild() throws {
+        let root = try Self.makeRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = root + "/work/workspaces/legilo"
+        let state = workspace + "/DerivedData/SourcePackages/workspace-state.json"
+        try Self.write(workspace + "/DerivedData/SourcePackages/repositories/x-1/HEAD")
+        try Self.write(workspace + "/DerivedData/Build/x")
+
+        try Self.write(state, #"{"path":"\#(workspace)/DerivedData/SourcePackages/artifacts/x"}"#)
+        #expect(!WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
+        #expect(FileManager.default.fileExists(atPath: workspace + "/DerivedData/Build/x"))
+
+        try Self.write(state, #"{"path":"/old/Application Support/workspaces/legilo/DerivedData/SourcePackages/artifacts/x"}"#)
+        #expect(WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
+        #expect(!FileManager.default.fileExists(atPath: state))
+        #expect(!FileManager.default.fileExists(atPath: workspace + "/DerivedData/Build"))
+        #expect(FileManager.default.fileExists(atPath: workspace + "/DerivedData/SourcePackages/repositories/x-1/HEAD"))
+        #expect(!WorkDirectoryMigration.dropStaleCaches(inWorkspace: workspace))
+    }
+
     @Test func nothingToDoWhenTheyAreTheSameOrThereIsNothing() throws {
         let root = try Self.makeRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }

@@ -2,7 +2,7 @@ import Foundation
 
 /// Where a job's files live under the worker's work directory. Pure path computation; nothing here touches the disk.
 public struct WorkspaceLayout: Sendable, Equatable {
-    private let workspace: String
+    public let workspace: String
     public let jobDirectory: String
     /// The directory holding every job's `TMPDIR`, one folder per job ID.
     public let temporaryRoot: String

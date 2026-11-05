@@ -56,6 +56,18 @@ public enum WorkDirectoryMigration {
         "DerivedData/SourcePackages/checkouts",
     ]
 
+    /// Drops the path-bound caches when SwiftPM's state names a DerivedData other than this workspace's: a workspace
+    /// moved by a worker without the drop above (0.6.0), or by hand. Returns whether it dropped anything.
+    @discardableResult
+    public static func dropStaleCaches(inWorkspace workspace: String) -> Bool {
+        let state = workspace + "/DerivedData/SourcePackages/workspace-state.json"
+        guard let text = try? String(contentsOfFile: state, encoding: .utf8),
+              text.contains("/DerivedData/SourcePackages/"),
+              !text.contains(workspace + "/DerivedData/SourcePackages/") else { return false }
+        dropPathBoundCaches(inWorkspace: workspace)
+        return true
+    }
+
     static func dropPathBoundCaches(inWorkspace workspace: String) {
         for path in pathBoundCaches {
             try? FileManager.default.removeItem(atPath: workspace + "/" + path)

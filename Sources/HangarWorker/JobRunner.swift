@@ -241,6 +241,9 @@ public struct JobRunner: Sendable {
                 atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         merged.warnings.forEach(log)
+        if WorkDirectoryMigration.dropStaleCaches(inWorkspace: layout.workspace) {
+            log("Xcode's package and build caches named another folder (the workspace was moved); dropped them")
+        }
         try materializer.write(merged.filesToWrite)
         // Tests sign with the key when there is one, but do not need it.
         let keyConfigured = Self.nonEmpty(merged.env["HANGAR_ASC_KEY_ID"]) != nil
