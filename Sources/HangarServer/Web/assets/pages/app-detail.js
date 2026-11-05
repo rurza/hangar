@@ -11,7 +11,7 @@ import { appIcon, recheckIconSoon } from './apps.js';
 import { buildDuration } from './build.js';
 import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
-import { variablesEditor } from './variables.js';
+import { linkedGroupsEditor, variablesEditor } from './variables.js';
 import { toWorkflow } from '../workflow-model.js';
 import { workflowToYAML } from '../yaml.js';
 import { workflowSummary } from '../workflow-summary.js';
@@ -40,7 +40,11 @@ export async function appDetailPage(params, context) {
 
   const notice = machinesNotice(signal);
   const latest = latestCard();
-  const workflow = workflowCard(app, signal);
+  const cached = onceEach(signal);
+  const workflow = workflowCard(app, signal, cached);
+  const names = workflowNames(app, cached);
+  const environment = variablesEditor({ scope: { app: app.slug }, signal, workflows: names });
+  const groups = linkedGroupsEditor({ app, signal, workflows: names });
   const builds = buildsList(app, signal, (list) => latest.render(list[0] ?? null));
   const numbers = numbersCard(app, signal);
 
@@ -75,8 +79,14 @@ export async function appDetailPage(params, context) {
   section({ title: 'Build Numbers' }, numbers),
   section({
     title: 'Environment',
-    footer: 'Every job of this app gets these variables. One with the same name as a global variable replaces it.',
-  }, variablesEditor({ scope: { app: app.slug }, signal })),
+    footer: 'Jobs get these variables, for all workflows or only the ones you choose. For each name a job gets the '
+      + 'first of: a variable limited to its workflow, the one for all workflows, a linked group, a global variable.',
+  }, environment.element),
+  section({
+    title: 'Linked Variable Groups',
+    footer: 'Groups are shared between apps and managed in Settings. When two linked groups set the same name, the '
+      + 'one higher in this list wins; a group limited to a workflow wins over one for all workflows.',
+  }, groups.element),
   section({ title: 'Remove App' }, removeCard(app)));
   element.prepend(h('a', { href: '/', 'data-link': true, class: 'back-link' }, h('span', { 'aria-hidden': 'true' }, '‹ '), 'Apps'));
   return element;
@@ -262,7 +272,39 @@ function workflowList(file) {
     h('span', { class: 'workflow-summary-text' }, workflowSummary(workflow)))));
 }
 
-function workflowCard(app, signal) {
+/** One request per path for the page's life: the workflow card and the Environment sections share them. */
+function onceEach(signal) {
+  const requests = new Map();
+  return (path) => {
+    if (!requests.has(path)) requests.set(path, api.get(path, { signal }));
+    return requests.get(path);
+  };
+}
+
+/**
+ * The app's workflow names, sorted: the stored file's, else the repository's .hangar.yml at the default branch. Null
+ * when they cannot be read, so the Environment sections flag nothing rather than everything.
+ */
+async function workflowNames(app, cached) {
+  const base = `/apps/${seg(app.slug)}`;
+  try {
+    const stored = await cached(`${base}/workflow-file`);
+    return Object.keys(stored.workflows?.workflows ?? {}).sort();
+  } catch (error) {
+    if (error.code !== 'workflow_file_not_found') return null;
+  }
+  try {
+    const status = await cached(`${base}/workflow-source`);
+    if (status?.repositoryHasWorkflowFile === false) return [];
+    if (!status?.repositoryHasWorkflowFile) return null;
+    const file = await cached(`${base}/workflows`);
+    return Object.keys(file?.workflows?.workflows ?? {}).sort();
+  } catch {
+    return null;
+  }
+}
+
+function workflowCard(app, signal, cached) {
   const element = card({ class: 'workflow-card' });
   const editor = `/apps/${seg(app.slug)}/workflow`;
   replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Loading workflow')));
@@ -303,20 +345,20 @@ function workflowCard(app, signal) {
         h('a', { href: editor, 'data-link': true, class: 'button button-secondary' }, 'Edit Workflow')));
   }
 
-  api.get(`/apps/${seg(app.slug)}/workflow-file`, { signal }).then(showStored, (error) => {
+  cached(`/apps/${seg(app.slug)}/workflow-file`).then(showStored, (error) => {
     if (error.code === 'aborted') return;
     if (error.code === 'workflow_file_not_found') {
       // No workflow in Hangar: does the repository have its own .hangar.yml (at its default branch)?
       replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Checking the repository')));
       // Remembered by the server for a while, so not a GitHub call on every view.
-      api.get(`/apps/${seg(app.slug)}/workflow-source`, { signal }).then(
+      cached(`/apps/${seg(app.slug)}/workflow-source`).then(
         (status) => status?.repositoryHasWorkflowFile ?? null,
         (failure) => (failure.code === 'aborted' ? undefined : null),
       ).then(async (repoFile) => {
         if (repoFile === undefined) return;
         if (repoFile) {
           // What the repository's file does, read at its default branch.
-          const file = await api.get(`/apps/${seg(app.slug)}/workflows`, { signal }).catch(() => null);
+          const file = await cached(`/apps/${seg(app.slug)}/workflows`).catch(() => null);
           replaceChildren(element,
             cardTitle(Object.keys(file?.workflows?.workflows ?? {}).length > 1 ? 'Workflows' : 'Workflow'),
             file?.workflows ? workflowList(file.workflows) : null,

@@ -3,7 +3,7 @@
 
 import { api } from '../api.js';
 import { button, card, confirm, field, h, page, replaceChildren, section, toast } from '../ui.js';
-import { variablesEditor } from './variables.js';
+import { variableGroupsEditor, variablesEditor } from './variables.js';
 import { agentTokensEditor } from './agent-tokens.js';
 import {
   ASC_KEYS_URL, appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, issuerField, keyDropZone, problem, withBusy,
@@ -66,7 +66,13 @@ export async function settingsPage(params, context) {
     section({
       title: 'Global Variables',
       footer: 'Every job of every app gets these. An app variable with the same name replaces one of these.',
-    }, variablesEditor({ scope: 'global', signal })),
+    }, variablesEditor({ scope: 'global', signal }).element),
+    section({
+      title: 'Variable Groups',
+      footer: 'Define variables once and use them in several apps: link a group from an app’s Environment, for all its '
+        + 'workflows or only some. An app’s own variable with the same name replaces a group’s; a group’s replaces a '
+        + 'global one.',
+    }, variableGroupsEditor({ signal })),
     section({ title: 'About' }, about));
 }
 

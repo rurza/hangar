@@ -104,6 +104,7 @@ Types (`HangarCore`): `VariableScope` gains `{"group": "<uuid>"}`; `VariableSumm
 | `POST /variable-groups` | `{name}` | `201` `VariableGroup`; `409` `variable_group_exists` |
 | `PATCH /variable-groups/{group}` | `{name}` | Renames |
 | `DELETE /variable-groups/{group}` | | Deletes it, its variables and its links |
+| `GET /variable-groups/{group}/variables` | | `[VariableSummary]` |
 | `PUT`/`DELETE /variable-groups/{group}/variables/{name}` | `VariableInput` | As for global variables; `workflows` must be empty |
 | `GET /apps/{id}/variable-groups` | | `[AppVariableGroupLink]` in precedence order |
 | `PUT /apps/{id}/variable-groups/{group}` | `{workflows}` | Links, or changes the link's workflows (keeps its place) |
@@ -129,9 +130,9 @@ workflows, never values.
 - **Settings, Variable Groups.** One card per group: its variables (the same editor as global variables), which apps
   link it, Rename and Delete. Deleting asks first and names the apps that lose the group.
 - **Secret by default for names that look secret.** The Add sheet starts with Secret off; it now turns Secret on
-  while the name looks like a secret (a `_`-separated part that is or ends with `TOKEN`, `SECRET`, `KEY`,
-  `PASSWORD`, `PASSWD`, `PWD`, `CREDENTIAL(S)` or `PRIVATE`; `SENTRY_DSN` does not), until the person flips the
-  switch themselves. A stored plain variable whose name looks secret gets a hint in its row; its data is not changed.
+  while the name looks like a secret (a `_`-separated part that is `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`,
+  `PWD`, `CREDENTIAL(S)` or `PRIVATE`, or a compound such as `APIKEY` or `ACCESSTOKEN`; `SENTRY_DSN` and `MONKEY`
+  do not), until the person flips the switch themselves. A stored plain variable whose name looks secret gets a hint in its row; its data is not changed.
 
 ## CLI and MCP
 

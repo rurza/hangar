@@ -54,6 +54,9 @@ extension HangarServerApp {
             try variables.deleteGroup(groupKey(context))
             return Response(status: .noContent)
         }
+        api.get("variable-groups/:group/variables") { _, context in
+            try Response.json(variables.requireGroup(groupKey(context)).variables)
+        }
         api.put("variable-groups/:group/variables/:name") { request, context in
             let group = try variables.requireGroup(groupKey(context))
             return try await setVariable(scope: .group(group.id), request: request, context: context)

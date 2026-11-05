@@ -301,7 +301,8 @@ import Testing
             ) { #expect($0.status == .notFound) }
 
             for uri in [
-                "/api/v1/variable-groups", "/api/v1/variable-groups/sentry", "/api/v1/apps/legilo/variable-groups",
+                "/api/v1/variable-groups", "/api/v1/variable-groups/sentry", "/api/v1/variable-groups/sentry/variables",
+                "/api/v1/apps/legilo/variable-groups",
                 "/api/v1/apps/legilo/variables", "/api/v1/apps/legilo/environment?workflow=testflight",
             ] {
                 try await client.execute(uri: uri, method: .get) { response throws in

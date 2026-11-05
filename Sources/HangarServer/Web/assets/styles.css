@@ -1938,3 +1938,19 @@ li + li > .artifact-link::before {
   }
   .badge-running .badge-dot, .step-running::after { animation: none; }
 }
+
+/* MARK: Variable scopes */
+
+.tag-workflows { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); white-space: normal; }
+.variable-warning { color: var(--failure); font: var(--footnote); }
+.variable-hint { color: color-mix(in srgb, var(--warning) 62%, var(--text)); font: var(--footnote); }
+.linked-group-names { font: 400 13px/18px var(--font-mono); overflow-wrap: anywhere; }
+.variable-scope { display: grid; gap: var(--space-1); min-width: 0; margin: 0; padding: 0; border: 0; }
+.variable-scope > legend { padding: 0; margin-bottom: var(--space-1); }
+.variable-groups { display: grid; gap: var(--space-3); }
+.variable-group { display: grid; gap: var(--space-1); min-width: 0; }
+.variable-group-header { display: flex; align-items: flex-start; gap: var(--space-1); padding-inline: var(--space-2); }
+.variable-group-title { display: grid; gap: 2px; flex: 1 1 0; min-width: 0; }
+.variable-group-header > .row-actions { flex-shrink: 0; }
+.variable-group-name { font: var(--headline); letter-spacing: -0.41px; overflow-wrap: anywhere; }
+.variable-group-uses { font: var(--footnote); }
