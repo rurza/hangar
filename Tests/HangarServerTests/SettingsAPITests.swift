@@ -18,6 +18,9 @@ private struct AppsASC: AppStoreConnectClient {
     func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {}
+    func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup {
+        ASCBetaGroup(id: "new", name: name, isInternal: isInternal)
+    }
     func submitForBetaReview(buildID: String) async throws {}
 }
 

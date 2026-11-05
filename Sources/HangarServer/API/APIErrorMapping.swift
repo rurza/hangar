@@ -45,7 +45,7 @@ enum APIErrorMapping {
         if code == "unsupported_media_type" { return .unsupportedMediaType }
         if code == "github_unauthorized" { return .badGateway }
         if code == "github_rate_limited" { return .serviceUnavailable }
-        if code == "asc_unavailable" { return .badGateway }
+        if code == "asc_unavailable" || code == "asc_refused" { return .badGateway }
         if code == "detection_timeout" { return .gatewayTimeout }
         if code == "no_project_found" { return .unprocessableContent }
         if notFoundCodes.contains(code) { return .notFound }

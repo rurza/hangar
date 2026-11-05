@@ -77,3 +77,24 @@ public enum ASCError: Error, Equatable, CustomStringConvertible {
         }
     }
 }
+
+extension ASCError {
+    /// What App Store Connect said when it refused a request: the `detail` (else `title`) of each entry of its
+    /// JSON:API `errors`, joined; nil for any other error or a body that is not such a list.
+    public var refusalDetail: String? {
+        struct Body: Decodable {
+            struct Entry: Decodable {
+                var title: String?
+                var detail: String?
+            }
+            var errors: [Entry]
+        }
+        guard case .http(_, let text) = self,
+            let body = try? JSONDecoder().decode(Body.self, from: Data(text.utf8))
+        else { return nil }
+        let parts = body.errors.compactMap { entry in
+            [entry.detail, entry.title].lazy.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+}

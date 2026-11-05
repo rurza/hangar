@@ -140,6 +140,38 @@ struct LiveClientDecodingTests {
         #expect(groups == [ASCBetaGroup(id: "g1", name: "Team", isInternal: true), ASCBetaGroup(id: "g2", name: "Public", isInternal: false)])
     }
 
+    @Test func createBetaGroupPostsInternalGroupForTheApp() async throws {
+        let transport = StubTransport(responses: [try respond("beta-group-created", status: 201)])
+        let group = try await makeClient(transport).createBetaGroup(appID: "app1", name: "QA", internal: true)
+        #expect(group == ASCBetaGroup(id: "g9", name: "QA", isInternal: true))
+        let request = try #require(transport.requests.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/v1/betaGroups")
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+        let data = try #require(try bodyJSON(request)["data"] as? [String: Any])
+        #expect(data["type"] as? String == "betaGroups")
+        let attributes = try #require(data["attributes"] as? [String: Any])
+        #expect(attributes["name"] as? String == "QA")
+        #expect(attributes["isInternalGroup"] as? Bool == true)
+        let app = try #require((data["relationships"] as? [String: Any])?["app"] as? [String: Any])
+        #expect((app["data"] as? [String: String]) == ["type": "apps", "id": "app1"])
+    }
+
+    @Test func createBetaGroupCarriesTheRefusal() async throws {
+        let refusal = #"{"errors":[{"status":"409","code":"ENTITY_ERROR","title":"The request entity is invalid","detail":"A group with this name already exists."}]}"#
+        let transport = StubTransport(responses: [StubTransport.Response(status: 409, body: refusal)])
+        await #expect(throws: ASCError.http(status: 409, body: refusal)) {
+            try await makeClient(transport).createBetaGroup(appID: "app1", name: "QA", internal: true)
+        }
+    }
+
+    @Test func refusalDetailReadsTheErrorsArray() {
+        let body = #"{"errors":[{"title":"The request entity is invalid","detail":"A group with this name already exists."},{"title":"Other"}]}"#
+        #expect(ASCError.http(status: 409, body: body).refusalDetail == "A group with this name already exists. Other")
+        #expect(ASCError.http(status: 500, body: "<html>oops</html>").refusalDetail == nil)
+        #expect(ASCError.decoding("x").refusalDetail == nil)
+    }
+
     @Test func addBuildPostsRelationship() async throws {
         let transport = StubTransport(responses: [StubTransport.Response(status: 204)])
         try await makeClient(transport).addBuild("b1", toBetaGroup: "g1")

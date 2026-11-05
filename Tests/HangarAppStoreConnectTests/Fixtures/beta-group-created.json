@@ -1,0 +1,1 @@
+{"data":{"type":"betaGroups","id":"g9","attributes":{"name":"QA","isInternalGroup":true,"publicLinkEnabled":false},"relationships":{"app":{"data":{"type":"apps","id":"app1"}}}},"links":{"self":"https://api.appstoreconnect.apple.com/v1/betaGroups/g9"}}

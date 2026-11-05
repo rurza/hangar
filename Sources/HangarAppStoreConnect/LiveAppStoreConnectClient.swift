@@ -114,6 +114,17 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         }
     }
 
+    public func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup {
+        struct One: Decodable { var data: Wire.BetaGroups.Item }
+        let body = JSONNode.object(["data": .object([
+            "type": .string("betaGroups"),
+            "attributes": .object(["name": .string(name), "isInternalGroup": .bool(isInternal)]),
+            "relationships": .object(["app": .object(["data": .object(["type": .string("apps"), "id": .string(appID)])])]),
+        ])])
+        let one = try decode(One.self, from: try await request("POST", url: try url(path: "/v1/betaGroups"), body: body))
+        return ASCBetaGroup(id: one.data.id, name: one.data.attributes.name, isInternal: one.data.attributes.isInternalGroup ?? isInternal)
+    }
+
     public func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {
         let body = JSONNode.object(["data": .array([.object(["type": .string("builds"), "id": .string(buildID)])])])
         _ = try await request("POST", url: try url(path: "/v1/betaGroups/\(groupID)/relationships/builds"), body: body)
@@ -151,6 +162,7 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
     /// Minimal JSON tree for request bodies.
     private enum JSONNode: Encodable {
         case string(String)
+        case bool(Bool)
         case object([String: JSONNode])
         case array([JSONNode])
 
@@ -158,6 +170,7 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
             var container = encoder.singleValueContainer()
             switch self {
             case .string(let value): try container.encode(value)
+            case .bool(let value): try container.encode(value)
             case .object(let value): try container.encode(value)
             case .array(let value): try container.encode(value)
             }

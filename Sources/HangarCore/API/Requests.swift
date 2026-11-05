@@ -264,3 +264,26 @@ public struct ASCAppSummary: Codable, Equatable, Sendable {
         self.iconURL = iconURL
     }
 }
+
+/// `GET /apps/{id}/beta-groups`: a TestFlight group of the app in App Store Connect.
+public struct BetaGroup: Codable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    /// Internal groups hold App Store Connect users of the team; external ones need beta review.
+    public var isInternal: Bool
+
+    public init(id: String, name: String, isInternal: Bool) {
+        self.id = id
+        self.name = name
+        self.isInternal = isInternal
+    }
+}
+
+/// `POST /apps/{id}/beta-groups`: creates an internal TestFlight group named `name`.
+public struct CreateBetaGroupRequest: Codable, Equatable, Sendable {
+    public var name: String
+
+    public init(name: String) {
+        self.name = name
+    }
+}

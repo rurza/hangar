@@ -14,6 +14,9 @@ public protocol AppStoreConnectClient: Sendable {
     /// The app's icon (512 × 512 PNG) from the newest of its last five builds that carries one; nil when none does.
     func appIconURL(appID: String) async throws -> String?
     func betaGroups(appID: String) async throws -> [ASCBetaGroup]
+    /// Creates a TestFlight group of the app (`POST /v1/betaGroups`); `internal` makes it an internal group, whose
+    /// testers are App Store Connect users of the team.
+    func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws
     /// Creates the localization, or updates the existing one for `locale`.
     func setWhatToTest(buildID: String, locale: String, text: String) async throws

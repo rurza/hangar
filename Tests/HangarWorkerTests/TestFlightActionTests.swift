@@ -59,6 +59,10 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
         state.withLock { $0.calls.append(.setWhatToTest(buildID: buildID, locale: locale, text: text)) }
     }
 
+    func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup {
+        ASCBetaGroup(id: "new", name: name, isInternal: isInternal)
+    }
+
     func submitForBetaReview(buildID: String) async throws {
         state.withLock { $0.calls.append(.submitForBetaReview(buildID: buildID)) }
     }
