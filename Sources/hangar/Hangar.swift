@@ -10,7 +10,7 @@ struct Hangar: AsyncParsableCommand {
         abstract: "Drive a Hangar build server: apps, variables, machines, deploys, builds and logs.",
         discussion: "The server is --server, else $HANGAR_SERVER, else http://localhost:8787.",
         subcommands: [
-            Apps.self, Variables.self, Settings.self, Machines.self, Deploy.self, Status.self, Logs.self,
+            Apps.self, Variables.self, Settings.self, Signing.self, Machines.self, Deploy.self, Status.self, Logs.self,
             Builds.self, Numbers.self, Cancel.self, Workflows.self, Tokens.self, MCP.self,
         ])
 }

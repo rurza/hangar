@@ -462,3 +462,30 @@ final class TestClock: Sendable {
     var now: Date { time.withLock { $0 } }
     func advance(_ duration: Duration) { time.withLock { $0 += TimeInterval(duration.components.seconds) } }
 }
+
+@Suite(.timeLimit(.minutes(1))) struct SigningStatusToolTests {
+    let transport = RouteTransport()
+    var tools: HangarTools { Fixtures.tools(transport) }
+
+    /// The signing certificate is reported, read-only: no tool calls the routes that change it.
+    @Test func serverStatusReportsTheSigningCertificateReadOnly() async throws {
+        transport.on("GET health", json: HealthResponse(ok: true, version: "1.0.0"))
+        transport.on("GET api-tokens/current", json: APIToken(id: UUID(), name: "claude", scope: .configure, prefix: "hgr_k", createdAt: Fixtures.t0))
+        transport.on("GET settings", json: SettingsStatus(version: "1.0.0", appStoreConnect: nil, githubTokenSet: false))
+        transport.on("GET machines", json: [Machine]())
+        transport.on("GET signing", json: SigningStatus(
+            state: .expiring,
+            identity: SigningIdentityInfo(
+                name: "Apple Development: Created via API (TEAM123456)", teamID: "TEAM123456", serialNumber: "01",
+                expiresAt: Fixtures.t0, createdAt: Fixtures.t0, origin: .created, ascCertificateID: "CERT1"),
+            canCreate: true))
+        let output = try await Fixtures.call("server_status", tools)
+        #expect(!output.isError)
+        #expect(output.text.contains("expiring") && output.text.contains("created by Hangar"))
+        #expect(!output.text.contains("p12"))
+        #expect(transport.requests("POST", "signing/certificate").isEmpty)
+        #expect(transport.requests("POST", "signing/import").isEmpty)
+        #expect(transport.requests("DELETE", "signing").isEmpty)
+        #expect(HangarTools.signingLine(SigningStatus(state: .none, identity: nil, canCreate: true)).contains("Settings › Signing"))
+    }
+}

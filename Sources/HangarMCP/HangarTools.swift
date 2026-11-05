@@ -79,7 +79,9 @@ public struct HangarTools: Sendable {
             name: "server_status", title: "Server status",
             description: """
                 The Hangar server's version, this token's name and scope (read < deploy < configure), whether App Store \
-                Connect and GitHub are set up, and how many build Macs are online. Call it first to see what you can do.
+                Connect and GitHub are set up, the state of the signing certificate VM archives use, and how many build \
+                Macs are online. Call it first to see what you can do. The signing certificate is read-only here: only \
+                the user can create, renew, import or remove it, in Settings › Signing.
                 """,
             inputSchema: Schema.object([:]), hints: .read
         ) { _ in
@@ -89,6 +91,7 @@ public struct HangarTools: Sendable {
                 var token: TokenInfo?
                 var appStoreConnect: String
                 var github: String
+                var signing: String?
                 var machinesOnline: Int
                 var machines: Int
             }
@@ -102,6 +105,7 @@ public struct HangarTools: Sendable {
             let token = try? await api.currentAPIToken()
             let settings = try await api.settings()
             let machines = try await api.machines()
+            let signing = try? await api.signingStatus()
             return try .json(
                 Status(
                     server: server.absoluteString, version: health.version,
@@ -114,8 +118,23 @@ public struct HangarTools: Sendable {
                         ?? "not configured: deploys and TestFlight need it (Settings in the web UI)",
                     github: settings.github.map { "configured" + ($0.login.map { " as \($0)" } ?? "") }
                         ?? (settings.githubTokenSet ? "configured" : "not configured: private repositories need it"),
+                    signing: signing.map(Self.signingLine),
                     machinesOnline: machines.filter { $0.isOnline(now: now()) }.count, machines: machines.count))
         }
+    }
+
+    /// One line for `server_status`: the state, the certificate and where it came from; never the identity itself.
+    static func signingLine(_ status: SigningStatus) -> String {
+        guard let identity = status.identity else {
+            return "no signing certificate: VM archives wait until the user creates or imports one in Settings › Signing"
+        }
+        let until = ISO8601DateFormatter().string(from: identity.expiresAt)
+        let state = switch status.state {
+        case .expired: "expired \(until)"
+        case .expiring: "expiring \(until): the user can renew it in Settings › Signing"
+        case .active, .none: "active until \(until)"
+        }
+        return "\(state) (\(identity.name), \(identity.origin == .created ? "created by Hangar" : "imported"))"
     }
 
     var listApps: MCPTool {

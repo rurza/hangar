@@ -178,6 +178,18 @@ public struct HangarAPI: Sendable {
 
     public func appStoreConnectApps() async throws -> [ASCAppSummary] { try await get("asc/apps") }
 
+    // MARK: Signing
+
+    /// The server's Apple Development identity for VM archives; never the `.p12` or its password.
+    public func signingStatus() async throws -> SigningStatus { try await get("signing") }
+    /// Create, or Renew within 30 days of expiry: one development certificate through App Store Connect.
+    public func createSigningCertificate() async throws -> SigningCreateResponse { try await send("POST", "signing/certificate") }
+    public func importSigningIdentity(p12: Data, password: String) async throws -> SigningStatus {
+        try await send("POST", "signing/import", body: ImportSigningIdentityRequest(p12: p12, password: password))
+    }
+    /// Deletes the server's stored copy; the certificate is not revoked.
+    public func removeSigningIdentity() async throws -> SigningStatus { try await send("DELETE", "signing") }
+
     public func workflowSuggestion(app: String, ref: String? = nil, bundleID: String? = nil) async throws -> WorkflowSuggestion {
         try await get("apps/\(segment(app))/workflow-suggestion", query: ["ref": ref, "bundleID": bundleID])
     }
