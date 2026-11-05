@@ -17,6 +17,8 @@ public protocol AppStoreConnectClient: Sendable {
     /// Creates a TestFlight group of the app (`POST /v1/betaGroups`); `internal` makes it an internal group, whose
     /// testers are App Store Connect users of the team.
     func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup
+    /// Grants the group access to the build. App Store Connect rejects the other direction — adding the build to
+    /// the group — for an internal group ("Builds cannot be assigned to this internal group").
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws
     /// Creates the localization, or updates the existing one for `locale`.
     func setWhatToTest(buildID: String, locale: String, text: String) async throws

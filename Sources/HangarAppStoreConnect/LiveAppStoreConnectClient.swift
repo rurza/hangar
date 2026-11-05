@@ -126,8 +126,8 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
     }
 
     public func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {
-        let body = JSONNode.object(["data": .array([.object(["type": .string("builds"), "id": .string(buildID)])])])
-        _ = try await request("POST", url: try url(path: "/v1/betaGroups/\(groupID)/relationships/builds"), body: body)
+        let body = JSONNode.object(["data": .array([.object(["type": .string("betaGroups"), "id": .string(groupID)])])])
+        _ = try await request("POST", url: try url(path: "/v1/builds/\(buildID)/relationships/betaGroups"), body: body)
     }
 
     public func setWhatToTest(buildID: String, locale: String, text: String) async throws {

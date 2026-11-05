@@ -177,9 +177,9 @@ struct LiveClientDecodingTests {
         try await makeClient(transport).addBuild("b1", toBetaGroup: "g1")
         let request = try #require(transport.requests.first)
         #expect(request.httpMethod == "POST")
-        #expect(request.url?.path == "/v1/betaGroups/g1/relationships/builds")
+        #expect(request.url?.path == "/v1/builds/b1/relationships/betaGroups")
         let data = try #require(try bodyJSON(request)["data"] as? [[String: String]])
-        #expect(data == [["type": "builds", "id": "b1"]])
+        #expect(data == [["type": "betaGroups", "id": "g1"]])
     }
 
     @Test func setsAuthorizationHeader() async throws {
