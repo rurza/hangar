@@ -43,7 +43,7 @@ Read (any scope):
 
 | Tool | What it does |
 | --- | --- |
-| `server_status` | Server version, the token's name and scope, whether App Store Connect and GitHub are set up, Macs online. |
+| `server_status` | Server version, the token's name and scope, whether App Store Connect and GitHub are set up, the signing certificate's state (read only: no tool can create, renew, import or remove it), Macs online. |
 | `list_apps` | Apps in Hangar: slug, name, repository, App Store Connect ID. |
 | `list_repositories` | Repositories the server's GitHub token can see; `query` filters. |
 | `inspect_repo` | The apps a repository builds (bundle IDs, platforms, schemes), their App Store Connect match and the `add_app` input for each. |

@@ -378,13 +378,12 @@ The team App Store Connect key with an issuer ID is configured. Cloud-managed di
 `-exportArchive` needs no local distribution key. Archiving still needs an Apple Development identity in a
 keychain.
 
-- **One identity per worker, created once, kept on the host.** It is the identity the CI keychain already
-  gets from the first archive. A worker that has none creates it once: through the App Store Connect API
-  with the team key (a CSR generated on the host, `POST /v1/certificates` of type DEVELOPMENT), or by one
-  archive on the host as today. Not per VM: Apple limits development certificates per team, and an
-  `-allowProvisioningUpdates` archive in a fresh VM with no identity would create a new one each time.
-- **Injected per job.** The host exports it (`security export -t identities -f pkcs12`, a random password
-  per job) and sends the `.p12` over the control channel. The guest worker creates a temporary keychain
+- **One identity for the whole server, created explicitly, once.** *(Revised 2026-11-06, owner's call; this
+  replaces "one identity per worker".)* The owner has live apps and will not have Hangar minting
+  certificates per build or per Mac, nor importing one per worker by hand. The Hangar server keeps one
+  Apple Development identity and hands it to every VM archive. See *Server-managed identity* below.
+- **Injected per job.** The server puts the `.p12` and its password in the archive's assignment, which the
+  host passes to the guest in the job bundle over the SSH session's standard input. The guest worker creates a temporary keychain
   (random password), imports it, sets the partition list (`apple-tool:,apple:,codesign:`, as `CIKeychain`
   does today), puts it first on the search list, and passes the ASC key to xcodebuild as today.
   Provisioning profiles are downloaded per job by `-allowProvisioningUpdates`, which adds a few seconds.
@@ -393,6 +392,48 @@ keychain.
 - The private key does enter every guest. A malicious build can copy it out during its run, exactly as it
   can on the host today. That is a development identity, revocable, and it can't publish to the App Store
   alone. The distribution identity stays with Apple (cloud-managed).
+
+#### Server-managed identity
+
+Decided 2026-11-06, built on branch `managed-identity`:
+
+1. **One identity per server, not per worker, VM or job.** It is stored in the server's database, the `.p12`
+   and its password each sealed with `master.key` (AES-GCM, as secret variables), with what the certificate
+   says about itself: name, team, serial, expiry, when, and whether Hangar created it (with its App Store
+   Connect ID) or the owner imported it.
+2. **Created only on an explicit owner action, at most once.** Settings › Signing ("Create Hangar's Signing
+   Certificate", behind a confirmation) or `hangar signing create --yes`. Never automatically, never from a
+   job or a worker, never from an MCP tool or any API token (the routes have no token scope). The server
+   makes an RSA 2048 key in process (Security framework, no keychain), a CSR with `/usr/bin/openssl`, and
+   calls `POST /v1/certificates` with `certificateType: DEVELOPMENT`, the "Apple Development" type (the API
+   has no `APPLE_DEVELOPMENT`; the per-platform types are legacy). That needs the team key: individual keys
+   cannot use the provisioning endpoints. Key and `.p12` work happens in a 0700 directory under the data
+   directory, files 0600, passwords on standard input only; the directory is deleted afterwards and swept at
+   start-up.
+3. **Duplicates are refused.** A valid identity refuses another (`409`) until it is within 30 days of
+   expiring. As a backstop the server creates at most one certificate per 24 hours whatever else happens
+   (`429`), counted from the request; a definite 4xx refusal from App Store Connect does not count.
+4. **Renewal is the same action, only in the last 30 days (or after expiry).** It creates the new
+   certificate, switches to it, then revokes the old one only if Hangar created it, by the App Store Connect
+   ID it stored; never any other certificate. A failed revoke is reported; the new identity stays in use.
+5. **Import instead of create.** Settings › Signing › Import .p12 or `hangar signing import`: an existing
+   Apple Development `.p12` (key and certificate checked to match, not expired). Nothing is created at Apple,
+   and Hangar never revokes an imported certificate. It is repacked under a password of the server's, so the
+   owner's is not kept. Import is refused while an identity is stored: remove it first.
+6. **Remove deletes the stored copy only.** It does not revoke the certificate, and says so. It does not
+   reset the 24-hour guard.
+7. **Delivery.** Only an archive assigned to a machine whose report has `vm` gets `signingIdentity` in its
+   `JobAssignment`; host workers and test jobs never do. The host worker moves it out of the assignment into
+   the guest bundle, and the guest's temporary keychain imports it as before.
+8. **The per-worker identity stays, as an override.** `hangar-worker vm identity import|from-keychain` still
+   store one next to the worker's configuration; when present it wins over the server's, and the VM report
+   says so (`ownIdentity`). Kept because it costs a few lines and lets one Mac use a different identity
+   without touching the server; removing it is a later clean-up if nobody uses it.
+9. **Scheduling.** The VM doctor no longer needs any identity. A VM archive is held back only when the
+   server has no usable identity (none, or expired) and the worker has no override; the queue note and the
+   deploy check point at Settings › Signing. Host workers are unchanged: they sign with their own keychain.
+10. **Distribution signing is untouched.** Exports stay cloud-managed (`-allowProvisioningUpdates` with the
+    App Store Connect key).
 
 ### Caching
 
@@ -625,7 +666,8 @@ something open, the slice decided as follows.
     build writes `/etc/kcpassword` itself (the password, a zero, padding to 12 bytes, XOR with Apple's key).
 11. **The identity is a `.p12` and its password in two 0600 files next to the worker's configuration**, from
     `vm identity from-keychain` (`security export` of the CI keychain, through `security -i`) or `vm identity
-    import`. Creating one through the App Store Connect API is left for later: both Macs' CI keychains already
+    import`. *(Superseded 2026-11-06 by* Server-managed identity *under* Signing*: the server holds the one
+    identity; these files are now an optional per-worker override.)* Creating one through the App Store Connect API is left for later: both Macs' CI keychains already
     hold the identity their host archives created. An archive in a VM fails before the VM boots when there is
     none, so a fresh VM never creates certificates. The guest imports it into a keychain made for the job with a
     random password, and the `.p12` file is deleted right after the import.
@@ -791,10 +833,11 @@ and `/Library/LaunchDaemons/app.hangar.pf.plist`, and loads them), the `pfctl` a
    https://github.com; for t in 192.168.64.1:22 192.168.64.1:3773 <MacBook LAN IP>:22 <router IP>:80
    100.71.242.42:8787; do nc -z -G 3 ${t%:*} ${t#*:} && echo "$t OPEN" || echo "$t blocked"; done'`.
    Expect xcodegen's version, `github 200`, and every target `blocked`.
-9. **The identity:** `hw vm identity from-keychain`, then `hw vm identity status` says stored (open question
-   10). If the export fails or hangs, export the "Apple Development" identity from the `hangar` CI keychain in
-   Keychain Access as a `.p12` and `HANGAR_P12_PASSWORD=… hw vm identity import <file.p12>`. Count the team's
-   development certificates in App Store Connect (Certificates, Identifiers & Profiles) now.
+9. **The identity:** in Settings › Signing, import the `hangar` CI keychain's Apple Development identity as a
+   `.p12`, or create Hangar's certificate there (once). `hw vm identity status` should say none: the worker
+   uses the server's. (Before 2026-11-06: `hw vm identity from-keychain`, then `hw vm identity status` says
+   stored, open question 10.) Count the team's development certificates in App Store Connect (Certificates,
+   Identifiers & Profiles) before and after: at most one more, and none after the archives in step 11.
 10. **Restart the worker:** `sudo launchctl kill SIGTERM system/app.hangar.worker`. Its log
     (`sudo tail /Users/hangar/Library/Logs/Hangar/worker.log`) says `VM builds on … ready: yes`; the Machines
     page shows "VM builds · 1 slot (1 free) · Xcode 27.2 · network filter on". This is the LaunchDaemon as
