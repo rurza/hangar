@@ -1,0 +1,616 @@
+# VM builds
+
+Date: 2026-11-05
+Status: design, with a feasibility spike run on the Mac mini the same day (see *Spike results*). Nothing is
+built yet. Branch `vm-builds`. This supersedes the anti-goal "a full macOS VM per worker or per job" in the
+worker isolation design (2026-11-05-worker-isolation-design.md) and the "VM isolation is a later executor"
+deferral in the 2026-11-04 design. The `hangar` user, its LaunchDaemon and its CI keychain stay: they become
+the host side of the VM executor.
+
+## Intent
+
+Every build starts from scratch. The build machine is assumed to have macOS and Xcode and nothing else, the
+way Xcode Cloud runs each build in a fresh macOS VM with Homebrew preinstalled and writable by the build user.
+Scripts written for Xcode Cloud (`ci_scripts/ci_post_clone.sh` and friends) do
+`export PATH=/opt/homebrew/bin:$PATH; brew install …`. Under the `hangar` user that fails: `/opt/homebrew`
+belongs to the interactive user. Legilo build 99 failed exactly there on both Macs.
+
+macOS has no namespaces and no containers for macOS userlands. Apple's Containerization framework runs Linux
+guests only. The only way to give a build its own writable `/opt/homebrew`, its own users and its own
+`/Applications` without touching the host is a macOS VM. So each job runs in a fresh macOS VM on
+Virtualization.framework, cloned from a prepared image and thrown away afterwards.
+
+The same Macs are the owner's workstations: coding agents, feature work, T3 Code. A build must not see or
+change that environment. The target is a balance of speed (a job's VM is ready in seconds, not minutes),
+security (the guest cannot reach the host's files, the server's master key, the owner's tools or the LAN) and
+stability (a hung or crashed VM never leaves the Mac in a state that needs a person).
+
+## Goals
+
+1. **Fresh per job.** Each job gets a VM whose disk is an APFS clone of a prepared image and whose memory
+   is restored from a saved state. Nothing a job writes reaches the next job. The clone is deleted when the
+   job ends, however it ends.
+2. **Xcode Cloud compatibility.** In the guest, a non-administrator build user owns `/opt/homebrew`, and
+   `brew` is on hand and works without sudo. `ci_post_clone.sh`, `ci_pre_xcodebuild.sh` and
+   `ci_post_xcodebuild.sh` run unchanged. The `CI_*` variables are the ones the worker already sets.
+3. **Ready in seconds.** From the job being claimed to a shell in the guest: under 10 s with a saved state,
+   under 30 s on a cold boot fallback. The spike measured 2.3 to 5.9 s and 13.5 to 19.3 s.
+4. **The host is off limits.** The guest has no share of the host's home, no route to the host's listening
+   sockets, the LAN or the tailnet, and never holds the worker's machine token or the server's master key.
+5. **Secrets only for the job.** The git token, the App Store Connect key and the signing identity enter the
+   guest when the job starts and disappear with the VM. Nothing secret is in an image or a saved state.
+6. **Self-healing.** A hung guest is stopped by the job timeout, a crashed worker takes its VMs with it, and
+   a worker restart sweeps leftover clones. A host macOS update that invalidates saved states falls back to
+   a cold boot and saves new states without help.
+7. **Machines advertise what they can run.** VM slots, free slots and the Xcode versions (with simulator
+   runtimes) their images contain. The scheduler matches a workflow's `xcode:` against images, not against
+   `/Applications`.
+
+## Non-goals
+
+- Warm DerivedData. The owner accepted cold builds. Package caching is a later, read-only addition (see
+  *Caching*).
+- Linux guests, x86 guests, or building for anything but Apple platforms.
+- A cluster scheduler (Orchard, Anka Controller). The Hangar server already schedules jobs to machines.
+  This only changes what a machine does with one.
+- Removing the host executor in the first slice. It stays, behind a per-machine setting, until VM jobs have
+  proven themselves (see *Migration*).
+- Hiding anything from the operator. The operator is an administrator of the host.
+
+## Anti-goals
+
+- Shipping images with Xcode in them to a public registry. Xcode's license allows installing it on Apple
+  hardware the operator owns, and the macOS license allows macOS guests there. Redistributing an image with
+  Xcode in it is a different matter. Images are built on, or copied between, the operator's own Macs.
+- A guest that shares the host's `/Applications/Xcode.app`, simulator runtimes or Homebrew at run time. That
+  is the coupling this design removes. The image *copies* them once, at image build time.
+- Copying anything from a finished guest back into the host or into an image (DerivedData, package caches,
+  Homebrew bottles). That lets one build poison every later one. Caches flow host → guest, read-only, never
+  back.
+- Creating a signing certificate per VM or per job. Apple limits development certificates per team. See
+  *Signing*.
+- A guest that can reach the Hangar server's API with anything but a token scoped to its own job.
+
+## Current state
+
+- The worker is a LaunchDaemon running as the unprivileged `hangar` user (0.9.0). It polls the server with
+  its machine token, runs one job at a time through `JobPipeline` (checkout, the `ci_*` hooks, `xcodebuild`
+  archive/test/export, the TestFlight post-action), streams logs and uploads artifacts. Steps run commands
+  through the `ProcessRunner` protocol. Secrets arrive in `JobAssignment.environment` and are written to
+  files by `SecretsMaterializer`.
+- Signing uses a CI keychain in `/Users/hangar` and needs a team App Store Connect key with an issuer ID
+  (headless: no Xcode account). With `-allowProvisioningUpdates`, the first archive creates an Apple
+  Development identity in that keychain.
+- `MachineReport` carries Xcode versions, tools, simulator runtimes, free disk, capabilities and signing
+  readiness. The scheduler's `Ineligibility` explains why a machine cannot take a job.
+- A workflow names `xcode:` and `tools:` in `.hangar.yml`. `tools:` is checked against the machine.
+- The mini (rurzomac-mini): M4, 10 cores, 16 GB, macOS 26.7.2, about 77 GB free of 228 GB, internal disk
+  only. The MacBook Pro (rurzobuk-max): M3 Max, 48 GB, macOS 27.2. Both run Xcode 27.2. Xcode 27.2 needs
+  macOS 26.6 or later.
+
+## Spike results
+
+Run on the mini on 2026-11-05 as the interactive user, in a scratch directory, with a watchdog that stopped
+anything big when free space fell to 40 GiB. Every number here was measured. Nothing was kept: free space
+was 77 GiB before and after.
+
+**Entitlement.** A command-line tool built with `swiftc` and signed ad hoc
+(`codesign -s - --entitlements` with `com.apple.security.virtualization`) creates and runs macOS VMs. The
+same binary without the entitlement fails `validate()` with "The process doesn't have the
+'com.apple.security.virtualization' entitlement". No paid certificate, no provisioning profile. The
+entitlement is not restricted.
+
+**Restore image.** `VZMacOSRestoreImage.fetchLatestSupported` on the mini returns macOS 26.6.2 (25G83), a
+19.77 GB IPSW. That is older than the host (26.7.2): the "latest supported" image lags point releases.
+Minimum 2 CPUs and 4 GB. Download: 230 s, about 86 MB/s.
+
+**Install from IPSW: started, not finished.** Loading the IPSW took 0.4 s. `VZMacOSInstaller` went from 0
+to 75 % in 80 s, and by then the sparse disk image held 17 GiB. The watchdog stopped it at the 40 GiB
+floor: the IPSW (18.4 GiB) plus the installed disk (an estimated 20 to 22 GiB) does not fit on the mini
+next to the floor. A killed install also left 1 GiB of extracted IPSW under
+`$TMPDIR/com.apple.Virtualization.Installation.*`, which nothing cleans up.
+
+**Prebuilt image instead.** `ghcr.io/cirruslabs/macos-tahoe-vanilla:26.6.2`, pulled with Tart 2.41.1 into
+a scratch `TART_HOME`: 24.0 GB compressed, 265 s, 26 GiB on disk (50 GB nominal). macOS with Setup
+Assistant done, user `admin`, SSH on, passwordless sudo. Cirrus also publishes
+`macos-tahoe-xcode:27.2`. It is 70.8 GB compressed, 140 GB nominal, and does not fit on the mini at all.
+
+| Step (4 vCPU, 4 GB guest) | Measured |
+|---|---|
+| APFS clone (`cp -c`) of the 47 GB disk image | 0.013 to 0.015 s |
+| Cold boot: `start()` returns | 0.15 to 0.33 s |
+| Cold boot: DHCP lease | 6.1 to 6.3 s |
+| Cold boot: SSH command succeeds | 19.3 s first boot, 13.5 to 23.0 s later (13.5 s from a Background launchd session) |
+| Cold boot while another VM runs | 27.0 to 36.7 s |
+| Save state (paused) | 2.05 to 2.17 s, 1.3 to 1.4 GB file |
+| Restore state onto a fresh clone | 1.5 to 4.9 s |
+| Clone + restore to an SSH command succeeding | 2.3 to 5.9 s (typically 4.5 s) |
+| Two restored VMs at once, each to SSH | 4.6 s and 5.0 s |
+
+**Save and restore constraints found:**
+
+- A saved state restores onto an APFS clone of the disk it was saved with. Every restore onto a fresh clone
+  (about a dozen) worked.
+- The configuration must match the saved one exactly. A different MAC address, a different memory size,
+  or an added virtio-fs device each fail with `VZErrorDomain` 12, "invalid argument".
+- A virtio-fs device present at save time can point at a *different host directory* on restore (same tag).
+  The guest saw the new directory's files. The share was read-only in the guest ("Operation not permitted").
+- The auxiliary storage (NVRAM) file is locked while a VM runs. A second VM using the same file fails with
+  "Failed to lock auxiliary storage". Each VM needs its own clone of it.
+- Two VMs restored from states that share a machine identifier cannot run together. The second restore
+  fails with "invalid argument". A cold boot with the same identifier next to a running restored VM worked.
+  With a different machine identifier and MAC per state, two restored VMs ran side by side.
+- A third VM fails with `VZErrorDomain` 6, "The maximum supported number of active virtual machines has been
+  reached". Apple's limit of two is enforced. Whether the count spans macOS users was not tested.
+- After a restore, the guest's wall clock matched the host's to the second. Its uptime and load average are
+  those of the moment of the save.
+- A state saved from the interactive GUI session restored from a launchd job in the Background session with
+  `SessionCreate`, the context closest to the `hangar` LaunchDaemon that does not need root.
+- `kill -9` of the process that owns the VM ends the VM's XPC process (`com.apple.Virtualization.VirtualMachine`)
+  within seconds. A crashed worker leaves clones on disk, but no running VM.
+
+**Network (NAT attachment, the default).** The guest got 192.168.64.x with DNS at 192.168.64.1, and
+`https://github.com` answered in 0.5 s. From the guest, these were *reachable*: the host's T3 Code (port 3773)
+through both 192.168.64.1 and the host's LAN address, the host's sshd and AirPlay receiver, the Hangar
+server through the host's Tailscale address (100.71.242.42:8787), and the LAN router's admin page. A NAT
+guest sees everything the host listens on and everything the host can route to. This is not acceptable for
+untrusted builds, and it is why *Network* below is not optional.
+
+**Xcode Cloud layout in a guest.** In a restored clone: a non-administrator user `builder`, `/opt/homebrew`
+owned by it, Homebrew fetched as a tarball, then `brew install xcodegen` as `builder` without sudo: 43 s from
+nothing to `xcodegen --version`, 237 MB for Homebrew with the formula.
+
+**Copying Xcode into a guest.** The host's Xcode 27.2 is 3.7 GB on disk and 8.9 GB uncompressed (its files
+are transparently compressed). `ditto` from a read-only virtio-fs share of `/Applications/Xcode.app` failed on
+hundreds of entries with "Too many levels of symbolic links", and wrote uncompressed. The watchdog stopped
+it. Relative, `../` and absolute symlinks in a small test share resolved fine, so the cause is still open. A
+`tar` stream over SSH, extracted with `--hfsCompression`, kept the compression (2.7 GB of the toolchain
+became 1.1 GB on the guest's disk) at about 55 MB/s. All of Xcode would take about 3 minutes. `xcodebuild` in
+a guest with a copied Xcode was not run: the disk floor did not allow the full copy.
+
+**Tart's license.** Tart moved to `github.com/openai/tart` after Cirrus Labs joined OpenAI (April 2026).
+The LICENSE file is now the Functional Source License 1.1 with an Apache 2.0 future license (FSL-1.1-ALv2):
+any purpose except a "Competing Use" (offering Tart, or something substantially similar, commercially to
+others), with each release becoming Apache 2.0 after two years. Internal use, Hangar's case, is permitted.
+The older tart.run licensing page (a free tier of 100 CPU cores, paid tiers above) describes the
+pre-acquisition terms. The announcement says the fees were dropped.
+
+## Options
+
+### Engine
+
+**Our own Swift code on Virtualization.framework, in the worker. Chosen.**
+
+The API surface Hangar needs is small and measured above: `VZMacPlatformConfiguration` from saved
+hardware-model and machine-identifier data, a disk attachment, an NVRAM file, NAT networking, one virtio-fs
+device, a vsock device, `start`, `pause`, `saveMachineStateTo`, `restoreMachineStateFrom`, `resume`, `stop`.
+The spike tool that did all of it is about 200 lines. Owning it gives:
+
+- **Typed failures.** "Invalid argument" on restore means "this state is stale, cold-boot and save a new
+  one". "Maximum number of VMs" means "another VM on this Mac holds a slot". That decides what the worker
+  does next. Through a CLI it is stderr text.
+- **Slots built for save/restore.** The constraints above (one machine identifier and MAC per saved state, a
+  per-VM NVRAM clone, a configuration identical to the saved one) are how Hangar must lay out its files.
+  Tart's `suspend` keeps one state per VM and does not model "N restorable slots from one image".
+- **One binary.** The worker stays the one file the server hands out and the idle self-update replaces. It
+  is signed ad hoc with the virtualization entitlement at release (the spike showed this is enough), and the
+  SHA-256 the self-update compares is taken after signing.
+- **No external dependency in a root-installed daemon.** Tart would be another binary under `hangar`,
+  updated by Homebrew, from a vendor whose plans changed this year.
+
+The on-disk layout of an image is Tart's (`config.json` with base64 `hardwareModel` and `ecid`, `disk.img`
+raw, `nvram.bin`), so `tart run` can open a Hangar image to debug it, and Tart-format OCI images import as
+they are.
+
+**Depending on Tart (CLI). Rejected as the runtime, kept as a tool.** The license is no longer the blocker:
+FSL-1.1-ALv2 permits internal use, and Hangar is self-hosted. What remains: shelling out and parsing output
+for every lifecycle step, no direct access to save/restore per slot, a second binary to install and keep in
+step, and an owner whose roadmap for Tart is unpublished. Tart stays useful by hand: pulling an image to
+inspect, `tart run` to open an image in a window.
+
+**Anka, Orka, Parallels, UTM. Rejected.** Anka and Orka are commercial fleet products with their own
+controllers. Parallels needs a license per Mac and a GUI app. UTM is QEMU plus VZ, aimed at desktop use.
+Each is a larger dependency than the 200 lines it would replace.
+
+### How the worker talks to the guest
+
+**Option A: the guest runs `hangar-worker` in a one-job mode, and the host supervises. Chosen.**
+
+The guest runs the existing `JobPipeline` against its own disk, unchanged: checkout, hooks, xcodebuild,
+export, artifacts, the TestFlight post-action. The host worker claims the job, prepares the VM, hands the
+guest a job-scoped token and the signing material, relays the guest's API calls to the server, enforces the
+timeout and deletes the VM. The pipeline, about 80 % of the worker, is reused as it is. Logs and step
+statuses reach the server through the same `ServerConnection` code they use today.
+
+**Option B: the host worker runs the pipeline and drives the guest over SSH or vsock. Rejected.** Every
+`ProcessRunner` call would become a remote exec, and every `FileManager` call in the steps (secrets
+materializing, artifact collection, the workspace layout, build number stamping) would need a remote
+equivalent. It would be a rewrite of the steps behind a remote-filesystem abstraction, for no security gain:
+the secrets enter the guest either way, because xcodebuild runs there.
+
+**What the guest holds in option A:** a token valid only for its job (read its assignment, post that job's
+steps, logs and artifacts, finish it), revoked when the job finishes or the host reports the VM gone. Never
+the machine token, never the server's address on the network: the guest reaches the server only through the
+host (see *Network*).
+
+## Decision
+
+**A macOS VM per job, on Virtualization.framework, driven by the worker's own code. Each job runs on an
+APFS clone of a per-Xcode image, restored from a saved state, and the guest runs the existing pipeline with
+a one-job token.** The host keeps the `hangar` LaunchDaemon, the CI keychain (now only a store for the
+identity it injects) and the machine token. Images are built on each Mac from a vanilla macOS image plus
+the host's own Xcode. Saved states are per Mac and per slot.
+
+## How it works
+
+### Image storage
+
+`vmStorage` in the worker configuration, default `/Users/hangar/.hangar/vm`. It must be an APFS volume:
+clones only work within one volume, so images, slot states and job clones all live on it. An external SSD
+works (Thunderbolt or USB4, APFS). The worker checks the volume is APFS and that ownership is enabled
+(`diskutil info` → "Owners: Enabled"). External volumes default to ignoring ownership, which would make a
+running job's clone, with its secrets, readable by every local user. On such a volume `isolate` runs
+`diskutil enableOwnership` (it already runs as root). FileVault or an encrypted APFS volume is recommended:
+a deleted clone is not scrubbed.
+
+```
+vm/
+  images/<name>/            config.json  disk.img  nvram.bin  image.json (macOS build, Xcode, runtimes, digest)
+  images/<name>/slots/<n>/  disk.img (clone)  nvram.bin (clone)  mid.bin  state.vzstate  slot.json (MAC, CPU, memory)
+  jobs/<job-id>/            disk.img (clone)  nvram.bin (clone)  share/  (deleted when the job ends)
+```
+
+The directory is 0700, owned by `hangar`.
+
+### Base image pipeline
+
+Two layers, both on the Mac that uses them.
+
+**1. Vanilla macOS** (`vanilla-26.6.2`): macOS with Setup Assistant done, an `admin` user, SSH on. Getting
+past Setup Assistant is the one step Apple gives no API for. Options, honestly ranked:
+
+- **Import Cirrus's vanilla image (first slice).** `hangar-worker vm import
+  ghcr.io/cirruslabs/macos-tahoe-vanilla:26.6.2@sha256:…`: an OCI pull (Tart's format: LZ4 disk chunks
+  written straight into a sparse `disk.img`, no compressed copy kept). It is pinned by digest. Measured
+  4.5 minutes and 26 GiB. It trusts an image published by Cirrus/OpenAI, built from their open Packer
+  template. That is the same trust as installing Tart. Mitigated because the image only seeds a build
+  user's VM: its `admin` password is replaced before any job, and nothing in it is trusted with a secret.
+- **IPSW plus a person (second slice).** `hangar-worker vm create --ipsw latest` installs (measured: 75 %
+  in 80 s), then opens the VM in a window in the operator's GUI session. The operator clicks through Setup
+  Assistant once per macOS version (about 3 minutes, a checklist on screen) and turns on Remote Login. No
+  third-party image. It needs about 40 GiB free during the install (IPSW plus disk), which the mini only
+  has with an external SSD.
+- **IPSW plus scripted keystrokes (later, maybe).** What Cirrus's Packer template does, through Tart's VNC
+  server: about 40 timed keystroke steps per macOS release, which break when Setup Assistant changes. We
+  could drive a `VZVirtualMachineView` in an offscreen window with synthesized key events, but that needs a
+  GUI session and the same per-release maintenance. Not worth it for two Macs.
+- **Patching the guest volume offline** (`.AppleSetupDone`, a user record and a launch daemon written into
+  the mounted disk image). Rejected: it needs root on the host to write root-owned files, depends on
+  undocumented local directory formats, and it was not tried.
+
+**2. Xcode image** (`xcode-27.2`), provisioned over SSH as `admin` from a clone of the vanilla image (an
+APFS clone, so the two share blocks):
+
+1. Replace `admin`'s password with a random one kept only in the host CI keychain, install the host's
+   provisioning SSH key, and turn off password authentication. The vanilla image's `admin`/`admin` must not
+   survive into a job image: the build user could `su` with it.
+2. Create `builder`: standard user, not an administrator, no sudo. Turn on automatic login for `builder`,
+   so the saved state contains its logged-in GUI session (simulators and UI tests expect one, as on Xcode
+   Cloud).
+3. `/opt/homebrew` owned by `builder`, Homebrew installed from its tarball, `brew update` done once, and
+   `HOMEBREW_NO_AUTO_UPDATE=1` set for jobs. Measured: a formula install then takes about 40 s.
+4. Xcode: the host's `/Applications/Xcode_<version>.app` (or `Xcode.app` when that is the version), streamed
+   with `tar | ssh 'tar --hfsCompression -x'`. Measured at 55 MB/s, so about 3 minutes for Xcode 27.2's
+   8.9 GB, which keeps its compressed size. A `.xip` the operator downloads works too (`xip -x` in the
+   guest). Downloading Xcode in the guest is rejected: it needs an Apple ID.
+5. `xcode-select -s`, `xcodebuild -license accept`, `xcodebuild -runFirstLaunch`, the Metal toolchain
+   component, and the simulator platforms the workflows need: `xcodebuild -downloadPlatform iOS` in the
+   guest, or `-exportPath` on the host and `-importPlatform` in the guest to avoid downloading twice.
+6. The guest agent (see *Control channel*) as a LaunchDaemon. Spotlight indexing off (`mdutil -a -i off`),
+   sleep and screen lock off, software update checks off.
+7. Shut down. Record `image.json`: macOS build, Xcode version and build, runtimes, sizes, the vanilla
+   digest.
+
+Size estimate per Xcode image: macOS 26 GiB, Xcode 3.7 GiB, an iOS simulator runtime about 8 to 17 GiB
+(the host's iOS 24 runtime volume holds 17 GiB), the Metal toolchain about 3 GiB, Homebrew 0.3 GiB: **about
+45 to 50 GiB on disk**, 60 to 140 GB nominal. Two Xcode images built on one vanilla share the macOS blocks,
+so the second costs about 25 GiB. Building one takes about 15 to 30 minutes, mostly the runtime download.
+`hangar-worker vm build-image --xcode 27.2` runs the pipeline and can be started from the Machines page.
+
+**Saved states, one per slot.** For each slot `n`: clone the image's disk and NVRAM, give the slot its own
+machine identifier and its own locally administered MAC (`02:68:67:<machine>:<slot>:00`), cold boot with the
+slot's CPU and memory, wait for `builder`'s session and for the guest to settle (load below 1 for 30 s, which
+is why Spotlight is off: the spike's guest was at load 54 a minute after boot), pause, save. Keep
+that slot disk and NVRAM next to the state. They cost the blocks the boot changed plus the state file (1.3
+GiB for 4 GB of memory, more for 8 GB).
+
+States are encrypted with a key tied to the host (Apple's documentation), so they are made on the Mac that
+restores them and never copied. Whether they are also tied to the macOS user is not known (see *Open
+questions*). They are made by the `hangar` daemon itself, which also restores them.
+
+### Per-job lifecycle
+
+1. **Claim.** The host worker claims a job for a free slot of an image with the workflow's Xcode, as today.
+2. **Clone.** `clonefile` the slot's `disk.img` and `nvram.bin` into `jobs/<id>/` (measured 0.015 s).
+3. **Restore.** Configuration identical to the slot's (CPU, memory, MAC, machine identifier, NVRAM path
+   pointing at the clone, one virtio-fs device whose host directory is `jobs/<id>/share/`), then
+   `restoreMachineStateFrom` and `resume` (measured 1.5 to 4.9 s). On "invalid argument" (a stale state
+   after a host update, or an image changed under it): cold boot this job's clone instead (about 15 to 20 s,
+   plus the settle wait), and mark the slot to save a new state when it is next idle.
+4. **Hand over.** Over the control channel: set the clock (the spike saw it right, but this is cheap
+   insurance), write fresh entropy into `/dev/random` (every clone resumes with the same RNG state), give the
+   guest its hostname, and deliver the job bundle. The bundle holds the job ID, the job-scoped token, the
+   `hangar-worker` binary the host runs (so the image never needs rebuilding for a worker update), the
+   signing `.p12` and its password, and the App Store Connect key file. The share directory carries only
+   non-secret files. Secrets go over the control channel into a 0700 directory of `builder`'s.
+5. **Run.** In the guest, as `builder`: `hangar-worker run-job --job <id>`, with the server reached through
+   the host relay. The guest runs the job's pipeline and streams logs as today.
+6. **Collect.** Artifacts upload from the guest through the same relay, as `upload-artifacts` does today.
+   The host does not copy files out of the guest.
+7. **Destroy.** `stop()` (a hard stop: nothing in the guest is worth a clean shutdown), revoke the job token,
+   delete `jobs/<id>/`. On every path: success, failure, cancel, timeout, host shutdown.
+
+Target from claim to a shell in the guest: under 10 s. Measured end to end without the hand-over: 2.3 to
+5.9 s.
+
+### Control channel
+
+**First slice: SSH over the NAT network, host to guest only.** It is proven by the spike and needs nothing
+new in the guest. The host's provisioning key logs in as `admin` to set up and as `builder` to run the job.
+Host-to-guest connections are allowed by the network rules. Guest-to-host ones are not.
+
+**Then: a guest agent over virtio-vsock.** `hangar-worker guest-agent` listens on a vsock port in the guest,
+and the host connects through `VZVirtioSocketDevice`. No network path, no sshd in job images, and the same
+binary. It also carries the server relay: in the guest, the agent listens on `127.0.0.1:8787`, and each
+connection is forwarded over vsock to the host worker, which forwards it to the server. The guest's server
+URL is `http://127.0.0.1:8787`. Not yet proven: that a vsock listener in the guest keeps working across
+save and restore. That is the first thing to test in the vsock slice, and SSH stays the fallback.
+
+**The relay, either way.** The host worker forwards the guest's HTTP requests to the server. It is a good
+place to check that each request carries the job's token, so a guest cannot reach any other API even if
+the server's scoping had a bug. In the SSH slice, it is a remote port forward (`ssh -R`) to a host-side
+listener of the worker's.
+
+### Signing
+
+The team App Store Connect key with an issuer ID is configured. Cloud-managed distribution signing during
+`-exportArchive` needs no local distribution key. Archiving still needs an Apple Development identity in a
+keychain.
+
+- **One identity per worker, created once, kept on the host.** It is the identity the CI keychain already
+  gets from the first archive. A worker that has none creates it once: through the App Store Connect API
+  with the team key (a CSR generated on the host, `POST /v1/certificates` of type DEVELOPMENT), or by one
+  archive on the host as today. Not per VM: Apple limits development certificates per team, and an
+  `-allowProvisioningUpdates` archive in a fresh VM with no identity would create a new one each time.
+- **Injected per job.** The host exports it (`security export -t identities -f pkcs12`, a random password
+  per job) and sends the `.p12` over the control channel. The guest worker creates a temporary keychain
+  (random password), imports it, sets the partition list (`apple-tool:,apple:,codesign:`, as `CIKeychain`
+  does today), puts it first on the search list, and passes the ASC key to xcodebuild as today.
+  Provisioning profiles are downloaded per job by `-allowProvisioningUpdates`, which adds a few seconds.
+- **Gone with the VM.** The keychain lives on the clone, and the clone is deleted. The `.p12` file is
+  removed after import anyway.
+- The private key does enter every guest. A malicious build can copy it out during its run, exactly as it
+  can on the host today. That is a development identity, revocable, and it can't publish to the App Store
+  alone. The distribution identity stays with Apple (cloud-managed).
+
+### Caching
+
+Speed without leaking state means caches go host → guest, read-only, and are written only by the host,
+never by a build.
+
+- **First slice: nothing.** DerivedData is cold (accepted), packages resolve from the network.
+- **Later: a package mirror.** The host keeps bare git mirrors of the package URLs in each app's
+  `Package.resolved` (`git clone --mirror`/`fetch`, which runs no package code). It is mounted read-only into
+  the guest through the virtio-fs device. In the guest, SPM resolves against it with `url.<mirror>.insteadOf`
+  git configuration, or by copying into `-clonedSourcePackagesDirPath`. The mirror only adds commits fetched
+  from the real remote, so a build cannot poison it.
+- **Later: Homebrew downloads.** A read-only share as `HOMEBREW_CACHE` source, filled by the host from the
+  formulae jobs used. Same rule.
+- **Never:** anything copied out of a guest.
+
+### Network
+
+The spike showed a NAT guest reaches the host's T3 Code, sshd, AirPlay, the Hangar server through Tailscale,
+and the LAN. Filtering is part of the first slice, not a later hardening.
+
+- **Attachment:** `VZNATNetworkDeviceAttachment`. No extra entitlement. Bridged needs
+  `com.apple.vm.networking`, which Apple grants on request. macOS 26's `VZVmnetNetworkDeviceAttachment`
+  adds custom networks but no destination filtering, and it needs a vmnet entitlement.
+- **Filtering: a pf anchor.** `/etc/pf.conf` already evaluates `anchor "com.apple/*"`. `isolate` (root)
+  installs `/Library/LaunchDaemons/app.hangar.pf.plist`, which loads `com.apple/250.HangarVM` at boot and
+  enables pf. The rules: on the VM bridge, from the guest subnet, allow UDP/TCP 53 to the gateway; block to
+  the gateway and every host address; block 10/8, 172.16/12, 192.168/16, 100.64/10 (Tailscale), 169.254/16,
+  224/4 and the IPv6 equivalents; allow everything else (GitHub, Apple, Homebrew, package hosts). The worker
+  reads the actual bridge subnet (192.168.64.0/24 unless changed in `com.apple.vmnet`) and checks the
+  anchor is loaded before it starts a VM. A Mac whose anchor is missing reports no VM slots: no VM jobs
+  without filtering.
+- **The server** is reached only through the host relay, never by address.
+- **Guest to guest:** blocked by the same RFC 1918 rule (the guests share a subnet).
+- The guest's sshd (first slice) listens on the NAT subnet only, and only the host can open connections into
+  it.
+
+### Security summary
+
+| Asset | How the guest is kept from it |
+|---|---|
+| Host files (owner's home, `/Users/hangar`, the server's data and master key) | No share but the per-job directory, read-only and holding no secrets. VZ gives no other host file access. |
+| Host services (T3 Code, sshd, Postgres, AirPlay), LAN, tailnet | pf anchor. The worker refuses VM jobs without it. |
+| Worker machine token, other jobs | One-job token, revoked at the end. The relay checks it. |
+| Secrets of earlier jobs | Fresh clone and fresh memory state per job. Secrets are never in an image or a state. |
+| A VM escape | The VM process runs as `hangar`, not as the owner and not as root. |
+
+### Resources
+
+| Mac | Slots | Per VM | Left for the host |
+|---|---|---|---|
+| mini (M4, 10 cores, 16 GB) | 1 | 6 vCPU, 8 GB | 8 GB for the server, Postgres and the owner |
+| MacBook Pro (M3 Max, 48 GB) | 2 | 6 vCPU, 14 GB | 20 GB for the owner's work |
+
+`vmSlots`, `vmCPUs` and `vmMemoryGB` in the worker configuration. Memory is part of the saved state, so
+changing it re-saves the slot states. A memory balloon device is configured but not used at first. Apple's
+limit of two running macOS VMs per Mac caps slots at two, and a VM the owner runs (Tart, UTM) takes one. The
+worker treats "maximum number of VMs" as "slot busy, retry in a minute", not as a job failure.
+
+### Disk budget
+
+Per Mac: Xcode image about 45 to 50 GiB (a second Xcode about 25 GiB more), per slot a state file (1.3 GiB
+measured at 4 GB, an estimated 2 to 4 GiB at 8 to 14 GB) plus the blocks the slot's boot changed (about
+1 GiB), and per running job the clone's growth: the checkout, DerivedData and the archive, 2 to 20 GiB,
+freed when the job ends. Building an image temporarily needs the vanilla image plus Xcode plus a runtime
+download.
+
+The mini cannot hold an Xcode image on its internal disk above the owner's 40 GiB floor (77 GiB free now).
+**On the mini, VM builds need an external APFS SSD** (or freed space). The MacBook's free space decides
+the same there. The worker refuses a job when free space on `vmStorage` would fall below the job reserve
+(`vmJobReserveGB`, default 25) plus the floor (`vmFloorGB`, default 40 on a shared Mac), and reports this as
+the existing `lowDisk` ineligibility.
+
+### Failure handling
+
+- **One child process per VM.** The worker starts `hangar-worker vm-host --job <id>`, which owns the
+  `VZVirtualMachine` on its own run loop. Its stdin is a pipe from the worker, and EOF means the worker
+  died, so it stops the VM and exits. `kill -9` of the VM's owner ends the VM (measured), so even a
+  SIGKILL of the child leaves nothing running.
+- **Hung guest.** The job's timeout (as today) and a guest heartbeat over the control channel (30 s). Either
+  one stops the VM, and the job fails with "the build VM stopped responding" or the timeout reason.
+- **Guest crash** (`didStopWithError`, or a guest stop before the job finished): the job fails with that
+  reason. The clone is deleted.
+- **Worker start and reboot.** Before polling: delete every `jobs/*` (no VM survives its process), delete
+  `$TMPDIR/com.apple.Virtualization.Installation.*` left by a killed image install (the spike left 1 GiB
+  there), report jobs that were running as lost (existing behavior). Saved states survive a reboot.
+- **Host macOS update.** Restore may fail with "invalid argument": the job cold-boots, and the slot is
+  re-saved when it is idle. The doctor reports stale slots.
+- **Image build failure.** Builds go into `images/.building-<name>`, renamed only when complete. A failed
+  build is deleted.
+
+### Scheduler and reporting
+
+`MachineReport` gains a `vm` section (optional, nil from older workers): `slots`, `freeSlots`, `storageFreeGB`,
+`networkFilter` (anchor loaded), and `images: [{name, macOS, xcode, xcodeBuild, simulatorRuntimes,
+tools}]`, where `tools` is what the image's Homebrew has preinstalled.
+
+- A workflow runs in a VM on a machine whose worker reports VM slots and whose machine setting `executor`
+  is `vm`. On such a machine, `xcode:` matches against `vm.images[].xcode`, and simulator destinations
+  against the image's runtimes. `tools:` stops being a host requirement in VM mode: a `ci_post_clone.sh`
+  installs what it needs, as on Xcode Cloud.
+- New ineligibilities: `noVMImage(xcode)` ("no VM image with Xcode 27.2 on this Mac"), `vmSlotsBusy`,
+  `noNetworkFilter`.
+- `busy` becomes per slot: a machine with two free slots takes two jobs.
+- `needsTeamKey` stays: the guest has no Xcode account either.
+
+### Migration
+
+1. Workers update to the version with VM support. Nothing changes until a machine's `executor` is `vm`.
+2. The operator runs `isolate` again (it is idempotent) to install the pf anchor and, for an external SSD,
+   enable ownership. Then they build an image from the Machines page or with `hangar-worker vm
+   build-image`.
+3. They switch the machine to `vm`. Its host-side DerivedData and workspaces stay until the operator deletes
+   them (the doctor shows their size).
+4. When both Macs have run VM builds for a while, the host executor becomes opt-in, and later goes.
+
+The `hangar` user, the LaunchDaemon and the CI keychain stay as the VM host's account. The ownership
+problem with `/opt/homebrew` disappears in VM mode: the guest's Homebrew belongs to `builder`.
+
+## What this does not stop
+
+- A build exfiltrating what it is given: the development identity, the ASC key, the git token, the source.
+  It can reach the internet, because builds need it.
+- A build using the guest as a network client on the internet for the length of a job (e.g. mining or
+  scanning). The timeout bounds it.
+- A VZ or guest-kernel escape. The VM runs as `hangar`, which bounds the damage to that account.
+- Supply-chain trust in the vanilla image (first slice), Homebrew and package hosts.
+
+## Key Decisions
+
+1. **A fresh macOS VM per job, not a user or container on the host.** It is the only way to give a build a
+   writable `/opt/homebrew` and its own system without touching the owner's environment. Spike: ready in
+   2.3 to 5.9 s from a saved state.
+2. **Our own VZ code in the worker, not Tart.** Typed errors, slot-aware save/restore, one self-updating
+   binary, no external runtime. Tart's license (FSL-1.1-ALv2, internal use permitted) is not the reason.
+   Image layout stays Tart-compatible.
+3. **Save/restore with one state per slot.** Each slot has its own machine identifier, MAC, NVRAM and state,
+   because restore requires an identical configuration and two VMs from one state cannot run together.
+   Cold boot is the automatic fallback.
+4. **Images are built per Mac, from a vanilla macOS plus the host's own Xcode.** First slice: import
+   Cirrus's vanilla image pinned by digest. Next: IPSW install plus a one-time click-through by the
+   operator. Never download Xcode with an Apple ID in a guest, never publish images.
+5. **The guest runs the existing pipeline with a one-job token. The host supervises and relays.** That
+   reuses the steps unchanged, keeps the machine token on the host, and the relay limits the guest to its
+   own job.
+6. **SSH first, vsock agent second.** SSH is proven. Vsock across save/restore is not yet.
+7. **One development identity per worker, kept on the host, injected per job as a `.p12`** into a temporary
+   keychain. No certificate per VM.
+8. **Caches are read-only, host-written, and not in the first slice.** DerivedData stays cold.
+9. **A pf anchor is a precondition for VM slots.** The spike showed NAT guests reach the owner's tools.
+10. **One slot on the mini (8 GB), two on the MacBook.** The mini needs an external SSD for images.
+
+## Open Questions
+
+1. **VZ from the `system` domain as `hangar`.** The spike ran as the interactive user, in the GUI session
+   and in the Background session. A LaunchDaemon with `UserName hangar` was not tried (it needs root). It is
+   very likely to work (Tart runs this way in CI), but it is the first manual check.
+2. **Are saved states tied to the macOS user** as well as the host? Moot if the daemon makes its own states,
+   which it does, but it decides whether an image build started as the operator can save the slot states.
+3. **Does the two-VM limit count VMs across macOS users?** If yes, an owner's own VM blocks a Hangar slot.
+   The design already treats that as "slot busy".
+4. **Why did `ditto` from a virtio-fs share fail with symlink loops** when a small share's symlinks resolve?
+   The tar stream works, so this only matters if we want a share-based copy.
+5. **A vsock listener across save and restore** (see *Control channel*).
+6. **The MacBook's free disk** decides whether it needs an external SSD too.
+7. **pf from a LaunchDaemon on macOS 26 and 27:** the anchor and `pfctl -e` reference counting were not tried
+   (root).
+
+## PR Plan
+
+First shippable slice, MacBook only (disk), one slot, one Xcode version, SSH control, no caching. Roughly
+3,000 to 4,000 lines with tests, about 8 PRs:
+
+1. **`HangarVM` module.** Image and slot bundle format (Tart-compatible), `clonefile` helpers, VM
+   configuration from a bundle, boot, save, restore with typed errors, the `vm-host` child process with the
+   stdin-EOF rule. Ad hoc signing with the entitlement in the release script, with the SHA-256 taken after
+   signing.
+2. **`hangar-worker vm import`:** an OCI pull of a Tart-format image pinned by digest (LZ4 chunks into a
+   sparse disk).
+3. **`hangar-worker vm build-image --xcode`:** the SSH provisioning above (admin password rotation,
+   `builder`, Homebrew, Xcode by tar stream, first launch, platforms), then per-slot state saving.
+4. **Job-scoped tokens on the server.** Issue them on claim, limit them to their job's endpoints, revoke at
+   the end.
+5. **The VM executor in the worker:** clone, restore (cold-boot fallback), hand-over over SSH, relay, `run-job`
+   mode in the guest, the temporary keychain, destroy, the start-up sweep.
+6. **pf anchor in `isolate`,** and the worker's anchor check.
+7. **Reporting and scheduling:** `MachineReport.vm`, per-slot `busy`, image matching, the new
+   ineligibilities, the per-machine `executor` setting, the Machines page.
+8. **Docs:** `docs/worker-setup.md` (external SSD, building an image), and this file's manual verification.
+
+Then: vsock agent, IPSW plus click-through images, the package mirror, a second slot, the mini on an
+external SSD.
+
+## Manual verification
+
+On the MacBook (or the mini with an external SSD), after a backup:
+
+1. `hangar-worker vm import …vanilla:26.6.2@sha256:…` as `hangar`: it completes in about 5 minutes, and an
+   interrupted import leaves nothing behind.
+2. `hangar-worker vm build-image --xcode 27.2`: `image.json` lists Xcode 27.2 and the iOS runtime. `ssh
+   admin@<guest>` with password `admin` is refused. `builder` is not in `admin`, and `sudo -n true` fails as
+   `builder`.
+3. In a job VM: `brew install xcodegen` works as `builder` with `/opt/homebrew/bin` first in `PATH`. Legilo's
+   unmodified `ci_post_clone.sh` succeeds.
+4. Legilo archive: the guest imports the injected identity, archives, exports with cloud signing, uploads to
+   TestFlight. No new development certificate appears in the team's certificate list. Run it twice.
+5. From inside a job: the host's 192.168.64.1:3773, :22 and the LAN address are refused, as is
+   100.71.242.42:8787 and the LAN router. `https://github.com` works. `curl 127.0.0.1:8787` with the job
+   token reaches only that job's endpoints, and with no token or another job's ID gets 401/403.
+6. Timings in the job log: claim to guest shell under 10 s. Cold boot fallback (delete a slot's state)
+   under 30 s, and the state is saved again afterwards.
+7. `kill -9` the worker during a job: no `com.apple.Virtualization.VirtualMachine` process remains, the job
+   is reported lost, and after launchd restarts the worker, `jobs/` is empty.
+8. A job that sleeps past its timeout: the VM is stopped, the clone deleted, the job failed with the
+   timeout reason.
+9. Reboot during a job: same as 7. After the reboot, the first job restores from the saved state.
+10. Update macOS on the host: the first job falls back to a cold boot and succeeds, and the slot is
+    re-saved.
+11. Two jobs at once on the MacBook: two slots, two VMs, both succeed. A third waits with "VM slots busy".
+    Start a Tart VM by hand: one Hangar slot shows busy, and no job fails.
+12. Free space on `vmStorage` never falls below the floor during a build. A job that would cross it waits
+    with the `lowDisk` reason.
