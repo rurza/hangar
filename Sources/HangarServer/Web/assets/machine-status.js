@@ -14,8 +14,8 @@ function isServerMac(machine, hostName) {
 function loadText({ running, max, paused }) {
   const count = `${running} of ${max} ${max === 1 ? 'job' : 'jobs'} running`;
   if (!paused) return { headline: running === 0 ? 'Idle' : null, detail: count };
-  if (running === 0) return { headline: 'Builds Paused', detail: 'Takes no new builds until you resume it' };
-  return { headline: null, detail: `${count} · then no new builds until you resume it` };
+  if (running === 0) return { headline: 'Builds Paused', detail: 'No new builds until resumed' };
+  return { headline: null, detail: `${count} · no new builds after this` };
 }
 
 /** The button that turns builds off and on again. */

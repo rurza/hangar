@@ -19,9 +19,9 @@ import Testing
         }
         #expect(try load(#"{"running": 0, "max": 1, "paused": false}"#) == "Idle | 0 of 1 job running")
         #expect(try load(#"{"running": 0, "max": 1, "paused": true}"#)
-            == "Builds Paused | Takes no new builds until you resume it")
+            == "Builds Paused | No new builds until resumed")
         #expect(try load(#"{"running": 1, "max": 2, "paused": true}"#)
-            == "null | 1 of 2 jobs running · then no new builds until you resume it")
+            == "null | 1 of 2 jobs running · no new builds after this")
         #expect(try load(#"{"running": 1, "max": 1, "paused": false}"#) == "null | 1 of 1 job running")
     }
 
