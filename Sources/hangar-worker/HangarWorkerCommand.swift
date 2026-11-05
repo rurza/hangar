@@ -23,7 +23,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             LoggingSystem.bootstrap { StreamLogHandler.standardError(label: $0) }
             let logger = Logger(label: "app.hangar.worker")
             // Everything the worker and its jobs create is private to this user (worker isolation design).
-            WorkerPrivacy.restrictUmask()
+            WorkerPrivacy.standardUmask()
             let user = NSUserName()
             let home = NSHomeDirectory()
             if WorkerPrivacy.isDedicatedAccount(user: user, home: home) {

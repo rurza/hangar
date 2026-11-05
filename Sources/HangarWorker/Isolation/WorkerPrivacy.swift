@@ -3,18 +3,20 @@ import Foundation
 /// The file modes that keep a worker's files away from other accounts on the Mac (docs: worker isolation design).
 ///
 /// The boundary is the dedicated `hangar` user's home at mode 0700. The worker keeps it that way after install without
-/// walking the cache: `run` sets umask 077 so everything a job creates (including in `/tmp`) is private, the data
-/// directory is chmodded to 0700, and the home itself is chmodded only when the process really is that user.
+/// walking the cache: the data and work directories (holding each job's TMPDIR) are chmodded to 0700, and the home
+/// itself is chmodded only when the process really is that user. The umask stays the usual 022: a build's products
+/// must keep group and world read bits, or the installer package `xcodebuild -exportArchive` makes holds files only
+/// their owner can read and App Store Connect rejects it ("files that are only readable by the root user").
 public enum WorkerPrivacy {
     /// The dedicated build account's short name.
     public static let dedicatedUser = "hangar"
     /// Its home.
     public static let dedicatedHome = "/Users/hangar"
 
-    /// Sets the process umask to 077; children (xcodebuild, hooks, post-actions) inherit it. Called by `run` only, so
-    /// tests and the doctor keep their own umask.
-    public static func restrictUmask() {
-        umask(0o077)
+    /// Sets the process umask to 022, whatever launchd or the shell handed over; children (xcodebuild, hooks,
+    /// post-actions) inherit it. Called by `run` only, so tests and the doctor keep their own umask.
+    public static func standardUmask() {
+        umask(0o022)
     }
 
     /// Whether `user` with home `home` is the dedicated account whose home the worker may lock down.

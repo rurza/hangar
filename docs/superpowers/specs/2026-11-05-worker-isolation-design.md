@@ -372,10 +372,12 @@ The home being 0700 is the boundary. Two things in the worker keep it that way
 after install, without a recursive walk of DerivedData (a recursive chmod on
 every start is slow and races a build):
 
-1. `hangar-worker run` sets `umask(0o077)` before the loop starts. Children,
-   including `xcodebuild`, hooks and post-actions, inherit it. Files a job
-   creates in `/tmp` or `/var/tmp` are then mode 0600, owner `hangar`, so
-   another account cannot read them. The sticky bit on `/tmp` already stops
+1. `hangar-worker run` sets `umask(0o022)` before the loop starts (*revised*:
+   it first set 077, which made every file in a built app owner-only, so the
+   macOS installer package was rejected by App Store Connect with "files that
+   are only readable by the root user"). Each job's TMPDIR lives in the 0700
+   work directory, so what a job writes there stays private; a file a hook
+   writes straight into `/tmp` is world-readable, as on any Mac. The sticky bit on `/tmp` already stops
    other accounts deleting them. `WorkerSelfUpdate` sets the staged binary to
    0755 by `chmod`, which is not subject to umask, so the replaced binary stays
    executable. `setup` and the secret writer already set 0600 and 0700
@@ -697,9 +699,9 @@ not a hole in this design.
    cache, the keychain, git credentials, signing material, the worker token and
    temp are private to `/Users/hangar`. Sharing the console user's DerivedData
    or package cache would let the build read that user's files.
-4. **The home is mode 0700, the data directory is mode 0700, and `run` sets
-   umask 077.** That is what stops another account reading job files, including
-   files a hook drops in `/tmp`. The worker does not recursively chmod the
+4. **The home is mode 0700 and the data and work directories are mode 0700.**
+   That is what stops another account reading job files. The umask stays 022,
+   since build products must stay readable inside the package. The worker does not recursively chmod the
    cache. It only chmods `/Users/hangar` when it is actually that user, so a
    developer running the worker as themselves does not have their home locked
    down by a test or by a not-yet-migrated agent.
@@ -751,7 +753,7 @@ other home through `sudo`.
 
 *(revised)* As built on `worker-isolation`, one commit each:
 
-1. **Keep the worker's files private.** `run` sets umask 077, `prepareDataDirectory`
+1. **Keep the worker's files private.** `run` sets umask 022 (077 broke macOS packages), `prepareDataDirectory`
    chmods the data directory to 0700, the `hangar` user's own home is locked to
    0700 with its ACL stripped, and any other user gets a warning at start.
 2. **Report which macOS user runs the worker.** Optional `runningUser` in
