@@ -51,6 +51,24 @@ import Testing
         #expect(VMNetworkFilter.daemonPlist.contains("<key>RunAtLoad</key>"))
     }
 
+    /// `kern.boottime` prints `{ sec = …, usec = … } date`; a greedy match once took the microseconds instead.
+    @Test func theLoaderReadsTheBootTimesSecondsNotItsMicroseconds() throws {
+        let line = try #require(VMNetworkFilter.loaderScript.split(separator: "\n").first { $0.hasPrefix("boot=") })
+        let sedScript = try #require(line.split(separator: "'").dropFirst().first)
+        let sed = Process()
+        sed.executableURL = URL(fileURLWithPath: "/usr/bin/sed")
+        sed.arguments = ["-E", String(sedScript)]
+        let input = Pipe(), output = Pipe()
+        sed.standardInput = input
+        sed.standardOutput = output
+        try sed.run()
+        input.fileHandleForWriting.write(Data("{ sec = 1793045155, usec = 119995 } Mon Oct 26 21:05:55 2026\n".utf8))
+        try input.fileHandleForWriting.close()
+        sed.waitUntilExit()
+        let printed = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        #expect(printed.trimmingCharacters(in: .whitespacesAndNewlines) == "1793045155")
+    }
+
     @Test func installCommandsPutRootOwnedFilesInPlaceAndLoadTheDaemon() {
         let commands = VMNetworkFilter().installCommands(staging: "/tmp/s")
         #expect(commands.contains(["/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "0644", "/tmp/s/rules", "/etc/pf.anchors/app.hangar.vm"]))

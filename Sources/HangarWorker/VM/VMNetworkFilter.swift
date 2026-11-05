@@ -86,7 +86,7 @@ public struct VMNetworkFilter: Sendable, Equatable {
         set -eu
         /sbin/pfctl -q -a '\(anchor)' -f '\(rulesPath)'
         /sbin/pfctl -q -E >/dev/null 2>&1 || true
-        boot=$(/usr/sbin/sysctl -n kern.boottime | /usr/bin/sed -E 's/.*sec = ([0-9]+).*/\\1/')
+        boot=$(/usr/sbin/sysctl -n kern.boottime | /usr/bin/sed -E 's/^[{] sec = ([0-9]+),.*/\\1/')
         sha=$(/usr/bin/shasum -a 256 '\(rulesPath)' | /usr/bin/cut -d ' ' -f 1)
         umask 022
         printf '{"anchor":"%s","rulesSHA256":"%s","bootTime":%s}\\n' '\(anchor)' "$sha" "$boot" > '\(markerPath).tmp'
