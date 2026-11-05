@@ -1,10 +1,12 @@
-// The Settings page: the App Store Connect key, the GitHub token, agent tokens, global variables and About. The key
-// and the token are write-only: the page shows whether they are set, never their values, and never pre-fills them.
+// The Settings page: the App Store Connect key, the signing certificate, the GitHub token, agent tokens, global
+// variables and About. The key and the token are write-only: the page shows whether they are set, never their
+// values, and never pre-fills them.
 
 import { api } from '../api.js';
 import { button, card, confirm, field, h, page, replaceChildren, section, toast } from '../ui.js';
 import { variableGroupsEditor, variablesEditor } from './variables.js';
 import { agentTokensEditor } from './agent-tokens.js';
+import { signingCard } from './signing.js';
 import {
   ASC_KEYS_URL, appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, issuerField, keyDropZone, problem, withBusy,
 } from './setup.js';
@@ -19,6 +21,7 @@ export async function settingsPage(params, context) {
   const about = card({ class: 'settings-card' });
   const asc = ascCard(() => status, (options) => refresh(asc, options));
   const github = githubCard(() => status, (options) => refresh(github, options));
+  const signing = signingCard(() => status, { signal });
 
   /**
    * Reloads the status and redraws only `changed` (unless `redraw` is false), so a form open in the other card
@@ -32,6 +35,8 @@ export async function settingsPage(params, context) {
       toast(error.message, 'error');
     }
     if (redraw) changed.render();
+    // Whether a team key is set decides whether Signing can offer Create.
+    if (changed === asc) signing.render();
     renderAbout();
   }
 
@@ -53,6 +58,11 @@ export async function settingsPage(params, context) {
       title: 'App Store Connect',
       footer: 'Hangar uses the API key for build numbers and TestFlight.',
     }, asc.element),
+    section({
+      title: 'Signing',
+      footer: 'VM builds sign development archives with this one certificate. Exports and TestFlight uploads stay '
+        + 'signed by App Store Connect.',
+    }, signing.element),
     section({
       title: 'GitHub',
       footer: 'Hangar reads your app repositories and their private Swift packages with it.',
