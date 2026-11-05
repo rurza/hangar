@@ -180,10 +180,8 @@ struct VMCommand: AsyncParsableCommand {
             var xcode: String = "/Applications/Xcode.app"
             @Option(help: "The image's name. Default: xcode-<version>.")
             var name: String?
-            @Option(name: .customLong("platform"), help: "A simulator platform to download in the guest (iOS, watchOS…); repeatable. Default: iOS.")
+            @Option(name: .customLong("platform"), help: "A simulator platform to download in the guest (iOS, watchOS…), for test jobs; repeatable. Default: none (archives need only the SDKs Xcode carries).")
             var platforms: [String] = []
-            @Flag(help: "Download no simulator platform (archives only; saves 8 to 17 GB).")
-            var noPlatforms = false
             @Option(help: "The VM's disk in GB; a job's clone costs only what it writes. Default: 120.")
             var diskGB: Int = VMImageBuilder.defaultDiskGB
             @Flag(help: "Install Homebrew into /opt/homebrew, owned by builder, as on Xcode Cloud. Off by default.")
@@ -204,7 +202,7 @@ struct VMCommand: AsyncParsableCommand {
                 let image: VMImage
                 do {
                     image = try await builder.build(
-                        from: from, xcodePath: xcode, name: name, platforms: noPlatforms ? [] : (platforms.isEmpty ? ["iOS"] : platforms),
+                        from: from, xcodePath: xcode, name: name, platforms: platforms,
                         diskGB: diskGB, homebrew: homebrew, metalToolchain: metalToolchain)
                 } catch {
                     throw VMCommand.fail("\(error)")

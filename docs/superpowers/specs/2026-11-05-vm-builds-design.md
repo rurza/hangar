@@ -651,9 +651,9 @@ something open, the slice decided as follows.
     (`--no-metal-toolchain`, `--no-platforms`, `--platform` to change that). `tools:` is not checked on a VM
     machine; `xcode:` and simulator platforms are matched against the images.
 
-**Revised 2026-11-05: an image installs only what is necessary.** *(owner's call)* A job image carries macOS,
-Xcode (first launch done) and the simulator platforms asked for, and nothing else: no Homebrew and no Metal
-toolchain by default. A job assumes only macOS and Xcode and installs what it needs itself, so no build depends
+**Revised 2026-11-05: an image installs only what is necessary.** *(owner's call)* A job image carries macOS and
+Xcode (first launch done), and nothing else: no Homebrew, no Metal toolchain and no simulator runtime by default
+(archives use the SDKs inside Xcode; only test jobs need a runtime, and `--platform iOS` adds one). A job assumes only macOS and Xcode and installs what it needs itself, so no build depends
 on what the image happened to carry. `vm image build --homebrew` and `--metal-toolchain` add them for a Mac
 whose owner wants them. This supersedes the Homebrew parts of goal 2 and of the base image pipeline above.
 
