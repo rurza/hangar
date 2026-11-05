@@ -98,6 +98,15 @@ enum Migrations {
                 );
                 """)
         }
+        // Small server-wide settings that are not variables (no job sees them), e.g. where the GitHub token came from.
+        migrator.registerMigration("v4") { db in
+            try db.execute(sql: """
+                CREATE TABLE server_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """)
+        }
         return migrator
     }
 }

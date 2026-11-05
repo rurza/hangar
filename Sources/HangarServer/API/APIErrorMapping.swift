@@ -11,7 +11,7 @@ enum APIErrorMapping {
     ]
     static let conflictCodes: Set<String> = [
         "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",
-        "asc_not_configured", "github_not_configured",
+        "asc_not_configured", "github_not_configured", "issuer_required",
     ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {
@@ -45,6 +45,7 @@ enum APIErrorMapping {
         if code == "unsupported_media_type" { return .unsupportedMediaType }
         if code == "github_unauthorized" { return .badGateway }
         if code == "github_rate_limited" { return .serviceUnavailable }
+        if code == "asc_unavailable" { return .badGateway }
         if code == "detection_timeout" { return .gatewayTimeout }
         if code == "no_project_found" { return .unprocessableContent }
         if notFoundCodes.contains(code) { return .notFound }
