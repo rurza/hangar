@@ -1,5 +1,5 @@
-// What the Machines page and the Deploy sheet say about a Mac: paused or not, and whether it is the Mac the
-// server runs on. No imports, so the tests run it in JXA.
+// What the Machines page and the Deploy sheet say about a Mac: paused or not, whether it is the Mac the server
+// runs on, and its VM builds. No imports, so the tests run it in JXA.
 
 /** Whether `machine` is the Mac Hangar's server runs on: named like its LocalHostName, ignoring case (as `/setup`). */
 function isServerMac(machine, hostName) {
@@ -47,10 +47,32 @@ function deployMachineLine(machine) {
   return { detail: waits.length ? `Online · ${joinList(waits)}` : 'Online · can build it', dot: 'online' };
 }
 
+/**
+ * A VM Mac's line on the Machines page (`report.vm`, a `VMReport`): `{ text, problem }`, e.g. "VM builds · 1 slot
+ * (1 free) · Xcode 27.2 · network filter on". Short enough for a phone; `problem` is set only while no slot is ready.
+ */
+function vmLine(vm) {
+  const slots = vm.slots ?? 0;
+  const configured = Math.max(vm.configuredSlots ?? slots, slots);
+  const noun = (count) => (count === 1 ? 'slot' : 'slots');
+  let capacity;
+  if (slots === 0) capacity = 'not ready';
+  else if (configured > slots) capacity = `${slots} of ${configured} ${noun(configured)} (${vm.freeSlots ?? 0} free)`;
+  else capacity = `${slots} ${noun(slots)} (${vm.freeSlots ?? 0} free)`;
+  const versions = [...new Set((vm.images ?? []).map((image) => image.xcode).filter(Boolean))]
+    .sort((a, b) => b.localeCompare(a, 'en', { numeric: true }));
+  const xcode = versions.length ? `Xcode ${versions.join(', ')}` : 'no Xcode image';
+  const filter = vm.networkFilter ? 'network filter on' : 'network filter off';
+  return {
+    text: `VM builds · ${capacity} · ${xcode} · ${filter}`,
+    problem: slots === 0 ? (vm.problem || 'No VM slot is ready.') : null,
+  };
+}
+
 /** "a", "a and b", "a, b and c". */
 function joinList(items) {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-export { deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast };
+export { deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine };

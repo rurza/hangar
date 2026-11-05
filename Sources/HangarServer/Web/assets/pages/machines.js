@@ -9,7 +9,7 @@ import {
   plusIcon, selectContents, sheet, spinner, toast,
 } from '../ui.js';
 import { isOnline } from './build.js';
-import { isServerMac, loadText, pauseButtonLabel, pauseToast } from '../machine-status.js';
+import { isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
@@ -235,7 +235,8 @@ function waitingView() {
 
 function reportView(machine, jobInfo) {
   const report = machine.report;
-  const max = Math.max(1, machine.maxConcurrentJobs ?? 1);
+  // A VM Mac runs a job per VM slot, whatever its own job limit says.
+  const max = Math.max(1, report.vm ? report.vm.configuredSlots ?? report.vm.slots ?? 1 : machine.maxConcurrentJobs ?? 1);
   const runningIDs = Array.isArray(report.runningJobIDs) ? report.runningJobIDs : [];
   const running = runningIDs.length;
   const jobs = max === 1 ? 'job' : 'jobs';
@@ -263,6 +264,7 @@ function reportView(machine, jobInfo) {
       h('div', { class: 'machine-load-text' },
         activity,
         h('p', { class: 'card-detail' }, load.detail))),
+    report.vm ? vmView(report.vm) : null,
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),
@@ -302,6 +304,21 @@ function cannotSignAdvice(report) {
   }
   return 'Signing jobs skip this Mac until it can sign. As the hangar user, open Keychain Access, find the '
     + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.';
+}
+
+/** A VM Mac's slots, images and network filter on one line, and, while no slot is ready, why. */
+function vmView(vm) {
+  const line = vmLine(vm);
+  return [
+    h('p', { class: 'card-detail machine-vm' }, line.text),
+    line.problem
+      ? h('div', { class: 'signing signing-warning' },
+        h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
+        h('div', null,
+          h('p', { class: 'signing-title' }, 'VM builds not ready'),
+          h('p', { class: 'card-note' }, line.problem)))
+      : null,
+  ];
 }
 
 /**
