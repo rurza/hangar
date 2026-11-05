@@ -40,3 +40,15 @@ public struct ServerConfiguration: Sendable {
     var jobsDirectory: URL { URL(fileURLWithPath: dataDirectory).appendingPathComponent("jobs") }
     var masterKeyPath: String { URL(fileURLWithPath: dataDirectory).appendingPathComponent("master.key").path }
 }
+
+extension ServerConfiguration {
+    /// Creates the data directory, or tightens an existing one, to mode 0700. It holds the database, the master key
+    /// that opens every secret, job logs and signed builds; with the default umask a directory outside
+    /// `~/Library` (`--data-dir`, `HANGAR_DATA_DIR`) would leave them readable by every account on the Mac.
+    public static func prepareDataDirectory(at path: String) throws {
+        try FileManager.default.createDirectory(
+            atPath: path, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // An existing directory keeps its mode on createDirectory, and a new one's is subject to the umask.
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+    }
+}
