@@ -107,6 +107,20 @@ enum Migrations {
                 );
                 """)
         }
+        // Bearer tokens for agents (the MCP server): only the SHA-256 of each secret is stored.
+        migrator.registerMigration("v5") { db in
+            try db.execute(sql: """
+                CREATE TABLE api_tokens (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    scope TEXT NOT NULL,
+                    prefix TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at DOUBLE NOT NULL,
+                    last_used_at DOUBLE
+                );
+                """)
+        }
         return migrator
     }
 }

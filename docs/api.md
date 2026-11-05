@@ -9,6 +9,19 @@ The `hangar` CLI and the web UI talk to the server only through this API. Every 
 - Every request's `Host` must name the server (see [server setup](server-setup.md#options)): its bound address, its host or MagicDNS name, a `*.ts.net` name or an `--allowed-host`. Any other gets `421` `host_not_allowed`, on every route including the web UI.
 - On the public routes (not `/api/v1/worker/*`), every method but `GET`, `HEAD` and `OPTIONS` is refused with `403` `cross_site_request` when `Sec-Fetch-Site` is present and not `same-origin` or `none`, or when `Origin` names another host or port than `Host`. A request body must be sent as `Content-Type: application/json` (parameters such as `charset` are fine), else `415` `unsupported_media_type`; bodiless calls such as `DELETE` or a cancel need no Content-Type. The CLI sends neither `Origin` nor `Sec-Fetch-Site`.
 
+## API tokens
+
+Agents (the [MCP server](mcp.md)) call the API with an API token: `Authorization: Bearer hgr_…`. A token is created in Settings › Agent Access or with `hangar tokens create`, shown once, stored only as its SHA-256, and revoked by deleting it. Requests without an API token are unchanged: the API trusts the tailnet, as the web UI and the CLI always have. A token bounds what its bearer can do; it does not lock the API for everyone else.
+
+- An unknown or revoked token gets `401` `invalid_api_token`; it never falls back to the open API. A bearer value that does not start with `hgr_` (a machine token, say) is ignored on the public routes, as before tokens.
+- Each token has a scope, and scopes nest: `read` < `deploy` < `configure`. A route outside the token's scope gets `403` `token_scope`.
+  - `read`: every `GET` but the local-only `/setup/*` routes and `/api-tokens` (except `/api-tokens/current`).
+  - `deploy`: also `POST /builds` and `POST /builds/{id}/cancel`.
+  - `configure`: also `POST /apps`, `DELETE /apps/{id}`, `PUT` and `DELETE /apps/{id}/workflow-file`, `POST /apps/{id}/beta-groups` and `PUT /apps/{id}/numbers/next`.
+  - No token may change variables or settings, run setup, add, pair or delete machines, enroll, or create, list or revoke tokens.
+- A token never excuses a cross-site request: the cross-site rules run first.
+- Every request a token makes other than a `GET` is logged with the token's name. `lastUsedAt` is updated at most once a minute.
+
 ## Routes
 
 An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine's `{id}` is its name or its UUID.
@@ -67,6 +80,10 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /apps/{id}/beta-groups` | | `200` `[BetaGroup]` `{id, name, isInternal}`: the app's TestFlight groups in App Store Connect, internal ones first, each set by name. `409` `asc_not_configured` without the App Store Connect key; `502` `asc_refused` when App Store Connect refuses, with its own words in the message |
 | `POST /apps/{id}/beta-groups` | `{name}` | `201` `BetaGroup`: creates an internal group of the app (`POST /v1/betaGroups` with `isInternalGroup: true` and the app relationship). `400` `invalid_request` for an empty name; otherwise as `GET` |
 | `GET /apps/{id}/repo-icon?ref=` | `ref` optional | `200` the image of the `appiconset` icon `workflow-suggestion` finds, cached in memory for an hour; `404` `icon_not_found` when there is none (or only an Icon Composer icon) |
+| `GET /api-tokens` | | `200` `[APIToken]` `{id, name, scope, prefix, createdAt, lastUsedAt?}` sorted by name; never a secret or its hash |
+| `POST /api-tokens` | `CreateAPITokenRequest` `{name, scope}` | `201` `CreateAPITokenResponse` `{token: APIToken, secret}`: the only response with the secret (`hgr_` and 43 base64url characters); `prefix` is its first 8 characters. `400` `invalid_name` (empty or over 64 characters), `409` `token_exists` |
+| `DELETE /api-tokens/{id}` | | `204`; `{id}` is the name or UUID; the token stops working at once. `404` `token_not_found` |
+| `GET /api-tokens/current` | | `200` `APIToken`: the token the request carries (any scope); `404` `not_found` without one |
 | `GET /events` | | SSE stream, see below |
 
 ### Jobs
@@ -114,10 +131,10 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | Status | Codes |
 | --- | --- |
 | `400` | `invalid_request` (malformed body or query), `asc_key_not_found`, `asc_key_rejected`, `asc_key_forbidden`, `invalid_asc_key`, `invalid_key_id`, `github_token_rejected`, `invalid_token`, `gh_not_signed_in`, `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
-| `401` | `unauthorized` (worker routes) |
-| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only` |
-| `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found`, `icon_not_found`, `repository_not_found` (no such repository, or the token cannot read it) |
-| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed` |
+| `401` | `unauthorized` (worker routes), `invalid_api_token` |
+| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only`, `token_scope` |
+| `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found`, `icon_not_found`, `token_not_found`, `repository_not_found` (no such repository, or the token cannot read it) |
+| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed`, `token_exists` |
 | `415` | `unsupported_media_type` |
 | `422` | `no_project_found` (no Xcode project in the repository) |
 | `421` | `host_not_allowed` |

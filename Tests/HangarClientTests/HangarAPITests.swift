@@ -40,6 +40,33 @@ import Testing
         var requests: [URLRequest] { storage.withLock { $0 } }
     }
 
+    @Test func sendsTheAPITokenOnEveryRequestAndStream() async throws {
+        let token = "hgr_" + String(repeating: "x", count: 43)
+        let transport = StubTransport(responses: [try Self.json([App]())])
+        let recorder = Recorder()
+        let api = HangarAPI(baseURL: Self.base, transport: transport, token: token, openLines: Self.lines("", recorder: recorder))
+        _ = try await api.apps()
+        _ = try? await api.followLog(jobID: UUID()).reduce(into: 0) { _, _ in }
+        #expect(transport.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+        #expect(recorder.requests.first?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
+        let plain = StubTransport(responses: [try Self.json([App]())])
+        _ = try await HangarAPI(baseURL: Self.base, transport: plain).apps()
+        #expect(plain.requests.first?.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
+    @Test func deployCheckAndInspectPaths() async throws {
+        let check = DeployCheck(canDeploy: true, blocking: [], warnings: [], machines: [])
+        let inspection = RepositoryInspection(commit: "abc", apps: [], projects: [], notes: [])
+        let transport = StubTransport(responses: [try Self.json(check), try Self.json(inspection)])
+        let api = HangarAPI(baseURL: Self.base, transport: transport)
+        _ = try await api.deployCheck(app: "legilo", workflow: "release", ref: "main")
+        _ = try await api.inspectRepository("acme/legilo")
+        #expect(transport.requests.map { $0.url?.absoluteString } == [
+            "http://mini.tailnet:8787/api/v1/apps/legilo/deploy-check?workflow=release&ref=main",
+            "http://mini.tailnet:8787/api/v1/github/repos/acme/legilo/inspect",
+        ])
+    }
+
     @Test func decodesAPIErrorIntoTypedError() async throws {
         let transport = StubTransport(responses: [
             try Self.json(APIError(code: "app_not_found", message: "No app 'nope'"), status: 404),

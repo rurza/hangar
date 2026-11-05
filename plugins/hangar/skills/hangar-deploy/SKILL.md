@@ -5,6 +5,8 @@ description: Use when asked to build, deploy or ship an app to TestFlight with H
 
 # Deploy an app to TestFlight with Hangar
 
+If the `hangar` MCP tools are available (`deploy_check`, `start_build`, `wait_for_build`, …), prefer them: they check the deploy first and need no shell. This skill is the fallback when only the CLI is set up.
+
 This skill only drives the `hangar` CLI. It does nothing the CLI cannot.
 
 ## Prerequisites
