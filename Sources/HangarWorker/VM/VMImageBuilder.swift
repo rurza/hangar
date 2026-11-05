@@ -172,24 +172,6 @@ public struct VMImageBuilder: Sendable {
                 "read -r p && sudo -n dscl . -passwd /Users/admin \(Self.vanillaPassword) \"$p\" && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo -n tee /etc/ssh/sshd_config.d/100-hangar.conf >/dev/null",
                 input: SensitiveText(passwords.generate().value + "\n"))
         }
-        // The disk file grew before boot. The recovery partition sits right after the system container and SIP will not
-        // let it go, so the new space becomes its own APFS volume, /Volumes/workspace (Xcode Cloud's path), where a
-        // job's checkout, DerivedData and TMPDIR go.
-        try await step("add the workspace volume in the disk's free space") {
-            try await ssh.require(
-                "add /Volumes/workspace", user: "admin", host: address,
-                """
-                if ! diskutil info /Volumes/workspace >/dev/null 2>&1; then \\
-                  disk=$(diskutil info / | awk -F': *' '/APFS Physical Store/ {print $2}' | sed -E 's/s[0-9]+$//') && \\
-                  (yes | sudo -n diskutil repairDisk "$disk" >/dev/null 2>&1 || true) && \\
-                  last=$(diskutil list "$disk" | awk '/^ *[0-9]+:/ {id=$NF} END {print id}') && \\
-                  sudo -n diskutil addPartition "$last" APFS workspace 0 >/dev/null; \\
-                fi && \\
-                sudo -n diskutil enableOwnership /Volumes/workspace >/dev/null && \\
-                sudo -n chown \(Self.buildUser):staff /Volumes/workspace && \\
-                df -h /Volumes/workspace | tail -1
-                """, onLine: progress)
-        }
         // 2. builder: a standard user, no sudo, logged in automatically so the saved state holds its GUI session.
         let user = Self.buildUser
         try await step("create the build user \(user) (not an administrator) with automatic login") {
@@ -213,6 +195,24 @@ public struct VMImageBuilder: Sendable {
                 ! dseditgroup -o checkmember -m \(user) admin >/dev/null
                 """,
                 input: SensitiveText(password.value + "\n" + Self.kcpassword(password.value).base64EncodedString() + "\n"))
+        }
+        // The disk file grew before boot. The recovery partition sits right after the system container and SIP will not
+        // let it go, so the new space becomes its own APFS volume, /Volumes/workspace (Xcode Cloud's path), where a
+        // job's checkout, DerivedData and TMPDIR go.
+        try await step("add the workspace volume in the disk's free space") {
+            try await ssh.require(
+                "add /Volumes/workspace", user: "admin", host: address,
+                """
+                if ! diskutil info /Volumes/workspace >/dev/null 2>&1; then \\
+                  disk=$(diskutil info / | awk -F': *' '/APFS Physical Store/ {print $2}' | sed -E 's/s[0-9]+$//') && \\
+                  (yes | sudo -n diskutil repairDisk "$disk" >/dev/null 2>&1 || true) && \\
+                  last=$(diskutil list "$disk" | awk '/^ *[0-9]+:/ {id=$NF} END {print id}') && \\
+                  sudo -n diskutil addPartition "$last" APFS workspace 0 >/dev/null; \\
+                fi && \\
+                sudo -n diskutil enableOwnership /Volumes/workspace >/dev/null && \\
+                sudo -n chown \(Self.buildUser):staff /Volumes/workspace && \\
+                df -h /Volumes/workspace | tail -1
+                """, onLine: progress)
         }
         // 3. Homebrew only when asked for: an image carries macOS, Xcode and the platforms, nothing a job did not ask for.
         if homebrew {
