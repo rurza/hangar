@@ -12,7 +12,7 @@ struct VMCommand: AsyncParsableCommand {
         commandName: "vm", abstract: "Builds in a fresh macOS VM per job: storage, images, slots, network filter, signing.",
         subcommands: [
             Enable.self, Disable.self, Status.self, Image.self, Slots.self, Network.self, Identity.self, Smoke.self,
-            RunJob.self,
+            RunJob.self, RunAssignment.self,
         ])
 
     /// `--config` and `--storage`, shared by the commands that work on the VM storage.
@@ -31,6 +31,22 @@ struct VMCommand: AsyncParsableCommand {
 
         func dataDirectory() -> String {
             (try? WorkerConfiguration.load(from: config))?.dataDirectory ?? defaultSupportDirectory
+        }
+    }
+
+    /// Ctrl-C or SIGTERM during an import or a build deletes what it assembled (the VM, in this process, ends with
+    /// it), so an interrupted run leaves nothing behind.
+    static func removeOnInterrupt(_ path: String) -> [any DispatchSourceSignal] {
+        [SIGINT, SIGTERM].map { number in
+            signal(number, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+            source.setEventHandler {
+                try? FileManager.default.removeItem(atPath: path)
+                FileHandle.standardError.write(Data("interrupted; removed \(path)\n".utf8))
+                Darwin.exit(130)
+            }
+            source.resume()
+            return source
         }
     }
 
@@ -136,6 +152,8 @@ struct VMCommand: AsyncParsableCommand {
                 guard VMStorage.isValidImageName(name) else { throw VMCommand.fail("\(name) is not a valid image name") }
                 let settings = location.settings()
                 let importer = VMImageImporter(floorGB: settings.floorGB, progress: VMCommand.say)
+                let signals = VMCommand.removeOnInterrupt(VMStorage(root: settings.storage).partialImage(name).path)
+                defer { signals.forEach { $0.cancel() } }
                 do {
                     try await importer.importImage(parsed, as: name, into: VMStorage(root: settings.storage))
                 } catch {
@@ -175,6 +193,9 @@ struct VMCommand: AsyncParsableCommand {
                 let settings = location.settings()
                 let host = VMHost(settings: settings)
                 let builder = VMImageBuilder(host: host, progress: VMCommand.say)
+                let partialName = name ?? ((try? VMImageBuilder.xcodeVersion(at: xcode)).map { "xcode-\($0.version)" } ?? "")
+                let signals = VMCommand.removeOnInterrupt(host.storage.partialImage(partialName).path)
+                defer { signals.forEach { $0.cancel() } }
                 let image: VMImage
                 do {
                     image = try await builder.build(
@@ -420,7 +441,7 @@ struct VMCommand: AsyncParsableCommand {
             abstract: "Boots a job's VM from an image's slot as a job would, runs a command in it, and deletes it.",
             discussion: "Prints how the VM came up. Stop the worker first, or pick a slot no job uses.")
 
-        @Option(help: "The image. Default: the first one.")
+        @Option(help: "The image. Default: the first job image.")
         var image: String?
         @Option(help: "The slot to restore.")
         var slot: Int = 0
@@ -432,7 +453,7 @@ struct VMCommand: AsyncParsableCommand {
 
         func run() async throws {
             let host = VMHost(settings: location.settings())
-            guard let chosen = host.images().first(where: { image == nil || $0.metadata.name == image }) else {
+            guard let chosen = host.images().first(where: { image == nil ? $0.metadata.isJobImage : $0.metadata.name == image }) else {
                 throw VMCommand.fail("no such image in \(host.storage.images)")
             }
             if let reason = host.engine.unavailableReason() { throw VMCommand.fail(reason) }
@@ -469,6 +490,65 @@ struct VMCommand: AsyncParsableCommand {
             let result = await GuestJobRunner().run(
                 bundle, cancelled: { control.isCancelled }, stopReason: { control.stopReason })
             print(GuestJobRunner.resultLine(result))
+        }
+    }
+}
+
+// MARK: run-assignment (testing)
+
+extension VMCommand {
+    /// Runs one made-up test job through the VM executor against `--server`, as the daemon would run an assigned one:
+    /// a job token, the relay, the guest's pipeline. For trying VM builds without scheduling a build.
+    struct RunAssignment: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "run-assignment", abstract: "Runs one test job in a VM against a server (testing).",
+            shouldDisplay: false)
+
+        @Option(help: "The server (or a stand-in) the job reports to.")
+        var server: String
+        @Option(help: "Repository URL.")
+        var repo: String
+        @Option(help: "Commit SHA.")
+        var commit: String
+        @Option(help: "The .xcodeproj, relative to the repository.")
+        var project: String
+        @Option(help: "The scheme to test.")
+        var scheme: String
+        @Option(help: "Xcode version.")
+        var xcode: String = "27.2"
+        @Option(help: "The job's ID (the server must know it). Default: a new one.")
+        var job: String?
+        @Flag(help: "Run without the network filter (testing on a Mac without root).")
+        var ignoreNetworkFilter = false
+        @OptionGroup var location: Location
+
+        func run() async throws {
+            LoggingSystem.bootstrap { StreamLogHandler.standardError(label: $0) }
+            guard let url = URL(string: server) else { throw VMCommand.fail("--server must be a URL") }
+            let token = ProcessInfo.processInfo.environment["HANGAR_WORKER_TOKEN"] ?? "machine-token"
+            let settings = location.settings()
+            let host = VMHost(settings: settings)
+            let identity = VMIdentityStore(dataDirectory: location.dataDirectory())
+            let ignore = ignoreNetworkFilter
+            let doctor = VMDoctor(
+                host: host, identity: identity,
+                networkFilterProblem: { () -> String? in ignore ? nil : VMNetworkFilter.current().problem() })
+            if ignoreNetworkFilter { VMCommand.say("warning: running without the network filter: the VM can reach this Mac and the LAN") }
+            let action = WorkflowAction.test(scheme: scheme, platform: .macOS)
+            let jobID = job.flatMap(UUID.init(uuidString:)) ?? UUID()
+            let assignment = JobAssignment(
+                job: Job(id: jobID, buildID: UUID(), action: action, status: .assigned, createdAt: Date()),
+                app: App(id: UUID(), slug: "smoke", name: "Smoke", repoURL: repo, appStoreConnectAppID: "", createdAt: Date()),
+                workflow: Workflow(project: project, xcode: xcode, actions: [action]), workflowName: "smoke", buildNumber: 1,
+                commit: commit, ref: "main", environment: [])
+            let runner = VMJobRunner(
+                host: host, connection: HTTPServerConnection(baseURL: url, token: token), serverURL: url, identity: identity,
+                slots: VMSlotPool(count: settings.slots), workerBinary: Bundle.main.executablePath ?? CommandLine.arguments[0],
+                readiness: { doctor.readinessProblem() })
+            let started = ContinuousClock.now
+            let result = await runner.run(assignment, cancelled: { false }, stopReason: { nil })
+            let reason = result.failureReason.map { ": " + $0 } ?? ""
+            VMCommand.say("job \(jobID.uuidString) \(result.status.rawValue) in \(VMLauncherTiming.since(started))\(reason)")
         }
     }
 }
