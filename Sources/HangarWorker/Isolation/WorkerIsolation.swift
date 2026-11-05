@@ -5,10 +5,16 @@ import HangarCore
 public struct IsolationLayout: Sendable, Equatable {
     public var user: String
     public var home: String
+    /// Where the worker's LaunchDaemon plist goes; another directory only in tests.
+    public var launchDaemons: String
 
-    public init(user: String = WorkerPrivacy.dedicatedUser, home: String = WorkerPrivacy.dedicatedHome) {
+    public init(
+        user: String = WorkerPrivacy.dedicatedUser, home: String = WorkerPrivacy.dedicatedHome,
+        launchDaemons: String = WorkerLaunchDaemon.directory
+    ) {
         self.user = user
         self.home = home
+        self.launchDaemons = launchDaemons
     }
 
     public var binDirectory: String { home + "/.local/bin" }
@@ -20,10 +26,13 @@ public struct IsolationLayout: Sendable, Equatable {
     /// default data directory uses (`WorkerConfiguration.defaultWorkDirectory`), without spaces.
     public var workDirectory: String { home + "/.hangar/worker" }
     public var workspaces: String { workDirectory + "/workspaces" }
-    public var launchAgents: String { home + "/Library/LaunchAgents" }
-    public var plist: String { launchAgents + "/" + WorkerLaunchAgent.label + ".plist" }
     public var logs: String { home + "/Library/Logs/Hangar" }
-    public var loginKeychain: String { home + "/Library/Keychains/login.keychain-db" }
+    public var keychains: String { home + "/Library/Keychains" }
+    /// The CI keychain and its password file (in `dataDirectory`).
+    public var keychain: CIKeychain { CIKeychain(home: home) }
+    /// The launch agent an older `isolate` installed in the account (0.8 and before); the daemon replaces it.
+    public var legacyAgentPlist: String { home + "/Library/LaunchAgents/" + WorkerLaunchAgent.label + ".plist" }
+    public var daemonPlist: String { launchDaemons + "/" + WorkerLaunchDaemon.label + ".plist" }
 }
 
 /// The user running `hangar-worker isolate`: the administrator at the Mac, whose worker (if any) moves.
@@ -57,21 +66,18 @@ public struct IsolationOptions: Sendable, Equatable {
     /// The server's data directory on this Mac, checked to be unreadable by the account; nil means the invoker's
     /// default, and that is skipped when it does not exist. Empty skips the check.
     public var serverData: String?
-    /// Give an existing account a new generated password (its login keychain then asks for the old one once).
+    /// Give an existing account a new generated password.
     public var resetPassword = false
-    /// Stop after the account is ready instead of waiting for its graphical login.
-    public var noWait = false
 
     public init(
         dryRun: Bool = false, sourceConfig: String? = nil, binary: String? = nil, serverData: String? = nil,
-        resetPassword: Bool = false, noWait: Bool = false
+        resetPassword: Bool = false
     ) {
         self.dryRun = dryRun
         self.sourceConfig = sourceConfig
         self.binary = binary
         self.serverData = serverData
         self.resetPassword = resetPassword
-        self.noWait = noWait
     }
 }
 
@@ -84,13 +90,14 @@ public struct IsolationError: Error, CustomStringConvertible, Equatable {
 /// as macOS allows (worker isolation design).
 ///
 /// Run by an administrator in Terminal, without sudo; it asks sudo for each privileged step. In order: create the
-/// account with a generated password (stored in the administrator's login keychain and shown once), install a copy
-/// of the worker, the configuration (same machine token, data and work directories rewritten) and the build cache
-/// (checkouts and DerivedData, moved into the account's work directory as `WorkDirectoryMigration` would) into that
-/// account, lock its home to 0700, write its launch agent, then wait for the one step macOS does not allow a
-/// script to do: a graphical login as `hangar` (fast user switching). That login unlocks the account's login keychain
-/// and starts the agent; `isolate` then confirms the agent runs and the server sees the machine heartbeat as `hangar`,
-/// and removes the old agent and configuration. Each step is idempotent, so running it again resumes.
+/// account with a generated password (stored in the administrator's login keychain and shown once; nobody logs in
+/// with it), install a copy of the worker, the configuration (same machine token, data and work directories
+/// rewritten) and the build cache (checkouts and DerivedData, moved into the account's work directory as
+/// `WorkDirectoryMigration` would) into that account, lock its home to 0700, create its CI keychain (`CIKeychain`),
+/// and install and start the worker as a LaunchDaemon that runs as `hangar` from boot without a login. It then
+/// confirms the daemon runs and the server sees the machine heartbeat from it, and removes the old agent and
+/// configuration. An account set up by an older version (a launch agent in its login session) loses that agent on the
+/// way. Each step is idempotent, so running it again resumes.
 public struct WorkerIsolation: Sendable {
     public struct Dependencies: Sendable {
         public var runner: any IsolationRunner
@@ -129,16 +136,12 @@ public struct WorkerIsolation: Sendable {
     /// How often and how long the waits poll.
     public struct Timing: Sendable {
         public var poll: Duration = .seconds(3)
-        /// Waiting for the old agent's process to exit after bootout.
+        /// Waiting for the old agent's process to exit after bootout, and for a restarted worker's new process.
         public var oldAgentPolls = 20
-        /// After the login, before `isolate` bootstraps the agent itself.
-        public var agentLoadPolls = 7
-        /// Waiting for the agent to be running.
-        public var agentRunningPolls = 20
+        /// Waiting for the daemon to be running.
+        public var workerRunningPolls = 20
         /// Waiting for the server to see a heartbeat from the account.
         public var heartbeatPolls = 30
-        /// Waiting for the graphical login; nil waits until interrupted.
-        public var loginPolls: Int? = nil
         public init() {}
     }
 
@@ -235,6 +238,7 @@ public struct WorkerIsolation: Sendable {
         } else {
             say("The \(layout.user) user exists (uid \(uid!)).")
         }
+        if let password, !dryRun { showPassword(password) }
         let accountUID = uid!
         try require(.sudo("/usr/sbin/createhomedir", "-c", "-u", layout.user), "create the \(layout.user) home")
 
@@ -245,8 +249,9 @@ public struct WorkerIsolation: Sendable {
         try xcodeFirstLaunch()
 
         // 6. Move the worker into the account.
-        let stoppedAt = dependencies.now()
         if let oldAgent { try await stopOldAgent(oldAgent) }
+        try removeLegacyAgent(uid: accountUID)
+        let stoppedAt = dependencies.now()
         try makeDirectories()
         try require(
             .sudo("/usr/bin/install", "-o", layout.user, "-g", "staff", "-m", "755", binary, layout.binary),
@@ -261,25 +266,14 @@ public struct WorkerIsolation: Sendable {
             say("Keeping \(layout.user)'s worker configuration.")
         }
         try lockDownHome()
-        try installLaunchAgent()
+        try setUpKeychain()
 
-        // 7. The graphical login, and the agent it starts.
-        let sessionExisted = hasSession(uid: accountUID)
-        if !sessionExisted {
-            showLoginInstructions(password: password)
-            if options.noWait {
-                say("Not waiting (--no-wait). Run hangar-worker isolate again after logging in as \(layout.user) to finish.")
-                return Outcome(createdAccount: createdAccount, generatedPassword: password, movedWorker: false, machineName: machineName)
-            }
-            try await waitForSession(uid: accountUID)
-        } else if let password, !dryRun {
-            showPassword(password)
-        }
-        try await waitForAgent(uid: accountUID, sessionExisted: sessionExisted)
-        reportKeychain()
+        // 7. The LaunchDaemon: the worker runs as the account from boot, with no login.
+        let plistChanged = try installDaemon()
+        try await startDaemon(plistChanged: plistChanged)
 
-        // 8. The server must see the machine heartbeat from the account; then the old agent goes.
-        try await confirmHeartbeat(source: source, since: stoppedAt, uid: accountUID)
+        // 8. The server must see the machine heartbeat from the daemon; then the old agent goes.
+        try await confirmHeartbeat(source: source, since: stoppedAt)
         if oldAgent != nil {
             try require(.change("/bin/rm", "-f", invoker.plist), "remove the old launch agent")
         }
@@ -394,6 +388,7 @@ public struct WorkerIsolation: Sendable {
         let privateDirectories = [
             layout.home + "/Library/Application Support", layout.supportDirectory, layout.dataDirectory,
             layout.home + "/.hangar", layout.workDirectory, layout.workspaces, layout.home + "/Library/Logs", layout.logs,
+            layout.keychains,
         ]
         try require(
             IsolationCommand(["/usr/bin/sudo", "/usr/bin/install", "-d"] + owner + ["-m", "700"] + privateDirectories, kind: .change),
@@ -401,7 +396,7 @@ public struct WorkerIsolation: Sendable {
         try require(
             IsolationCommand(
                 ["/usr/bin/sudo", "/usr/bin/install", "-d"] + owner
-                    + ["-m", "755", layout.home + "/.local", layout.binDirectory, layout.launchAgents], kind: .change),
+                    + ["-m", "755", layout.home + "/.local", layout.binDirectory], kind: .change),
             "create \(layout.binDirectory)")
     }
 
@@ -495,118 +490,132 @@ public struct WorkerIsolation: Sendable {
         }
     }
 
-    private func installLaunchAgent() throws {
-        let plist = WorkerLaunchAgent.plist(binary: layout.binary, logs: layout.logs)
-        let staged = try stage("agent.plist") { try plist.write(toFile: $0, atomically: true, encoding: .utf8) }
-        defer { try? FileManager.default.removeItem(atPath: staged) }
-        try require(
-            .sudo("/usr/bin/install", "-o", layout.user, "-g", "staff", "-m", "644", staged, layout.plist),
-            "install \(layout.user)'s launch agent")
-    }
-
-    // MARK: The login and the agent
-
-    /// A graphical session exists when the account owns a loginwindow or Dock process (every Aqua session has both).
-    private func hasSession(uid: String) -> Bool {
-        if dryRun { return false }
-        guard let result = try? runner.run(.probe("/bin/ps", "-axo", "uid=,comm=")), result.succeeded else { return false }
-        return Self.hasGraphicalSession(psOutput: result.output, uid: uid)
-    }
-
-    static func hasGraphicalSession(psOutput: String, uid: String) -> Bool {
-        psOutput.split(separator: "\n").contains { line in
-            let fields = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-            guard fields.count == 2, fields[0] == uid else { return false }
-            let name = (String(fields[1]).trimmingCharacters(in: .whitespaces) as NSString).lastPathComponent
-            return name == "loginwindow" || name == "Dock"
-        }
-    }
-
-    private func showPassword(_ password: SensitiveText) {
-        say("")
-        say("  The \(layout.user) user's password (shown once):  \(password.value)")
-        say("  It is saved in your login keychain. To see it again:")
-        say("    \(AccountPasswordItem.lookupCommand(account: layout.user))")
-        say("")
-    }
-
-    private func showLoginInstructions(password: SensitiveText?) {
-        if let password, !dryRun { showPassword(password) }
-        if password == nil {
-            say("The \(layout.user) password is the one in your login keychain (\(AccountPasswordItem.lookupCommand(account: layout.user))), or the one you set.")
-        }
-        say("""
-            One step is left that macOS only lets a person do: log in as \(layout.user) once.
-              1. Open the user menu in the menu bar (or Control Center › Fast User Switching) and choose Hangar.
-                 No user menu? Apple menu › Lock Screen, then Switch User.
-              2. Enter the password above and click through the welcome screens.
-              3. Switch back to \(invoker.name). Do not log out of \(layout.user): builds run in that session.
-            This unlocks \(layout.user)'s login keychain (codesign needs it) and starts the worker. Waiting for the login...
-            """)
-    }
-
-    private func waitForSession(uid: String) async throws {
-        if dryRun {
-            say("  would wait until \(layout.user) owns a loginwindow or Dock process (ps -axo uid=,comm=)")
-            return
-        }
-        var polls = 0
-        while !hasSession(uid: uid) {
-            if let limit = timing.loginPolls, polls >= limit {
-                throw IsolationError("\(layout.user) has not logged in. Run hangar-worker isolate again after logging in; it picks up where it stopped.")
-            }
-            polls += 1
-            await dependencies.sleep(timing.poll)
-        }
-        say("\(layout.user) is logged in.")
-    }
-
-    /// A new login loads the agent from the account's LaunchAgents; if it does not, the agent is bootstrapped into the
-    /// account's GUI domain. When the session was already there, a loaded agent is restarted onto the new binary and
-    /// an unloaded one bootstrapped right away.
-    private func waitForAgent(uid: String, sessionExisted: Bool) async throws {
+    /// A `hangar` set up by an older version runs the worker as a launch agent in its login session. The daemon
+    /// replaces it: the agent is booted out (SIGTERM: a build in flight stops and reports why) and its plist removed,
+    /// so a later login as `hangar` does not start a second worker with the same token.
+    private func removeLegacyAgent(uid: String) throws {
         let target = "gui/\(uid)/\(WorkerLaunchAgent.label)"
-        let print = IsolationCommand(["/usr/bin/sudo", "/bin/launchctl", "print", target], kind: .probe, capturesOutput: true, quiet: true)
         if dryRun {
-            say("  would run: sudo /bin/launchctl bootstrap gui/\(uid) \(IsolationCommand.quote(layout.plist)) (only if the login did not load it)")
+            say("  if \(layout.user) has an older version's launch agent (\(IsolationCommand.quote(layout.legacyAgentPlist))):")
+            say("    would run: /usr/bin/sudo /bin/launchctl bootout \(target)")
+            say("    would run: /usr/bin/sudo /bin/rm -f \(IsolationCommand.quote(layout.legacyAgentPlist))")
             return
         }
-        var bootstrapped = false
-        if sessionExisted {
-            if runner.succeeds(print) {
-                try await restartGracefully(print: print, target: target)
-            } else {
-                try require(.sudo("/bin/launchctl", "bootstrap", "gui/\(uid)", layout.plist), "start \(layout.user)'s worker agent")
-            }
-            bootstrapped = true
+        guard runner.succeeds(.sudo("/bin/test", "-f", layout.legacyAgentPlist)) else { return }
+        say("\(layout.user) runs the worker as a launch agent in its login session (an older version); it moves to a LaunchDaemon, which needs no login.")
+        let print = IsolationCommand(["/usr/bin/sudo", "/bin/launchctl", "print", target], kind: .probe, capturesOutput: true, quiet: true)
+        if runner.succeeds(print) {
+            try require(.sudo("/bin/launchctl", "bootout", target), "stop \(layout.user)'s launch agent")
         }
-        for attempt in 0..<timing.agentRunningPolls {
-            let result = try runner.run(print)
-            if result.succeeded, Self.isRunning(launchctlPrint: result.output) {
-                say("The worker agent runs as \(layout.user).")
+        try require(.sudo("/bin/rm", "-f", layout.legacyAgentPlist), "remove \(layout.user)'s launch agent")
+    }
+
+    /// The CI keychain (`CIKeychain`): a generated password in a 0600 file inside the 0700 home, then the keychain,
+    /// without automatic locking, both made as `hangar`. The password reaches `security` on standard input only. A
+    /// keychain that exists and unlocks with its stored password is kept, with the signing identity in it; any other
+    /// is replaced (the next archive creates the identity again). The worker makes it the default keychain itself.
+    private func setUpKeychain() throws {
+        let keychain = layout.keychain
+        let asUser = ["/usr/bin/sudo", "-u", layout.user, "-H"]
+        let hasKeychain = !dryRun && runner.succeeds(.sudo("/bin/test", "-f", keychain.path))
+        if hasKeychain, runner.succeeds(.sudo("/bin/test", "-f", keychain.passwordFile)) {
+            let read = IsolationCommand(["/usr/bin/sudo", "/bin/cat", keychain.passwordFile], kind: .probe, capturesOutput: true, quiet: true)
+            let stored = (try? runner.run(read)).flatMap { $0.succeeded ? $0.output.trimmingCharacters(in: .whitespacesAndNewlines) : nil }
+            if let stored, !stored.isEmpty,
+                runner.succeeds(IsolationCommand(
+                    asUser + ["/usr/bin/security", "-i"], kind: .probe,
+                    input: CIKeychain.unlockInput(password: SensitiveText(stored), path: keychain.path), quiet: true))
+            {
+                say("\(layout.user)'s CI keychain exists and unlocks with its stored password.")
                 return
             }
-            if !result.succeeded, !bootstrapped, attempt >= timing.agentLoadPolls {
-                try require(.sudo("/bin/launchctl", "bootstrap", "gui/\(uid)", layout.plist), "start \(layout.user)'s worker agent")
-                bootstrapped = true
+            say("\(layout.user)'s CI keychain does not unlock with its stored password; making a new one. The next archive creates the signing identity again.")
+        }
+        if hasKeychain {
+            try require(IsolationCommand(asUser + ["/bin/rm", "-f", keychain.path], kind: .change), "remove \(layout.user)'s old CI keychain")
+        }
+        say("Creating \(layout.user)'s CI keychain (\(keychain.path)), which codesign uses without a login...")
+        let password = dependencies.generator.generate()
+        let staged = try stage(CIKeychain.passwordFileName) {
+            try (password.value + "\n").write(toFile: $0, atomically: true, encoding: .utf8)
+            try WorkerPrivacy.setMode(0o600, at: $0)
+        }
+        defer { try? FileManager.default.removeItem(atPath: staged) }
+        try require(
+            .sudo("/usr/bin/install", "-o", layout.user, "-g", "staff", "-m", "600", staged, keychain.passwordFile),
+            "save the CI keychain's password")
+        try require(
+            IsolationCommand(
+                asUser + ["/usr/bin/security", "-i"], kind: .change,
+                input: CIKeychain.createInput(password: password, path: keychain.path)),
+            "create \(layout.user)'s CI keychain")
+        try require(
+            IsolationCommand(asUser + ["/usr/bin/security", "set-keychain-settings", keychain.path], kind: .change),
+            "turn off the CI keychain's automatic locking")
+    }
+
+    /// Installs the LaunchDaemon plist (root:wheel 0644). Returns whether it differs from the one in place, which
+    /// launchd only reads when the job is bootstrapped.
+    private func installDaemon() throws -> Bool {
+        let plist = WorkerLaunchDaemon.plist(binary: layout.binary, user: layout.user, home: layout.home, logs: layout.logs)
+        let current = try? String(contentsOfFile: layout.daemonPlist, encoding: .utf8)
+        let staged = try stage("daemon.plist") { try plist.write(toFile: $0, atomically: true, encoding: .utf8) }
+        defer { try? FileManager.default.removeItem(atPath: staged) }
+        try require(
+            .sudo("/usr/bin/install", "-o", "root", "-g", "wheel", "-m", "644", staged, layout.daemonPlist),
+            "install the worker's LaunchDaemon")
+        return current != plist
+    }
+
+    // MARK: The daemon
+
+    /// Bootstraps the daemon into the system domain. One already loaded (a rerun or an update) is restarted onto the
+    /// new binary the way launchd stops it; when its plist changed it is booted out and bootstrapped again instead,
+    /// so launchd reads the new one. Then waits until launchd says it runs.
+    private func startDaemon(plistChanged: Bool) async throws {
+        let target = "system/\(WorkerLaunchDaemon.label)"
+        let print = IsolationCommand(["/bin/launchctl", "print", target], kind: .probe, capturesOutput: true, quiet: true)
+        let loaded = runner.succeeds(print)
+        if loaded, !plistChanged {
+            if dryRun {
+                say("  would run: /usr/bin/sudo /bin/launchctl kill SIGTERM \(target) (launchd starts the new binary)")
+                return
+            }
+            try await restartGracefully(print: print, target: target)
+        } else {
+            if loaded {
+                say("Restarting \(layout.user)'s worker with its new LaunchDaemon settings; a build in flight stops and reports why.")
+                try require(.sudo("/bin/launchctl", "bootout", target), "stop \(layout.user)'s worker")
+            }
+            try require(.sudo("/bin/launchctl", "bootstrap", "system", layout.daemonPlist), "start \(layout.user)'s worker")
+        }
+        if dryRun {
+            say("  would wait until /bin/launchctl print \(target) says state = running")
+            return
+        }
+        for _ in 0..<timing.workerRunningPolls {
+            if let result = try? runner.run(print), result.succeeded, Self.isRunning(launchctlPrint: result.output) {
+                say("The worker runs as \(layout.user), from boot, with no login.")
+                return
             }
             await dependencies.sleep(timing.poll)
         }
         throw IsolationError("""
-            \(layout.user)'s worker agent did not start. Its log is \(layout.logs)/worker.log (readable with sudo). The old agent's plist is still in place:
+            \(layout.user)'s worker did not start. Its log is \(layout.logs)/worker.log (readable with sudo), and \
+            sudo launchctl print \(target) says what launchd saw. The old agent's plist is still in place:
               launchctl bootstrap gui/\(invoker.uid) \(IsolationCommand.quote(invoker.plist))
             starts it again.
             """)
     }
 
-    /// Restarts a running agent onto the new binary the way launchd stops it: SIGTERM, which the worker handles by
+    /// Restarts a running worker onto the new binary the way launchd stops it: SIGTERM, which the worker handles by
     /// cancelling a running build with the reason and cleaning up. Once the old process (its pid in `launchctl print`)
     /// is gone, launchd's KeepAlive starts the new binary; `kickstart` only nudges it when it is not running yet. Only
     /// a worker that does not exit in time is killed with `kickstart -k`.
     private func restartGracefully(print: IsolationCommand, target: String) async throws {
         let oldPID = (try? runner.run(print)).flatMap { Self.pid(launchctlPrint: $0.output) }
         say("Restarting \(layout.user)'s worker on the new binary; a build in flight stops and reports why.")
-        try require(.sudo("/bin/launchctl", "kill", "SIGTERM", target), "stop \(layout.user)'s worker agent")
+        try require(.sudo("/bin/launchctl", "kill", "SIGTERM", target), "stop \(layout.user)'s worker")
         for _ in 0..<timing.oldAgentPolls {
             let result = try? runner.run(print)
             let pid = result.flatMap { $0.succeeded ? Self.pid(launchctlPrint: $0.output) : nil }
@@ -619,7 +628,7 @@ public struct WorkerIsolation: Sendable {
             await dependencies.sleep(timing.poll)
         }
         say("warning: \(layout.user)'s worker did not stop after SIGTERM; restarting it forcibly.")
-        try require(.sudo("/bin/launchctl", "kickstart", "-k", target), "restart \(layout.user)'s worker agent")
+        try require(.sudo("/bin/launchctl", "kickstart", "-k", target), "restart \(layout.user)'s worker")
     }
 
     static func pid(launchctlPrint output: String) -> Int? {
@@ -634,16 +643,25 @@ public struct WorkerIsolation: Sendable {
         output.split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "state = running" }
     }
 
-    private func reportKeychain() {
-        if dryRun { return }
-        if runner.succeeds(.sudo("/bin/test", "-f", layout.loginKeychain)) {
-            say("\(layout.user)'s login keychain exists and is unlocked by the login.")
-        } else {
-            say("warning: \(layout.user) has no login keychain yet (\(layout.loginKeychain)); signing needs one. Log in as \(layout.user) through the login window, not over SSH.")
-        }
+    private func showPassword(_ password: SensitiveText) {
+        say("")
+        say("  The \(layout.user) user's password (shown once):  \(password.value)")
+        say("  Nothing needs it: the worker runs without a login. It is for emergencies, and saved in your login")
+        say("  keychain. To see it again:")
+        say("    \(AccountPasswordItem.lookupCommand(account: layout.user))")
+        say("")
     }
 
-    private func confirmHeartbeat(source: WorkerConfiguration?, since: Date, uid: String) async throws {
+    /// Whether `machine`'s last heartbeat came from the new daemon: the worker reports `headless` and the account.
+    /// A server before 0.9 drops `headless` (and one before 0.7 `runningUser`); then only a heartbeat after the old
+    /// workers stopped counts, since an older version's agent in the account also reported `hangar`.
+    static func isDaemonHeartbeat(_ machine: Machine, user: String, since: Date) -> Bool {
+        guard let report = machine.report else { return false }
+        if report.headless == true { return report.runningUser == user }
+        return (report.runningUser ?? user) == user && (machine.lastSeenAt ?? .distantPast) > since
+    }
+
+    private func confirmHeartbeat(source: WorkerConfiguration?, since: Date) async throws {
         if dryRun {
             say("  would wait for the server to see a heartbeat from \(layout.user) (GET /api/v1/worker/me)")
             return
@@ -659,20 +677,20 @@ public struct WorkerIsolation: Sendable {
             return
         }
         for _ in 0..<timing.heartbeatPolls {
-            // The old agent never reports the account's name; an older server drops the field, and then only a
-            // heartbeat after the old agent stopped counts.
             if case .accepted(let machine) = await dependencies.check(source),
-                machine.report?.runningUser == layout.user
-                    || (machine.report?.runningUser == nil && (machine.lastSeenAt ?? .distantPast) > since)
+                Self.isDaemonHeartbeat(machine, user: layout.user, since: since)
             {
                 say("Hangar sees \(machine.name) heartbeat as \(machine.report?.runningUser ?? layout.user).")
+                if let problem = machine.report?.keychainProblem {
+                    say("warning: \(layout.user)'s worker cannot sign yet: \(problem). Hangar › Machines shows it until it can.")
+                }
                 return
             }
             await dependencies.sleep(timing.poll)
         }
         throw IsolationError("""
             The server has not heard from \(layout.user)'s worker. Its log is \(layout.logs)/worker.log. The old agent's plist is still in place; \
-            to go back, boot out gui/\(uid)/\(WorkerLaunchAgent.label) and run: launchctl bootstrap gui/\(invoker.uid) \(IsolationCommand.quote(invoker.plist))
+            to go back, run sudo launchctl bootout system/\(WorkerLaunchDaemon.label), then: launchctl bootstrap gui/\(invoker.uid) \(IsolationCommand.quote(invoker.plist))
             """)
     }
 
@@ -682,11 +700,11 @@ public struct WorkerIsolation: Sendable {
             return
         }
         say("""
-            Done. This Mac's builds run as \(layout.user).
-            Left for you, once:
-              - The first archive creates \(layout.user)'s signing identity. If Hangar › Machines says it cannot sign without a prompt, \
-            switch to \(layout.user), open Keychain Access and allow codesign for the Apple Development key.
-              - With an individual App Store Connect key, sign in to Xcode as \(layout.user) (Xcode › Settings › Accounts).
+            Done. This Mac's builds run as \(layout.user), from boot, with no login; nobody needs to log in as \(layout.user).
+            Good to know:
+              - Signing needs a team App Store Connect key (Settings, with its issuer ID): \(layout.user) has no Xcode account. \
+            With an individual key, archives wait for another Mac and say why.
+              - The first archive creates \(layout.user)'s signing identity in its CI keychain; the worker lets codesign use it.
               - If a workflow's tool (xcodegen, rclone...) is missing as \(layout.user), make the Homebrew prefix readable to it; do not install a second Homebrew.
             """)
     }
@@ -762,6 +780,68 @@ public enum WorkerLaunchAgent {
                 <true/>
                 <key>LimitLoadToSessionType</key>
                 <string>Aqua</string>
+                <key>ProcessType</key>
+                <string>Standard</string>
+                <key>StandardOutPath</key>
+                <string>\(escape(logs))/worker.log</string>
+                <key>StandardErrorPath</key>
+                <string>\(escape(logs))/worker.log</string>
+            </dict>
+            </plist>
+
+            """
+    }
+}
+
+/// The worker's LaunchDaemon on an isolated Mac: `hangar-worker run` as the dedicated user from boot, without a login
+/// (worker isolation design, *revised: LaunchDaemon*). Installed root:wheel 0644 in `/Library/LaunchDaemons` and
+/// bootstrapped into the `system` domain. A daemon gets no login environment, so HOME, USER, LOGNAME and the PATH a
+/// launch agent gets are set here; `SessionCreate` gives it a security session of its own for the CI keychain, and
+/// `InitGroups` the user's groups. KeepAlive starts it again after an exit; the idle self-update re-execs in place.
+public enum WorkerLaunchDaemon {
+    public static let label = WorkerLaunchAgent.label
+    public static let directory = "/Library/LaunchDaemons"
+
+    public static func plist(binary: String, user: String, home: String, logs: String) -> String {
+        func escape(_ text: String) -> String {
+            text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+        }
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>\(label)</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>\(escape(binary))</string>
+                    <string>run</string>
+                </array>
+                <key>UserName</key>
+                <string>\(escape(user))</string>
+                <key>GroupName</key>
+                <string>staff</string>
+                <key>InitGroups</key>
+                <true/>
+                <key>EnvironmentVariables</key>
+                <dict>
+                    <key>HOME</key>
+                    <string>\(escape(home))</string>
+                    <key>USER</key>
+                    <string>\(escape(user))</string>
+                    <key>LOGNAME</key>
+                    <string>\(escape(user))</string>
+                    <key>PATH</key>
+                    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+                </dict>
+                <key>SessionCreate</key>
+                <true/>
+                <key>RunAtLoad</key>
+                <true/>
+                <key>KeepAlive</key>
+                <true/>
                 <key>ProcessType</key>
                 <string>Standard</string>
                 <key>StandardOutPath</key>
