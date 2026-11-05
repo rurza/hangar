@@ -49,7 +49,7 @@ struct BuildProgress {
         switch status {
         case .pending: 0
         case .running: 1
-        case .succeeded, .failed, .skipped: 2
+        case .succeeded, .failed, .skipped, .warning, .cancelled: 2
         }
     }
 

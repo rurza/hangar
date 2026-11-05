@@ -12,7 +12,32 @@ public enum JobStatus: String, Codable, Sendable {
 }
 
 public enum StepStatus: String, Codable, Sendable {
-    case pending, running, succeeded, failed, skipped
+    /// `warning`: the step did its main work but something after it went wrong without failing the job (a TestFlight
+    /// upload whose group assignment App Store Connect refused). `cancelled`: the job was stopped while the step ran.
+    case pending, running, succeeded, failed, skipped, warning, cancelled
+
+    /// The step will not change any more.
+    public var isFinished: Bool {
+        switch self {
+        case .succeeded, .failed, .skipped, .warning, .cancelled: true
+        case .pending, .running: false
+        }
+    }
+}
+
+/// One stage of a step that reports its progress in parts, such as a TestFlight upload: "Uploaded", "Processed",
+/// "Groups", "Beta review". `detail` says what happened ("Internal gets every build automatically", or the reason it
+/// failed).
+public struct StepStage: Codable, Equatable, Sendable {
+    public var name: String
+    public var status: StepStatus
+    public var detail: String?
+
+    public init(name: String, status: StepStatus, detail: String? = nil) {
+        self.name = name
+        self.status = status
+        self.detail = detail
+    }
 }
 
 public enum StepName {
@@ -47,12 +72,21 @@ public struct StepRecord: Codable, Equatable, Sendable {
     public var status: StepStatus
     public var startedAt: Date?
     public var finishedAt: Date?
+    /// One line for the step's header: why it failed (the first error its log shows), or its warnings.
+    public var detail: String?
+    /// The step's stages, for a step that reports them; nil otherwise.
+    public var stages: [StepStage]?
 
-    public init(name: String, status: StepStatus, startedAt: Date? = nil, finishedAt: Date? = nil) {
+    public init(
+        name: String, status: StepStatus, startedAt: Date? = nil, finishedAt: Date? = nil, detail: String? = nil,
+        stages: [StepStage]? = nil
+    ) {
         self.name = name
         self.status = status
         self.startedAt = startedAt
         self.finishedAt = finishedAt
+        self.detail = detail
+        self.stages = stages
     }
 }
 
