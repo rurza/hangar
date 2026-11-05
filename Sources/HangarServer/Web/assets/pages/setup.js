@@ -79,12 +79,12 @@ export async function withBusy(control, busyLabel, work) {
 
 /**
  * The Issuer ID field App Store Connect asks for when a key is a team key. `onSubmit(issuerID)` runs on Connect
- * or Return.
+ * or Return; `value` pre-fills it (the one tried last).
  */
-export function issuerField(onSubmit) {
+export function issuerField(onSubmit, value = '') {
   const input = h('input', {
     class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
-    autocorrect: 'off', placeholder: '69a6de70-03db-47e3-e053-5b8c7c11a4d1',
+    autocorrect: 'off', placeholder: '69a6de70-03db-47e3-e053-5b8c7c11a4d1', value,
     onInput: () => input.removeAttribute('aria-invalid'),
     onKeydown: (event) => {
       if (event.key === 'Enter' && !event.isComposing) {

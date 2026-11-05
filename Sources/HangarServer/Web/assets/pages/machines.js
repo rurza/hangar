@@ -8,7 +8,8 @@ import {
   button, card, checkBadge, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring,
   selectContents, sheet, spinner, toast,
 } from '../ui.js';
-import { actionLabel, isOnline } from './build.js';
+import { isOnline } from './build.js';
+import { platformName } from '../workflow-summary.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
 const TICK_MS = 15_000;
@@ -192,10 +193,11 @@ function reportView(machine, jobInfo) {
   const jobs = max === 1 ? 'job' : 'jobs';
   // "Building Legilo 88 · macOS" as links to the builds, once known.
   const known = runningIDs.map((id) => jobInfo?.(id)).filter(Boolean);
+  const verb = known.length && known.every((info) => info.kind === 'test') ? 'Testing' : 'Building';
   const activity = running === 0
     ? h('p', { class: 'card-headline' }, 'Idle')
     : known.length
-      ? h('p', { class: 'card-headline machine-activity' }, 'Building ', known.map((info, index) => [
+      ? h('p', { class: 'card-headline machine-activity' }, `${verb} `, known.map((info, index) => [
         index ? ', ' : null,
         h('a', { href: `/builds/${seg(info.buildID)}`, 'data-link': true }, info.label)]))
       : h('p', { class: 'card-headline' }, 'Building');
@@ -260,12 +262,12 @@ function chipGroup(label, items, emptyText) {
  * (once at a time) and calls `onChange()`; `info(id)` is `{ buildID, label }` or undefined.
  */
 function runningJobs(signal, onChange) {
-  const known = new Map(); // job id → { buildID, label }
+  const known = new Map(); // job id → { buildID, kind, label }
   const tried = new Set(); // ids looked for once already, found or not
   let loading = null;
   let apps = null;
 
-  async function load() {
+  async function load(ids) {
     try {
       const [builds, list] = await Promise.all([
         api.get('/builds?limit=50', { signal }),
@@ -277,10 +279,13 @@ function runningJobs(signal, onChange) {
         for (const job of build.jobs ?? []) {
           known.set(job.id, {
             buildID: build.id,
-            label: `${names.get(build.appID) ?? 'a build'} ${build.buildNumber} · ${actionLabel(job.action).split(' · ').pop()}`,
+            kind: job.action?.kind,
+            label: `${names.get(build.appID) ?? 'a build'} ${build.buildNumber} · ${platformName(job.action?.platform)}`,
           });
         }
       }
+      // Marked as looked for only once answered: after a failed request they are asked for again.
+      ids.forEach((id) => tried.add(id));
       onChange();
     } catch {
       // Without it the widget says "Building" without naming it.
@@ -292,8 +297,7 @@ function runningJobs(signal, onChange) {
     want(ids) {
       const missing = ids.filter((id) => !known.has(id) && !tried.has(id));
       if (loading || missing.length === 0) return;
-      missing.forEach((id) => tried.add(id));
-      loading = load().finally(() => { loading = null; });
+      loading = load(missing).finally(() => { loading = null; });
     },
   };
 }

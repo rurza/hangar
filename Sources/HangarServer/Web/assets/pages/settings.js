@@ -201,7 +201,8 @@ function ascCard(getStatus, refresh) {
             issuer.focus();
           } else {
             replaceChildren(extra, problem(error.message));
-            if (issuerID) extra.append(issuerField((value, connect) => send(value, connect)).element);
+            // Keeps what was typed, so a near miss is corrected rather than typed again.
+            if (issuerID) extra.append(issuerField((value, connect) => send(value, connect), issuerID).element);
           }
           return;
         }
@@ -211,11 +212,24 @@ function ascCard(getStatus, refresh) {
         await refresh();
         focusFirst(element);
       }
+      function keyIDField() {
+        return field({ label: 'Key ID', hint: 'The file name does not carry it; copy it from App Store Connect.', control: keyInput });
+      }
+      function keyIDLine() {
+        const line = h('p', { class: 'card-note key-id-line' }, `Key ID ${keyID}, from the file name. `,
+          h('button', {
+            type: 'button', class: 'link-button',
+            onClick: () => {
+              line.replaceWith(field({ label: 'Key ID', control: keyInput }));
+              keyInput.focus();
+            },
+          }, 'Edit'));
+        return line;
+      }
       replaceChildren(slot,
         h('p', { class: 'card-headline' }, name),
-        // The file name carries the key ID; only a renamed file needs it typed.
-        keyID ? h('p', { class: 'card-note' }, `Key ID ${keyID}, from the file name.`)
-          : field({ label: 'Key ID', hint: 'The file name does not carry it; copy it from App Store Connect.', control: keyInput }),
+        // The file name carries the key ID; only a renamed file needs it typed, but it can still be corrected.
+        keyID ? keyIDLine() : keyIDField(),
         extra,
         h('div', { class: 'card-actions' },
           button('Choose Another', { kind: 'plain', class: 'button button-plain', onClick: showDrop }),

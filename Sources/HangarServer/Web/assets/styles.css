@@ -1210,7 +1210,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 }
 .detail-grid > .card { display: flex; flex-direction: column; gap: var(--space-1); }
 
-.card-title-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); height: 32px; }
+.card-title-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-1); min-height: 32px; }
 .card-title { font: var(--headline); color: var(--secondary); font-size: 15px; letter-spacing: -0.24px; }
 .card-headline { font: var(--headline); }
 .card-detail { color: var(--secondary); font: var(--subhead); letter-spacing: -0.24px; }
@@ -1676,6 +1676,8 @@ li + li > .artifact-link::before {
   letter-spacing: -0.24px;
   cursor: pointer;
 }
+.page-actions .popup-button { max-width: 50vw; text-overflow: ellipsis; }
+.key-id-line .link-button { font: inherit; }
 .popup-button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 /* MARK: Machines */

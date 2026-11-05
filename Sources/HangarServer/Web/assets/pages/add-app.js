@@ -219,9 +219,10 @@ export function openAddAppSheet({ onAdded } = {}) {
         renderAppStep();
       },
     }, 'Enter the App Store Connect app ID by hand');
-    // Typing the ID is the fallback for an app Hangar could not match; with a match it is only noise.
-    const matched = apps.some((app) => app.appStoreConnect && !app.appStoreConnect.registered);
-    showManual.hidden = state.manualFor === null || matched;
+    // Typing the ID is the fallback for an app Hangar could not match. With the repository's only app matched it
+    // is noise; with several apps it stays, in case the match is the wrong target.
+    const onlyAppMatched = apps.length === 1 && Boolean(apps[0].appStoreConnect && !apps[0].appStoreConnect.registered);
+    showManual.hidden = state.manualFor === null || onlyAppMatched;
 
     replaceChildren(content,
       inspection.hasWorkflowFile

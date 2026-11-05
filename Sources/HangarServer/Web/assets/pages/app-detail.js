@@ -12,7 +12,7 @@ import { buildDuration } from './build.js';
 import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
 import { variablesEditor } from './variables.js';
-import { machineOnline, workflowSummary } from '../workflow-summary.js';
+import { workflowSummary } from '../workflow-summary.js';
 
 const RECENT_BUILDS = 20;
 
@@ -42,7 +42,7 @@ export async function appDetailPage(params, context) {
 
   context.onCleanup(events((event) => {
     if (event.type === 'build' && event.build?.appID === app.id) builds.upsert(event.build);
-    if (event.type === 'machine') notice.reload();
+    if (event.type === 'machine') notice.seen(event.machine);
   }, { onReconnect: () => { builds.reload(); notice.reload(); } }));
   const timer = setInterval(() => { builds.tick(); latest.tick(); }, 60_000);
   context.onCleanup(() => clearInterval(timer));
@@ -78,9 +78,13 @@ export async function appDetailPage(params, context) {
 
 // MARK: Machines
 
-/** A notice above everything when no Mac can run a build now, with the way to fix it; empty otherwise. */
+/**
+ * A notice above everything while there is no Mac to build on, with the way to add one. Whether a Mac is online
+ * and able is the Deploy sheet's question to the server; this only counts machines, so it needs no clock.
+ */
 function machinesNotice(signal) {
   const element = h('div', { class: 'page-notice-slot' });
+  let known = null; // ids of the machines listed
   async function reload() {
     let machines;
     try {
@@ -88,21 +92,19 @@ function machinesNotice(signal) {
     } catch {
       return; // Not worth a warning of its own; the Deploy sheet says it again.
     }
-    const online = machines.filter((machine) => machineOnline(machine));
-    let text = null;
-    let link = null;
-    if (machines.length === 0) {
-      text = 'No Mac can run builds yet. Add one and Deploy can start.';
-      link = h('a', { href: '/machines?add=1', 'data-link': true, class: 'button button-secondary button-small' }, 'Add a Mac');
-    } else if (online.length === 0) {
-      const names = machines.map((machine) => machine.name).sort();
-      text = `${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} offline, so builds can’t run until one is back.`;
-      link = h('a', { href: '/machines', 'data-link': true, class: 'button button-secondary button-small' }, 'Open Machines');
-    }
-    replaceChildren(element, text ? h('div', { class: 'page-notice', role: 'note' }, h('p', null, text), link) : null);
+    known = new Set(machines.map((machine) => machine.id));
+    replaceChildren(element, machines.length === 0
+      ? h('div', { class: 'page-notice', role: 'note' },
+        h('p', null, 'No Mac can run builds yet. Add one and Deploy can start.'),
+        h('a', { href: '/machines?add=1', 'data-link': true, class: 'button button-secondary button-small' }, 'Add a Mac'))
+      : null);
+  }
+  /** A heartbeat of a machine already listed changes nothing here; a new one is worth a fresh list. */
+  function seen(machine) {
+    if (known && machine && !known.has(machine.id)) reload();
   }
   reload();
-  return { element, reload };
+  return { element, reload, seen };
 }
 
 // MARK: Latest build
@@ -312,6 +314,7 @@ function buildsList(app, signal, onChange) {
   const element = h('div', { class: 'builds' }, h('div', { class: 'list list-loading' }, spinner('Loading builds')));
   let builds = null;
   let rows = [];
+  const rowsByID = new Map(); // build id → row, kept so a focused row keeps its focus through live updates
 
   async function reload() {
     try {
@@ -349,8 +352,28 @@ function buildsList(app, signal, onChange) {
       replaceChildren(element);
       return;
     }
-    rows = builds.map((build) => buildRow(build));
-    replaceChildren(element, h('ul', { class: 'list build-list' }, rows.map((row) => row.element)));
+    rows = builds.map((build) => {
+      let row = rowsByID.get(build.id);
+      if (row) {
+        if (row.build !== build) row.update(build);
+      } else {
+        row = buildRow(build);
+        rowsByID.set(build.id, row);
+      }
+      return row;
+    });
+    const ids = new Set(builds.map((build) => build.id));
+    for (const id of rowsByID.keys()) if (!ids.has(id)) rowsByID.delete(id);
+    let list = element.querySelector('.build-list');
+    if (!list) {
+      list = h('ul', { class: 'list build-list' });
+      replaceChildren(element, list);
+    }
+    // Moves rows into order without recreating them (moving a node keeps it, unlike rebuilding it).
+    rows.forEach((row, index) => {
+      if (list.children[index] !== row.element) list.insertBefore(row.element, list.children[index] ?? null);
+    });
+    while (list.children.length > rows.length) list.lastChild.remove();
   }
 
   reload();

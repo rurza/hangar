@@ -1,13 +1,16 @@
 // The Deploy sheet: pick a branch (or type a tag or commit) and a workflow, read what the deploy will do, see
 // where it runs and the build number it gets, and start the build. Deploy stays off while no Mac can run the
-// workflow, so a build number is never spent on a build that would wait forever.
+// workflow, so a build number is never spent on a build that would wait forever. Whether a Mac can run it is the
+// server's call (`deploy-check`, the scheduler's own rules and clock), asked again as machines change.
 
-import { api, seg } from '../api.js';
+import { api, events, seg } from '../api.js';
 import { navigate } from '../router.js';
-import { h, relativeTime, replaceChildren, sheet, spinner } from '../ui.js';
-import { listText, machineOnline, machineProblems, workflowSteps } from '../workflow-summary.js';
+import { h, replaceChildren, sheet, spinner } from '../ui.js';
+import { listText, workflowSteps } from '../workflow-summary.js';
 
 const REF_DEBOUNCE_MS = 500;
+const CHECK_INTERVAL_MS = 15_000;
+const CHECK_DEBOUNCE_MS = 400;
 const REF_HINT = 'Pick a branch, or type a tag or commit SHA.';
 
 /** Error codes that are about the branch or commit and the workflow file found there. */
@@ -32,9 +35,12 @@ export function openDeploySheet(app) {
   let debounce = null;
   let report = null; // NumbersReport
   let numberError = null;
-  let machines = null; // [Machine], null until listed
-  let machinesError = null;
+  let check = null; // DeployCheck for the ref and workflow on screen, null until it answers
+  let checkError = null;
+  let checkRequest = null; // AbortController of the check in flight
+  let checkTimer = null;
   let branchesLoading = true;
+  let branchesHint = null; // why the branches could not be listed; stays the field's hint
 
   // MARK: Fields
 
@@ -54,7 +60,7 @@ export function openDeploySheet(app) {
 
   const workflowSelect = h('select', {
     class: 'input select', id: 'deploy-workflow', 'aria-describedby': 'deploy-workflow-hint',
-    onChange: () => { renderWorkflowDetails(); renderWhere(); update(); },
+    onChange: () => { check = null; renderWorkflowDetails(); renderWhere(); scheduleCheck(0); },
   });
   const workflowHint = h('p', { class: 'field-hint', id: 'deploy-workflow-hint' });
   const workflowField = h('div', { class: 'field' },
@@ -87,8 +93,12 @@ export function openDeploySheet(app) {
     actions: [{ label: 'Cancel', kind: 'cancel' }, deployAction],
     onClose: () => {
       clearTimeout(debounce);
-      // Only the latest workflows request is ever in flight; older ones were aborted when the ref changed.
+      clearTimeout(checkTimer);
+      clearInterval(ticker);
+      stopEvents();
+      // Only the latest requests are ever in flight; older ones were aborted when the ref changed.
       workflowsRequest?.abort();
+      checkRequest?.abort();
       lifetime.abort();
     },
   });
@@ -104,8 +114,8 @@ export function openDeploySheet(app) {
       branches = await api.get(`${base}/branches`, { signal: lifetime.signal });
     } catch (error) {
       if (error.code === 'aborted') return;
+      branchesHint = `Branches could not be listed (${error.message}). Type a branch, tag or commit SHA.`;
       setRefError(null);
-      refHint.textContent = `Branches could not be listed (${error.message}). Type a branch, tag or commit SHA.`;
     }
     branchesLoading = false;
     refInput.placeholder = 'main';
@@ -127,6 +137,8 @@ export function openDeploySheet(app) {
     workflowsRequest = null;
     // Whatever was listed belonged to the previous ref.
     workflows = null;
+    check = null;
+    checkRequest?.abort();
     setRefError(null);
     workflowsLoading = refInput.value.trim() !== '';
     renderWorkflows();
@@ -154,13 +166,12 @@ export function openDeploySheet(app) {
     workflowsRequest = null;
     workflowsLoading = false;
     renderWorkflows();
-    renderWhere();
-    update();
+    scheduleCheck(0);
   }
 
   function setRefError(message, invalid = Boolean(message)) {
     refError = message;
-    refHint.textContent = message ?? REF_HINT;
+    refHint.textContent = message ?? branchesHint ?? REF_HINT;
     refHint.classList.toggle('field-error', Boolean(message));
     if (invalid) refInput.setAttribute('aria-invalid', 'true');
     else refInput.removeAttribute('aria-invalid');
@@ -212,66 +223,83 @@ export function openDeploySheet(app) {
 
   // MARK: Machines
 
-  async function loadMachines() {
-    try {
-      machines = await api.get('/machines', { signal: lifetime.signal });
-      machines.sort((a, b) => a.name.localeCompare(b.name));
-      machinesError = null;
-    } catch (error) {
-      if (error.code === 'aborted') return;
-      machines = [];
-      machinesError = error.message;
+  /** Asks the server again after `delay` ms (debounced): on open, a new ref or workflow, a machine event, a tick. */
+  function scheduleCheck(delay = CHECK_DEBOUNCE_MS) {
+    clearTimeout(checkTimer);
+    checkTimer = setTimeout(loadCheck, delay);
+    update();
+  }
+
+  /**
+   * The scheduler's verdict on every machine. Always asked without a pin, so every Mac can be offered; a pinned
+   * Mac's own verdict is its `problems` in the answer, which are the same reasons a pinned check would give.
+   */
+  async function loadCheck() {
+    const workflow = selectedWorkflow();
+    const ref = refInput.value.trim();
+    checkRequest?.abort();
+    if (!workflow || !ref) {
+      checkRequest = null;
+      renderWhere();
+      update();
+      return;
     }
+    const controller = new AbortController();
+    checkRequest = controller;
+    const query = new URLSearchParams({ workflow: workflowSelect.value, ref });
+    try {
+      const answer = await api.get(`${base}/deploy-check?${query}`, { signal: controller.signal });
+      if (checkRequest !== controller) return;
+      check = answer;
+      checkError = null;
+    } catch (error) {
+      if (checkRequest !== controller || error.code === 'aborted') return;
+      checkError = error.message;
+    }
+    checkRequest = null;
     renderWhere();
     update();
   }
 
-  /** Each machine with whether it is online and what keeps it from the selected workflow. */
-  function machineStates() {
-    const workflow = selectedWorkflow();
-    const now = new Date();
-    return (machines ?? []).map((machine) => ({
-      machine,
-      online: machineOnline(machine, now),
-      problems: workflow ? machineProblems(machine, workflow) : [],
-    }));
+  function selectedMachineID() {
+    return whereOptions.querySelector('input:checked')?.value ?? '';
   }
 
-  /** Why no machine can run the deploy (with what to do), or null. */
+  /** "Archive – iOS · LegiloMobile: mini (offline)" per blocked action. */
+  function blockingText(entries) {
+    return entries.map((entry) => {
+      const machines = Object.entries(entry.reasons ?? {}).sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, reasons]) => `${name} (${reasons.join(', ')})`);
+      return `${entry.action}: ${machines.length ? listText(machines) : 'no Mac'}`;
+    }).join('; ');
+  }
+
+  /** Why no machine can run the deploy (with what to do), or null. Read from the server's answer only. */
   function machineBlocker() {
-    if (machines === null || machinesError) return null;
-    if (machines.length === 0) {
+    if (!check) return null;
+    if (check.machines.length === 0) {
       return { text: 'No Mac can run builds yet. Add one, then deploy.', link: ['Add a Mac', '/machines?add=1'] };
     }
-    if (!selectedWorkflow()) return null;
-    const states = machineStates();
-    const pinned = whereOptions.querySelector('input:checked')?.value;
-    const pick = pinned ? states.filter((state) => state.machine.id === pinned) : states;
-    const able = pick.filter((state) => state.problems.length === 0);
-    if (able.length === 0) {
-      const why = pick.map((state) => `${state.machine.name} (${listText(state.problems)})`);
-      return {
-        text: `${pinned ? 'This Mac can’t' : 'No Mac can'} build this workflow: ${listText(why)}.`,
-        link: ['Open Machines', '/machines'],
-      };
+    const pinned = check.machines.find((machine) => machine.id === selectedMachineID());
+    if (pinned && pinned.problems.length) {
+      return { text: `${pinned.name} can’t run this build: ${listText(pinned.problems)}.`, link: ['Open Machines', '/machines'] };
     }
-    if (!able.some((state) => state.online)) {
-      const names = listText(able.map((state) => state.machine.name));
-      const seen = able.map((state) => state.machine.lastSeenAt).filter(Boolean).sort().at(-1);
-      return {
-        text: `${names} ${able.length === 1 ? 'is' : 'are'} offline${seen ? ` (last seen ${relativeTime(seen)})` : ''}. `
-          + 'Start the worker on it, then deploy.',
-        link: ['Open Machines', '/machines'],
-      };
+    if (!pinned && !check.canDeploy) {
+      return { text: `No Mac can run this build now. ${blockingText(check.blocking)}.`, link: ['Open Machines', '/machines'] };
     }
     return null;
   }
 
+  /** Waits the build will have (busy, low disk), which do not block it. */
+  function waitText() {
+    if (!check || machineBlocker()) return null;
+    const pinned = check.machines.find((machine) => machine.id === selectedMachineID());
+    if (pinned) return pinned.waits.length ? `It will wait: ${pinned.name} is ${listText(pinned.waits)}.` : null;
+    return check.warnings.length ? `It will wait for a free Mac: ${blockingText(check.warnings)}.` : null;
+  }
+
   function renderWhere() {
-    const previous = whereOptions.querySelector('input:checked')?.value ?? '';
-    const states = machineStates();
-    const workflow = selectedWorkflow();
-    const able = states.filter((state) => state.online && state.problems.length === 0);
+    const previous = selectedMachineID();
     const option = (value, title, detail, dot) => h('label', { class: 'where-option' },
       h('input', { type: 'radio', name: 'deploy-where', value, checked: value === previous, class: 'where-radio', onChange: () => update() }),
       // Every row keeps the dot's column, so the titles line up.
@@ -279,25 +307,27 @@ export function openDeploySheet(app) {
       h('span', { class: 'where-text' },
         h('span', { class: 'where-title' }, title),
         h('span', { class: 'where-detail' }, detail)));
-    const automaticDetail = !workflow || able.length === 0
-      ? 'The first free Mac that can build it.'
-      : able.length === 1 ? `Runs on ${able[0].machine.name}, the Mac that can build it.`
-        : `The first free of ${listText(able.map((state) => state.machine.name))}.`;
-    if (machines !== null && machines.length === 0) {
+    const machines = check?.machines ?? [];
+    const able = machines.filter((machine) => machine.online && machine.problems.length === 0);
+    const automaticDetail = able.length === 0 ? 'The first free Mac that can build it.'
+      : able.length === 1 ? `Runs on ${able[0].name}, the Mac that can build it.`
+        : `The first free of ${listText(able.map((machine) => machine.name))}.`;
+    if (check && machines.length === 0) {
       replaceChildren(whereOptions);
       whereOptions.hidden = true;
     } else {
       whereOptions.hidden = false;
       replaceChildren(whereOptions,
         option('', 'Automatic', automaticDetail),
-        states.map(({ machine, online, problems }) => {
-          const detail = !online
-            ? `Offline${machine.lastSeenAt ? ` · seen ${relativeTime(machine.lastSeenAt)}` : ' · never connected'}`
-            : problems.length ? `Online · ${listText(problems)}` : 'Online · can build it';
-          return option(machine.id, machine.name, detail, online ? (problems.length ? 'warning' : 'online') : 'offline');
+        machines.map((machine) => {
+          const detail = !machine.online ? 'Offline'
+            : machine.problems.length ? `Online · ${listText(machine.problems)}`
+              : machine.waits.length ? `Online · ${listText(machine.waits)}` : 'Online · can build it';
+          const dot = !machine.online ? 'offline' : machine.problems.length ? 'warning' : 'online';
+          return option(machine.id, machine.name, detail, dot);
         }),
-        machines === null ? h('p', { class: 'field-hint where-loading' }, spinner('Loading machines'), 'Loading machines…') : null,
-        machinesError ? h('p', { class: 'field-hint field-error' }, `Machines could not be listed: ${machinesError}`) : null);
+        !check && !checkError ? h('p', { class: 'field-hint where-loading' }, spinner('Checking the machines'), 'Checking the machines…') : null,
+        checkError ? h('p', { class: 'field-hint field-error' }, `The machines could not be checked: ${checkError}`) : null);
       if (!whereOptions.querySelector('input:checked')) whereOptions.querySelector('input').checked = true;
     }
     renderNotice();
@@ -305,11 +335,12 @@ export function openDeploySheet(app) {
 
   function renderNotice() {
     const blocker = machineBlocker();
+    const wait = waitText();
     replaceChildren(whereNotice, blocker
       ? h('div', { class: 'deploy-notice', role: 'note' },
         h('p', null, blocker.text),
         h('a', { href: blocker.link[1], 'data-link': true, class: 'button button-secondary button-small' }, blocker.link[0]))
-      : null);
+      : wait ? h('p', { class: 'field-hint' }, wait) : null);
   }
 
   // MARK: Build number
@@ -356,9 +387,10 @@ export function openDeploySheet(app) {
     if (!workflow) return 'There is no workflow to deploy.';
     const gated = (workflow.postActions ?? []).find((spec) => spec.requiresApproval);
     if (gated) return `The post-action “${gated.name}” needs approval, which Hangar does not support yet.`;
-    if (machines === null) return 'Checking the machines…';
+    if (checkError) return 'Hangar could not check which Mac can run it (see above).';
+    if (!check) return 'Checking which Mac can run it…';
     const machine = machineBlocker();
-    if (machine) return 'No Mac can run this build now, so Deploy is off and no build number is used.';
+    if (machine) return 'No Mac can run this build now (see Where), so Deploy stays off and no build number is used.';
     if (numberError) return 'Hangar cannot pick a build number (see above).';
     if (!report) return 'Waiting for the build number…';
     return null;
@@ -374,9 +406,13 @@ export function openDeploySheet(app) {
   }
 
   async function deploy() {
-    if (blocker()) return false;
+    if (blocker()) {
+      // Say why, rather than leave a button that does nothing.
+      update();
+      return false;
+    }
     const request = { app: app.slug, workflow: workflowSelect.value, ref: refInput.value.trim() };
-    const machine = whereOptions.querySelector('input:checked')?.value;
+    const machine = selectedMachineID();
     if (machine) request.machine = machine;
     let build;
     try {
@@ -403,11 +439,14 @@ export function openDeploySheet(app) {
     return true;
   }
 
+  // Machines come and go: ask again on every machine event, and on a tick so a Mac that went quiet is noticed.
+  const stopEvents = events((event) => { if (event.type === 'machine') scheduleCheck(); }, { onReconnect: () => scheduleCheck() });
+  const ticker = setInterval(() => scheduleCheck(0), CHECK_INTERVAL_MS);
+
   renderWorkflows();
   renderWhere();
   update();
   loadBranches();
-  loadMachines();
   loadNumber();
   return handle;
 }
