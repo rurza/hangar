@@ -173,8 +173,7 @@ function workflowCard(app, signal) {
   const editor = `/apps/${seg(app.slug)}/workflow`;
   replaceChildren(element, cardTitle('Workflow'), h('div', { class: 'card-loading' }, spinner('Loading workflow')));
 
-  // Only the workflow stored in Hangar is asked for: the repository's .hangar.yml would mean a GitHub request on
-  // every view of this page.
+  // The workflow stored in Hangar; only without one is GitHub asked whether the repository has a .hangar.yml.
   api.get(`/apps/${seg(app.slug)}/workflow-file`, { signal }).then((stored) => {
     const names = Object.keys(stored.workflows?.workflows ?? {}).sort();
     replaceChildren(element,
@@ -187,13 +186,30 @@ function workflowCard(app, signal) {
   }, (error) => {
     if (error.code === 'aborted') return;
     if (error.code === 'workflow_file_not_found') {
-      replaceChildren(element,
-        cardTitle('Workflow'),
-        h('p', { class: 'card-headline' }, 'Set up the workflow'),
-        h('p', { class: 'card-detail' },
-          'Hangar fills it in from the Xcode project in the repository. Until then, builds use the repository’s .hangar.yml, if it has one.'),
-        h('div', { class: 'card-actions' },
-          h('a', { href: `${editor}?suggest=1`, 'data-link': true, class: 'button button-primary' }, 'Set Up Workflow')));
+      // No workflow in Hangar: does the repository have its own .hangar.yml (at its default branch)?
+      api.get(`/apps/${seg(app.slug)}/workflows`, { signal }).then(
+        (response) => response?.source === 'repository',
+        (failure) => (failure.code === 'aborted' ? undefined : failure.code === 'workflow_file_missing' ? false : null),
+      ).then((repoFile) => {
+        if (repoFile === undefined) return;
+        if (repoFile) {
+          replaceChildren(element,
+            cardTitle('Workflow'),
+            h('p', { class: 'card-headline' }, 'Builds use the repository’s .hangar.yml'),
+            h('p', { class: 'card-detail' }, 'Defining the workflow in Hangar instead takes over from the file.'),
+            h('div', { class: 'card-actions' },
+              h('a', { href: editor, 'data-link': true, class: 'button button-secondary' }, 'Define in Hangar Instead')));
+          return;
+        }
+        replaceChildren(element,
+          cardTitle('Workflow'),
+          h('p', { class: 'card-headline' }, 'Set up the workflow'),
+          h('p', { class: 'card-detail' }, repoFile === false
+            ? 'The repository has no .hangar.yml. Hangar fills the workflow in from its Xcode project.'
+            : 'Hangar fills it in from the Xcode project in the repository.'),
+          h('div', { class: 'card-actions' },
+            h('a', { href: `${editor}?suggest=1`, 'data-link': true, class: 'button button-primary' }, 'Set Up Workflow')));
+      });
       return;
     }
     replaceChildren(element, cardTitle('Workflow'), h('p', { class: 'inline-error-message' }, error.message));

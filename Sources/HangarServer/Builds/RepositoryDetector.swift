@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import HangarCore
 import Synchronization
@@ -6,12 +7,9 @@ import Synchronization
 /// detector asks for, within `timeout` in all. Also serves the icon images it finds, cached in memory.
 public final class RepositoryDetector: Sendable {
     static let timeout: Duration = .seconds(15)
-    /// Files fetched beyond the commit and the tree.
-    static let maxFileFetches = 9
-    static let maxRounds = 4
     static let imageLifetime: TimeInterval = 3600
     static let missLifetime: TimeInterval = 600
-    static let maxImageBytes = 5 * 1024 * 1024
+    static let maxImageBytes = WorkflowDetector.maxImageBytes
 
     struct Image: Sendable {
         var data: Data
@@ -27,6 +25,11 @@ public final class RepositoryDetector: Sendable {
     private let clock: any Clock<Duration>
     private let now: @Sendable () -> Date
     private let images = Mutex<[String: Entry]>([:])
+    /// Trees and files read at a commit, so the workflow suggestion right after an inspection reads nothing again.
+    private let snapshots = Mutex<[String: (snapshot: Snapshot, asked: Set<String>, expiresAt: Date)]>([:])
+    static let snapshotLifetime: TimeInterval = 600
+    static let maxSnapshots = 32
+    static let maxImages = 256
 
     public init(sourceHost: any SourceHost, clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = Date.init) {
         self.sourceHost = sourceHost
@@ -53,11 +56,16 @@ public final class RepositoryDetector: Sendable {
                     code: "repository_not_found",
                     message: "GitHub has no repository at \(repoURL), or the GitHub token cannot read it.")
             }
-            let tree = try await self.sourceHost.tree(repoURL: repoURL, commit: commit, token: token)
-            var files: [String: String] = [:]
-            var asked = Set<String>()
-            for _ in 0..<Self.maxRounds {
-                let budget = Self.maxFileFetches - asked.count
+            let key = Self.snapshotKey(repoURL: repoURL, commit: commit, token: token)
+            let cached = self.snapshots.withLock { $0[key] }.flatMap { $0.expiresAt > self.now() ? $0 : nil }
+            let tree: RepositoryTree
+            if let cached { tree = cached.snapshot.tree } else {
+                tree = try await self.sourceHost.tree(repoURL: repoURL, commit: commit, token: token)
+            }
+            var files = cached?.snapshot.files ?? [:]
+            var asked = cached?.asked ?? []
+            for _ in 0..<WorkflowDetector.maxFetchRounds {
+                let budget = WorkflowDetector.maxFileFetches - asked.count
                 let wanted = Array(WorkflowDetector.filesToFetch(tree: tree, files: files).filter { !asked.contains($0) }.prefix(budget))
                 if wanted.isEmpty { break }
                 asked.formUnion(wanted)
@@ -71,7 +79,13 @@ public final class RepositoryDetector: Sendable {
                 }
                 files.merge(fetched) { $1 }
             }
-            return Snapshot(commit: commit, tree: tree, files: files)
+            let snapshot = Snapshot(commit: commit, tree: tree, files: files)
+            let now = self.now()
+            self.snapshots.withLock { cache in
+                cache[key] = (snapshot, asked, now.addingTimeInterval(Self.snapshotLifetime))
+                Self.prune(&cache, now: now, limit: Self.maxSnapshots, expiry: \.expiresAt)
+            }
+            return snapshot
         }
     }
 
@@ -94,10 +108,15 @@ public final class RepositoryDetector: Sendable {
     /// path (a commit never changes).
     func image(repoURL: String, commit: String, path: String, token: String?) async throws -> Image {
         try await cached("\(repoURL)|\(commit)|\(path)") {
-            guard let data = try await self.bounded({
-                try await self.sourceHost.readData(repoURL: repoURL, commit: commit, path: path, token: token)
-            }) else { return nil }
-            return Self.image(data)
+            do {
+                guard let data = try await self.bounded({
+                    try await self.sourceHost.readData(
+                        repoURL: repoURL, commit: commit, path: path, token: token, maxBytes: Self.maxImageBytes)
+                }) else { return nil }
+                return Self.image(data)
+            } catch SourceHostError.tooLarge {
+                return nil
+            }
         }
     }
 
@@ -128,9 +147,28 @@ public final class RepositoryDetector: Sendable {
             image = nil
         }
         let lifetime = image == nil ? Self.missLifetime : Self.imageLifetime
-        images.withLock { $0[key] = Entry(image: image, expiresAt: now().addingTimeInterval(lifetime)) }
+        let now = now()
+        images.withLock { cache in
+            cache[key] = Entry(image: image, expiresAt: now.addingTimeInterval(lifetime))
+            Self.prune(&cache, now: now, limit: Self.maxImages, expiry: \.expiresAt)
+        }
         guard let image else { throw Self.iconNotFound }
         return image
+    }
+
+    /// Drops expired entries, then the ones closest to expiring until at most `limit` are left.
+    static func prune<Value>(_ cache: inout [String: Value], now: Date, limit: Int, expiry: KeyPath<Value, Date>) {
+        cache = cache.filter { $0.value[keyPath: expiry] > now }
+        guard cache.count > limit else { return }
+        for (key, _) in cache.sorted(by: { $0.value[keyPath: expiry] < $1.value[keyPath: expiry] }).prefix(cache.count - limit) {
+            cache.removeValue(forKey: key)
+        }
+    }
+
+    /// Reads with different tokens may see different things, so the token is part of the key (as a hash).
+    static func snapshotKey(repoURL: String, commit: String, token: String?) -> String {
+        let hash = SHA256.hash(data: Data((token ?? "").utf8)).map { String(format: "%02x", $0) }.joined()
+        return "\(repoURL)|\(commit)|\(hash)"
     }
 
     static func image(_ data: Data) -> Image? {

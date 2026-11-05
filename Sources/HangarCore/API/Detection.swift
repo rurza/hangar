@@ -70,10 +70,12 @@ public struct WorkflowSuggestion: Codable, Equatable, Sendable {
     /// Every scheme found, sorted by name, the ones not chosen included.
     public var schemes: [DetectedScheme]
     public var icon: DetectedIcon?
+    /// The repository has its own `.hangar.yml`, which builds use unless a workflow is defined in Hangar.
+    public var hasWorkflowFile: Bool
 
     public init(
         commit: String, yaml: String, notes: [String], workflows: WorkflowFile, schemes: [DetectedScheme],
-        icon: DetectedIcon?
+        icon: DetectedIcon?, hasWorkflowFile: Bool = false
     ) {
         self.commit = commit
         self.yaml = yaml
@@ -81,6 +83,7 @@ public struct WorkflowSuggestion: Codable, Equatable, Sendable {
         self.workflows = workflows
         self.schemes = schemes
         self.icon = icon
+        self.hasWorkflowFile = hasWorkflowFile
     }
 }
 
@@ -89,11 +92,17 @@ public struct RepositoryTree: Equatable, Sendable {
     public var paths: [String]
     /// The host left entries out (a very large repository).
     public var truncated: Bool
+    /// Byte sizes of the files (blobs) the host reported; directories have none.
+    public var sizes: [String: Int]
 
-    public init(paths: [String], truncated: Bool = false) {
+    public init(paths: [String], truncated: Bool = false, sizes: [String: Int] = [:]) {
         self.paths = paths
         self.truncated = truncated
+        self.sizes = sizes
     }
+
+    /// The repository has a `.hangar.yml` at its root.
+    public var hasWorkflowFile: Bool { paths.contains(WorkflowFile.path) }
 }
 
 /// An app the repository builds: one or more application targets sharing a bundle ID (one per platform, say).
@@ -129,11 +138,23 @@ public struct RepositoryInspection: Codable, Equatable, Sendable {
     /// Every workspace and project found (an XcodeGen project as the path it generates), the chosen one first.
     public var projects: [String]
     public var notes: [String]
+    /// The repository has its own `.hangar.yml`.
+    public var hasWorkflowFile: Bool
+    /// App Store Connect is configured but could not be asked, so `appStoreConnect` is nil on every app
+    /// whether or not it exists there; `appStoreConnectError` says why.
+    public var appStoreConnectUnavailable: Bool
+    public var appStoreConnectError: String?
 
-    public init(commit: String, apps: [DetectedApp], projects: [String], notes: [String]) {
+    public init(
+        commit: String, apps: [DetectedApp], projects: [String], notes: [String], hasWorkflowFile: Bool = false,
+        appStoreConnectUnavailable: Bool = false, appStoreConnectError: String? = nil
+    ) {
         self.commit = commit
         self.apps = apps
         self.projects = projects
         self.notes = notes
+        self.hasWorkflowFile = hasWorkflowFile
+        self.appStoreConnectUnavailable = appStoreConnectUnavailable
+        self.appStoreConnectError = appStoreConnectError
     }
 }

@@ -37,8 +37,9 @@ private struct Fixture {
     func detect(machines: [Machine] = [], requests: inout Int) throws(WorkflowDetectionError) -> WorkflowSuggestion {
         var fetched: [String: String] = [:]
         var asked = Set<String>()
-        for _ in 0..<4 {
+        for _ in 0..<WorkflowDetector.maxFetchRounds {
             let wanted = WorkflowDetector.filesToFetch(tree: tree, files: fetched).filter { !asked.contains($0) }
+                .prefix(WorkflowDetector.maxFileFetches - asked.count)
             if wanted.isEmpty { break }
             for path in wanted {
                 asked.insert(path)
@@ -256,7 +257,7 @@ private let batFi = Fixture(
         #expect(suggestion.notes.contains { $0.contains("project.yml") })
         #expect(suggestion.icon == DetectedIcon(path: "Legilo/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png", kind: .appiconset))
         #expect(try WorkflowFileParser.parse(suggestion.yaml) == suggestion.workflows)
-        #expect(requests <= 8)
+        #expect(requests <= WorkflowDetector.maxFileFetches)
     }
 
     @Test func xcodeGenWithoutPostCloneRunningIt() throws {
@@ -496,7 +497,7 @@ private let batFi = Fixture(
         _ = try fixture.detect(requests: &requests)
         let inspection = try WorkflowDetector.inspect(tree: fixture.tree, files: fixture.fetchAll(), commit: "c")
         #expect(inspection.apps.map(\.bundleIDs) == [["software.micropixels.BatFi"]])
-        #expect(requests <= 9)
+        #expect(requests <= WorkflowDetector.maxFileFetches)
     }
 
     @Test func xcodeGenBundleIDFromItsConfigFile() throws {
@@ -559,6 +560,52 @@ private let batFi = Fixture(
         #expect(none.workflows == all.workflows)
     }
 
+    @Test func reportsTheRepositorysOwnWorkflowFile() throws {
+        var fixture = batFi
+        #expect(try fixture.detect().hasWorkflowFile == false)
+        fixture.others.append(".hangar.yml")
+        #expect(try fixture.detect().hasWorkflowFile == true)
+        #expect(try WorkflowDetector.inspect(tree: fixture.tree, files: fixture.fetchAll()).hasWorkflowFile == true)
+    }
+
+    @Test func notesFilesItCouldNotRead() throws {
+        var fixture = legilo
+        fixture.files["project.yml"] = "name: [unclosed"
+        #expect(try fixture.detect().notes.contains { $0.contains("project.yml could not be read") })
+        fixture.files["project.yml"] = "include: [base.yml, {path: targets.yml}]\n" + legiloProjectYML
+        #expect(try fixture.detect().notes.contains { $0.contains("includes base.yml, targets.yml") })
+        var plain = batFi
+        plain.files["BatFi.xcodeproj/project.pbxproj"] = "{ not a plist"
+        #expect(try plain.detect().notes.contains { $0.contains("project.pbxproj could not be parsed") })
+    }
+
+    @Test func skipsHugeFiles() throws {
+        var tree = batFi.tree
+        tree.sizes = [
+            "BatFi.xcodeproj/project.pbxproj": 9 * 1_048_576,
+            "BatFi/Assets.xcassets/AppIcon.appiconset/icon_512x512@2x.png": 6 * 1_048_576,
+        ]
+        #expect(!WorkflowDetector.filesToFetch(tree: tree, files: [:]).contains("BatFi.xcodeproj/project.pbxproj"))
+        let suggestion = try WorkflowDetector.suggest(
+            tree: tree, files: ["BatFi/Assets.xcassets/AppIcon.appiconset/Contents.json": macIconSet], machines: [])
+        #expect(suggestion.notes.contains { $0.contains("project.pbxproj is 9 MB, too big") })
+        #expect(suggestion.notes.contains { $0.contains("too big to show") })
+    }
+
+    @Test func notesSeveralAppsWithoutABundleID() throws {
+        let fixture = Fixture(
+            files: [
+                "A.xcodeproj/project.pbxproj": pbxproj(
+                    targets: [("T1", "A", "application", "macosx", nil), ("T2", "B", "application", "macosx", nil)],
+                    bundleIDs: ["A": "com.a", "B": "com.b"]),
+            ],
+            others: ["A.xcodeproj/xcshareddata/xcschemes/A.xcscheme", "A.xcodeproj/xcshareddata/xcschemes/B.xcscheme"])
+        let files = fixture.fetchAll()
+        #expect(try WorkflowDetector.suggest(tree: fixture.tree, files: files, machines: []).notes.contains { $0.contains("builds 2 apps") })
+        #expect(try !WorkflowDetector.suggest(tree: fixture.tree, files: files, machines: [], bundleIDs: ["com.a"]).notes.contains { $0.contains("builds 2 apps") })
+        #expect(try WorkflowDetector.suggest(tree: fixture.tree, files: files, machines: [], bundleIDs: ["com.zzz"]).notes.contains { $0.contains("builds 2 apps") })
+    }
+
     @Test func inspectListsEveryProject() throws {
         let fixture = Fixture(
             files: ["iOS/Winyl.xcodeproj/project.pbxproj": pbxproj(targets: [("T1", "Winyl", "application", "iphoneos", nil)])],
@@ -605,8 +652,9 @@ extension Fixture {
     func fetchAll() -> [String: String] {
         var fetched: [String: String] = [:]
         var asked = Set<String>()
-        for _ in 0..<4 {
+        for _ in 0..<WorkflowDetector.maxFetchRounds {
             let wanted = WorkflowDetector.filesToFetch(tree: tree, files: fetched).filter { !asked.contains($0) }
+                .prefix(WorkflowDetector.maxFileFetches - asked.count)
             if wanted.isEmpty { break }
             for path in wanted {
                 asked.insert(path)

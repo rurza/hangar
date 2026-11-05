@@ -139,4 +139,42 @@ import Testing
         #expect(try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "a.png", token: nil) == Data([0x89, 0x50]))
         #expect(try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "b.png", token: nil) == nil)
     }
+
+    @Test func rateLimitIsRecognised() async throws {
+        let (host, _) = make([.init(status: 403, body: "{}", headers: ["x-ratelimit-remaining": "0", "x-ratelimit-reset": "1800000000"])])
+        await #expect(throws: SourceHostError.rateLimited(resetAt: Date(timeIntervalSince1970: 1_800_000_000))) {
+            _ = try await host.resolveCommit(repoURL: "https://github.com/a/b", ref: "main", token: nil)
+        }
+    }
+
+    @Test func unreadableResponsesAreTheHostsFault() async throws {
+        let (host, _) = make([.init(body: "<html>")])
+        do {
+            _ = try await host.tree(repoURL: "https://github.com/a/b", commit: "abc", token: nil)
+            Issue.record("expected an error")
+        } catch {
+            let (status, body) = APIErrorMapping.map(error)
+            #expect(status == .badGateway)
+            #expect(body.code == "source_host_error")
+        }
+    }
+
+    @Test func treeReportsBlobSizes() async throws {
+        let body = #"{"tree":[{"path":"a.pbxproj","type":"blob","size":12},{"path":"Dir","type":"tree"}]}"#
+        let (host, _) = make([.init(body: body)])
+        #expect(try await host.tree(repoURL: "https://github.com/a/b", commit: "abc", token: nil).sizes == ["a.pbxproj": 12])
+    }
+
+    @Test func readDataRefusesBodiesOverTheCap() async throws {
+        let (host, _) = make([
+            .init(body: Data([1, 2]), headers: ["Content-Length": "9000000"]), .init(body: Data(repeating: 0, count: 20)),
+            .init(body: Data([1, 2])),
+        ])
+        for _ in 0..<2 {
+            await #expect(throws: SourceHostError.self) {
+                _ = try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "i.png", token: nil, maxBytes: 10)
+            }
+        }
+        #expect(try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "i.png", token: nil, maxBytes: 10) == Data([1, 2]))
+    }
 }

@@ -40,4 +40,17 @@ import Testing
         #expect(try Self.run("String(parseRepositoryURL('https://gitlab.com/rurza/Legilo'))") == "null")
         #expect(try Self.run("String(parseRepositoryURL('https://github.com/rurza/..'))") == "null")
     }
+
+    @Test func appStoreConnectAppsByName() throws {
+        let apps = """
+            [{"id": "1", "name": "Alpha", "bundleID": "com.acme.alpha", "registered": false},
+             {"id": "2", "name": "Legilo Reader", "bundleID": "software.micropixels.reader", "registered": false},
+             {"id": "3", "name": "Legilo", "bundleID": "software.micropixels.old", "registered": true},
+             {"id": "4", "name": "Zeta", "bundleID": "software.micropixels.legilo-mac", "registered": false}]
+            """
+        let output = try WorkflowYAMLRoundTripTests.runJXA(
+            json: apps, files: ["repo-ranking.js"],
+            "rankAppStoreConnectApps(input, { name: 'Legilo', bundleIDs: ['software.micropixels.legilo'] }).map((a) => a.id).join(',')")
+        #expect(output == "2,4,1,3")
+    }
 }

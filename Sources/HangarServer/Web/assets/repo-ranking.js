@@ -42,6 +42,23 @@ function rankRepositories(repos, hints = {}) {
   };
 }
 
+/**
+ * App Store Connect apps for a detected app that matched none by bundle ID: the closest name or bundle ID first
+ * (the same scores as repositories), then by name. Apps already in Hangar go last.
+ */
+function rankAppStoreConnectApps(apps, detected = {}) {
+  const hints = { name: detected.name, bundleID: (detected.bundleIDs ?? [])[0] };
+  const score = (app) => Math.max(
+    scoreRepository({ fullName: app.name }, hints),
+    scoreRepository({ fullName: String(app.bundleID ?? '').split('.').pop() }, hints));
+  return (apps ?? [])
+    .map((app) => ({ app, score: score(app) }))
+    .sort((a, b) => (Number(Boolean(a.app.registered)) - Number(Boolean(b.app.registered)))
+      || (b.score - a.score)
+      || String(a.app.name).localeCompare(String(b.app.name)))
+    .map((entry) => entry.app);
+}
+
 /** The repositories whose name or description contains every word of `query`. */
 function filterRepositories(repos, query) {
   const words = String(query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -59,4 +76,4 @@ function parseRepositoryURL(text) {
   return { owner: match[1], repo: match[2], fullName: `${match[1]}/${match[2]}` };
 }
 
-export { filterRepositories, normalize, parseRepositoryURL, rankRepositories, scoreRepository };
+export { filterRepositories, normalize, parseRepositoryURL, rankAppStoreConnectApps, rankRepositories, scoreRepository };

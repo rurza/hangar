@@ -44,9 +44,11 @@ public final class GitHubRepositories: Sendable {
             case 200..<300: break
             case 401: throw Self.unauthorized
             // GitHub's text is left out: it is not ours to show.
-            default: throw SourceHostError.http(status: response.statusCode, body: "")
+            default:
+                if case .rateLimited(let reset) = GitHubSourceHost.failure(response, data) { throw SourceHostError.rateLimited(resetAt: reset) }
+                throw SourceHostError.http(status: response.statusCode, body: "")
             }
-            repos += try Self.decoder.decode([Page.Repo].self, from: data).map(\.repo)
+            repos += try GitHubSourceHost.decode([Page.Repo].self, data, decoder: Self.decoder).map(\.repo)
             next = Self.nextLink(response.value(forHTTPHeaderField: "Link"))
         }
         cache.withLock { $0 = Entry(tokenHash: hash, repos: repos, expiresAt: now().addingTimeInterval(Self.lifetime)) }

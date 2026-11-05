@@ -1085,7 +1085,7 @@ button.add-card:active { transform: scale(0.985); }
 .pick-lock { display: inline-flex; color: var(--secondary); }
 .pick-lock svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
-.detected-list { display: grid; gap: var(--space-half); }
+.detected-list { display: grid; gap: var(--space-half); max-height: none; overflow: visible; }
 .detected-item {
   display: flex;
   align-items: flex-start;
@@ -1107,6 +1107,26 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .detected-status { color: var(--secondary); font: var(--footnote); }
 .detected-status.found { color: var(--success); font-weight: 600; }
 .detected-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); padding-top: var(--space-half); }
+.detected-item.unmatched { flex-direction: column; align-items: stretch; gap: var(--space-1); }
+.detected-item.unmatched .detected-actions { padding-left: 68px; }
+.detected-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.detected-pick:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; border-radius: 8px; }
+.detected-item.open { box-shadow: inset 0 0 0 1.5px var(--accent); }
+.asc-pick-panel { display: grid; gap: var(--space-1); padding: var(--space-1) var(--space-half) var(--space-1); }
+.asc-pick-panel .pick-list { background: var(--card); }
+.add-app-notes-title { color: var(--text); font-weight: 600; }
+.add-app-notes ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
 
 .review-card { display: grid; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-sm); background: var(--fill); }
 .review-head { display: flex; align-items: center; gap: 12px; }
@@ -1117,6 +1137,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .review-row dd { margin: 0; overflow-wrap: anywhere; }
 
 @media (max-width: 639.98px) {
+  .detected-item.unmatched .detected-actions { padding-left: 0; }
   .pick-item { flex-wrap: wrap; }
   .pick-item-time { width: 100%; }
   .review-row { grid-template-columns: 1fr; gap: 0; }

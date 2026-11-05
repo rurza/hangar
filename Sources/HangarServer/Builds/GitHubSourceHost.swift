@@ -16,7 +16,7 @@ public struct GitHubSourceHost: SourceHost {
         switch response.statusCode {
         case 200..<300:
             struct Commit: Decodable { var sha: String }
-            return try JSONDecoder().decode(Commit.self, from: data).sha
+            return try Self.decode(Commit.self, data).sha
         case 404, 422: throw SourceHostError.refNotFound(ref)
         default: throw Self.failure(response, data)
         }
@@ -26,14 +26,21 @@ public struct GitHubSourceHost: SourceHost {
         try await readData(repoURL: repoURL, commit: commit, path: path, token: token).map { String(decoding: $0, as: UTF8.self) }
     }
 
-    public func readData(repoURL: String, commit: String, path: String, token: String?) async throws -> Data? {
+    public func readData(repoURL: String, commit: String, path: String, token: String?, maxBytes: Int?) async throws -> Data? {
         let (owner, repo) = try Self.parse(repoURL)
         guard let escapedPath = Self.escapePath(path) else { throw SourceHostError.invalidPath(path) }
         let escapedCommit = Self.escapeQuery(commit)
         let url = "\(Self.apiBase)/repos/\(owner)/\(repo)/contents/\(escapedPath)?ref=\(escapedCommit)"
         let (data, response) = try await transport.send(try request(url, accept: "application/vnd.github.raw", token: token))
         switch response.statusCode {
-        case 200..<300: return data
+        case 200..<300:
+            if let maxBytes {
+                let declared = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int.init) ?? 0
+                guard declared <= maxBytes, data.count <= maxBytes else {
+                    throw SourceHostError.tooLarge(path: path, bytes: max(declared, data.count))
+                }
+            }
+            return data
         case 404: return nil
         default: throw Self.failure(response, data)
         }
@@ -47,12 +54,19 @@ public struct GitHubSourceHost: SourceHost {
         switch response.statusCode {
         case 200..<300:
             struct Tree: Decodable {
-                struct Entry: Decodable { var path: String }
+                struct Entry: Decodable {
+                    var path: String
+                    var type: String?
+                    var size: Int?
+                }
                 var tree: [Entry]
                 var truncated: Bool?
             }
-            let tree = try JSONDecoder().decode(Tree.self, from: data)
-            return RepositoryTree(paths: tree.tree.map(\.path), truncated: tree.truncated ?? false)
+            let tree = try Self.decode(Tree.self, data)
+            let sizes = Dictionary(
+                tree.tree.compactMap { entry in entry.type == "blob" ? entry.size.map { (entry.path, $0) } : nil },
+                uniquingKeysWith: { first, _ in first })
+            return RepositoryTree(paths: tree.tree.map(\.path), truncated: tree.truncated ?? false, sizes: sizes)
         case 404, 422: throw SourceHostError.refNotFound(commit)
         default: throw Self.failure(response, data)
         }
@@ -68,8 +82,19 @@ public struct GitHubSourceHost: SourceHost {
         return request
     }
 
-    private static func failure(_ response: HTTPURLResponse, _ data: Data) -> SourceHostError {
-        .http(status: response.statusCode, body: String(decoding: data, as: UTF8.self))
+    static func failure(_ response: HTTPURLResponse, _ data: Data) -> SourceHostError {
+        if [403, 429].contains(response.statusCode), response.value(forHTTPHeaderField: "x-ratelimit-remaining") == "0" {
+            let reset = response.value(forHTTPHeaderField: "x-ratelimit-reset").flatMap(TimeInterval.init)
+            return .rateLimited(resetAt: reset.map(Date.init(timeIntervalSince1970:)))
+        }
+        return .http(status: response.statusCode, body: String(decoding: data, as: UTF8.self))
+    }
+
+    /// A GitHub response decoded; one that does not decode is the host's fault, not the request's.
+    static func decode<T: Decodable>(_ type: T.Type, _ data: Data, decoder: JSONDecoder = JSONDecoder()) throws -> T {
+        do { return try decoder.decode(type, from: data) } catch {
+            throw SourceHostError.invalidResponse("GitHub sent a response Hangar cannot read.")
+        }
     }
 
     /// Escapes each segment and keeps the slashes: `feature/x` stays a path. Nil when a segment is empty, `.` or

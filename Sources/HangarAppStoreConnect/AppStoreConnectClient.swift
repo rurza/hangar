@@ -9,6 +9,8 @@ public protocol AppStoreConnectClient: Sendable {
     func apps() async throws -> [ASCApp]
     /// The team's apps with one of these bundle IDs (read-only); none asked for, none returned.
     func apps(bundleIDs: [String]) async throws -> [ASCApp]
+    /// One app by its App Store Connect ID; nil when the team has no such app.
+    func app(id: String) async throws -> ASCApp?
     /// The app's icon (512 × 512 PNG) from the newest of its last five builds that carries one; nil when none does.
     func appIconURL(appID: String) async throws -> String?
     func betaGroups(appID: String) async throws -> [ASCBetaGroup]
@@ -24,6 +26,11 @@ extension AppStoreConnectClient {
         guard !bundleIDs.isEmpty else { return [] }
         let wanted = Set(bundleIDs)
         return try await apps().filter { wanted.contains($0.bundleID) }
+    }
+
+    /// Searches `apps()`; the live client asks App Store Connect for just this one.
+    public func app(id: String) async throws -> ASCApp? {
+        try await apps().first { $0.id == id }
     }
 }
 

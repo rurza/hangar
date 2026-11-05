@@ -87,6 +87,17 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   let tab = 'form';
   let busy = false;
   let detectedNotes = []; // what workflow detection guessed, shown above the form until the workflow is saved
+  // Whether the repository has a .hangar.yml at its default branch: undefined until asked, null when unknown.
+  let repoFile = stored ? null : undefined;
+  let autoDetect = context.query?.get('suggest') === '1';
+  if (!stored) {
+    api.get(`${base}/workflows`, { signal: context.signal }).then(
+      (response) => { repoFile = response?.source === 'repository'; },
+      (error) => { repoFile = error.code === 'workflow_file_missing' ? false : null; },
+    ).then(() => {
+      if (models === null && element.isConnected) render();
+    });
+  }
 
   const element = h('div', { class: 'workflow-editor' });
   const banner = h('div', { class: 'workflow-banner', role: 'alert', hidden: true });
@@ -202,8 +213,11 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     const message = h('p', { class: 'inline-error-message', role: 'alert', hidden: true });
     const progress = h('p', { class: 'workflow-detecting', hidden: true });
     const repoName = app.repoURL.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/, '');
-    const detectButton = button('Use Detected Settings', { kind: 'primary' });
-    const importButton = button('Start from the Repository’s .hangar.yml');
+    // With a .hangar.yml in the repository, using it is the first choice; detection would replace it.
+    const detectButton = button('Use Detected Settings', { kind: repoFile === true ? 'secondary' : 'primary' });
+    const importButton = button(
+      repoFile === true ? 'Use the Repository’s .hangar.yml' : 'Start from the Repository’s .hangar.yml',
+      { kind: repoFile === true ? 'primary' : 'secondary' });
     const scratchButton = button('Start from Scratch', {
       onClick: () => begin([scratchWorkflow('testflight')]),
     });
@@ -225,22 +239,35 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     detectButton.addEventListener('click', () => attempt(async () => {
       replaceChildren(progress, spinner(`Reading ${repoName}`), ` Reading ${repoName}…`);
       progress.hidden = false;
-      const suggestion = await api.get(`${base}/workflow-suggestion`, { signal: context.signal });
-      detectedNotes = suggestion.notes ?? [];
+      const bundleID = context.query?.get('bundleID');
+      const query = bundleID ? `?bundleID=${encodeURIComponent(bundleID)}` : '';
+      const suggestion = await api.get(`${base}/workflow-suggestion${query}`, { signal: context.signal });
+      detectedNotes = [
+        ...(suggestion.hasWorkflowFile
+          ? ['The repository has its own .hangar.yml. Saving this workflow makes builds use it instead.'] : []),
+        ...(suggestion.notes ?? []),
+      ];
       begin(modelsFromFile(suggestion.workflows));
     }));
     importButton.addEventListener('click', () => attempt(async () => {
-      const response = await api.get(`${base}/workflows?ref=main`, { signal: context.signal });
+      // The repository's default branch.
+      const response = await api.get(`${base}/workflows`, { signal: context.signal });
       begin(modelsFromFile(response.workflows));
       toast(`Imported .hangar.yml at ${String(response.commit ?? '').slice(0, 7)}`, 'success');
     }));
-    // Coming from Add App: start reading the repository at once.
-    if (context.query?.get('suggest') === '1') queueMicrotask(() => detectButton.click());
+    // Coming from Add App: read the repository at once, unless it has its own .hangar.yml (or that is not known yet).
+    if (autoDetect && repoFile !== undefined && repoFile !== true) {
+      autoDetect = false;
+      queueMicrotask(() => detectButton.click());
+    }
     return card({ class: 'workflow-start' },
       emptyState({
         title: 'No Workflow in Hangar',
-        message: `${app.name} builds with the .hangar.yml in its repository. Define the workflow here to build without one: Hangar can fill it in from the Xcode project.`,
-        action: h('div', { class: 'workflow-start-actions' }, detectButton, importButton, scratchButton),
+        message: repoFile === true
+          ? `${app.name} builds with the .hangar.yml in its repository. Edit it here to define the workflow in Hangar instead.`
+          : `Define how ${app.name} builds: Hangar can fill the workflow in from the Xcode project in its repository.`,
+        action: h('div', { class: 'workflow-start-actions' },
+          repoFile === true ? [importButton, detectButton] : [detectButton, importButton], scratchButton),
       }),
       progress,
       message);

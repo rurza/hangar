@@ -44,6 +44,7 @@ enum APIErrorMapping {
         if code == "host_not_allowed" { return .misdirectedRequest }
         if code == "unsupported_media_type" { return .unsupportedMediaType }
         if code == "github_unauthorized" { return .badGateway }
+        if code == "github_rate_limited" { return .serviceUnavailable }
         if code == "detection_timeout" { return .gatewayTimeout }
         if code == "no_project_found" { return .unprocessableContent }
         if notFoundCodes.contains(code) { return .notFound }
@@ -111,10 +112,26 @@ enum APIErrorMapping {
             self.error("unsupported_repository", "'\(url)' is not a supported repository URL (GitHub only).")
         case .invalidPath(let path): self.error("invalid_path", "'\(path)' is not a valid repository path.")
         case .http(401, _): GitHubRepositories.unauthorized.mapped
+        case .rateLimited(let reset):
+            APIError(
+                code: "github_rate_limited",
+                message: reset.map { "GitHub rate limit reached, try again at \(Self.clockTime($0))." }
+                    ?? "GitHub rate limit reached, try again later.").mapped
+        case .invalidResponse(let message): (.badGateway, APIError(code: "source_host_error", message: message))
+        case .tooLarge(let path, let bytes):
+            (.badGateway, APIError(code: "file_too_large", message: "\(path) is \(bytes / 1_048_576) MB, too big to read."))
         case .http(let status, _):
             // The body is left out: it is the host's text, not ours, and may be large.
             (.badGateway, APIError(code: "source_host_error", message: "The source host answered HTTP \(status)."))
         }
+    }
+
+    /// `HH:MM` in the server's time zone.
+    static func clockTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     private static func map(_ error: HTTPError) -> (HTTPResponse.Status, APIError) {

@@ -77,6 +77,17 @@ struct LiveClientDecodingTests {
         #expect(items.contains(URLQueryItem(name: "fields[apps]", value: "name,bundleId")))
     }
 
+    @Test func appByID() async throws {
+        let body = #"{"data":{"type":"apps","id":"6479651962","attributes":{"name":"BatFi","bundleId":"software.micropixels.BatFi"}}}"#
+        let transport = StubTransport(responses: [.init(body: body), .init(status: 404, body: "{}")])
+        let client = makeClient(transport)
+        #expect(try await client.app(id: "6479651962") == ASCApp(id: "6479651962", name: "BatFi", bundleID: "software.micropixels.BatFi"))
+        #expect(transport.requests.first?.url?.path == "/v1/apps/6479651962")
+        #expect(try await client.app(id: "1") == nil)
+        #expect(try await client.app(id: "../x") == nil)
+        #expect(transport.requests.count == 2)
+    }
+
     @Test func appsByNoBundleIDsAsksNothing() async throws {
         let transport = StubTransport()
         #expect(try await makeClient(transport).apps(bundleIDs: []) == [])

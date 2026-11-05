@@ -5,7 +5,9 @@ import { api, ApiError, seg } from '../api.js';
 import {
   button, confirm, field, h, relativeTime, replaceChildren, sheet, spinner, svg, toast,
 } from '../ui.js';
-import { filterRepositories, parseRepositoryURL, rankRepositories } from '../repo-ranking.js';
+import {
+  filterRepositories, parseRepositoryURL, rankAppStoreConnectApps, rankRepositories,
+} from '../repo-ranking.js';
 import { appIcon, expectIcon, isHTTPS } from './apps.js';
 
 const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
@@ -14,19 +16,25 @@ const STEPS = [['repo', 'Repository'], ['app', 'App'], ['review', 'Review']];
 
 const textAttrs = { class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off' };
 
-/** Opens the sheet; `onAdded(app)` runs after the server created the app. */
+/**
+ * Opens the sheet; `onAdded(app, { hasWorkflowFile, bundleID })` runs after the server created the app:
+ * whether the repository has its own .hangar.yml, and the bundle ID of the app picked.
+ */
 export function openAddAppSheet({ onAdded } = {}) {
   const state = {
     step: 'repo',
     repo: null, // { owner, repo, fullName, htmlURL, isPrivate }
     inspection: null, // RepositoryInspection of `repo`
     app: null, // the DetectedApp picked
-    manual: null, // { name, ascID } typed by hand instead
+    manual: null, // { name, ascID, for } typed by hand instead (`for`: the detected app it is for, or null)
+    picking: null, // the detected app whose App Store Connect picker is open
+    manualFor: undefined, // the detected app the typed-ID form is for; null: none in particular; undefined: closed
   };
   let repos = null; // GitHubRepo[], loaded once
   let reposError = null;
   let ascConfigured = null;
   let inspecting = null; // the AbortController of the running inspection
+  let ascApps = null; // the team's App Store Connect apps, loaded when a picker first opens
 
   const steps = h('ol', { class: 'add-app-steps' });
   const content = h('div', { class: 'add-app-content' });
@@ -85,7 +93,7 @@ export function openAddAppSheet({ onAdded } = {}) {
         handle.setError('Enter the repository as https://github.com/owner/repo.');
         return;
       }
-      pickRepo({ ...parsed, htmlURL: `https://github.com/${parsed.fullName}`, isPrivate: false });
+      pickRepo({ ...parsed, htmlURL: `https://github.com/${parsed.fullName}`, isPrivate: false, pasted: true });
     };
     urlInput.addEventListener('input', () => urlInput.removeAttribute('aria-invalid'));
     urlInput.addEventListener('keydown', (event) => {
@@ -99,13 +107,15 @@ export function openAddAppSheet({ onAdded } = {}) {
       button('Use This Repository', { onClick: useURL }));
 
     if (reposError) {
-      const notConfigured = reposError instanceof ApiError && reposError.code === 'github_not_configured';
+      const code = reposError instanceof ApiError ? reposError.code : null;
+      const link = () => h('a', { href: '/settings', 'data-link': true }, 'Settings');
       replaceChildren(content,
         h('div', { class: 'add-app-callout' },
-          notConfigured
-            ? ['Add a GitHub token in ', h('a', { href: '/settings', 'data-link': true }, 'Settings'),
-              ' to pick from your repositories, or paste the repository’s URL.']
-            : `Your repositories could not be listed: ${reposError.message} Paste the repository’s URL instead.`),
+          code === 'github_not_configured'
+            ? ['Add a GitHub token in ', link(), ' to pick from your repositories, or paste the repository’s URL.']
+            : code === 'github_unauthorized'
+              ? ['GitHub refused the token. Set a new one in ', link(), ', or paste the repository’s URL.']
+              : `Your repositories could not be listed: ${reposError.message} Paste the repository’s URL instead.`),
         urlRow);
       handle.setActions([cancel]);
       urlInput.focus();
@@ -163,6 +173,8 @@ export function openAddAppSheet({ onAdded } = {}) {
       state.inspection = null;
       state.app = null;
       state.manual = null;
+      state.picking = null;
+      state.manualFor = undefined;
     }
     state.repo = repo;
     go('app');
@@ -170,43 +182,61 @@ export function openAddAppSheet({ onAdded } = {}) {
 
   // MARK: Step 2: the app in the repository
 
+  const settingsLink = () => h('a', { href: '/settings', 'data-link': true }, 'Settings');
+  const backToRepo = { label: 'Back', kind: 'secondary', onClick: () => { go('repo'); return false; } };
+
   function renderAppStep() {
-    const back = { label: 'Back', kind: 'secondary', onClick: () => { go('repo'); return false; } };
     if (!state.inspection) {
       replaceChildren(content, h('div', { class: 'picker-status' }, spinner(`Reading ${state.repo.fullName}`),
         h('p', { class: 'picker-status-label' }, `Reading ${state.repo.fullName}…`)));
-      handle.setActions([back]);
+      handle.setActions([backToRepo]);
       inspect();
       return;
     }
-    const { apps } = state.inspection;
-    const manual = manualForm();
-    const cards = apps.map((app) => detectedCard(app));
-    const showManual = h('button', { type: 'button', class: 'link-button' }, 'Enter the App Store Connect app ID by hand');
-    manual.element.hidden = !state.manual;
-    showManual.hidden = Boolean(state.manual);
-    showManual.addEventListener('click', () => {
-      manual.element.hidden = false;
-      showManual.hidden = true;
-      manual.focus();
-      handle.setActions([back, next]);
-    });
-    const next = { label: 'Next', kind: 'primary', onClick: () => { manual.submit(); return false; } };
+    const inspection = state.inspection;
+    const { apps } = inspection;
+    // The form for typing the ID: under the picker of the app it is for, else at the bottom.
+    const manual = state.manualFor !== undefined ? manualForm(state.manualFor) : null;
+    const next = { label: 'Next', kind: 'primary', onClick: () => { manual?.submit(); return false; } };
+    const showManual = h('button', {
+      type: 'button',
+      class: 'link-button',
+      onClick: () => {
+        state.picking = null;
+        state.manualFor = null;
+        renderAppStep();
+      },
+    }, 'Enter the App Store Connect app ID by hand');
+    showManual.hidden = state.manualFor === null;
 
     replaceChildren(content,
+      inspection.hasWorkflowFile
+        ? h('div', { class: 'add-app-callout' },
+          `${state.repo.fullName} has its own .hangar.yml: builds use it until you define a workflow in Hangar.`)
+        : null,
       apps.length === 0
         ? h('div', { class: 'add-app-callout' }, `Hangar found no app target in ${state.repo.fullName}. Enter the app by hand.`)
-        : h('ul', { class: 'detected-list', 'aria-label': 'Apps in the repository' }, cards.map((card) => h('li', null, card))),
+        : h('ul', { class: 'detected-list', 'aria-label': 'Apps in the repository' },
+          apps.map((app) => h('li', null,
+            detectedCard(app),
+            state.picking === app ? ascPicker(app) : null,
+            state.manualFor === app ? manual.element : null))),
       ascConfigured === false
-        ? h('div', { class: 'add-app-callout' }, 'Add your App Store Connect key in ',
-          h('a', { href: '/settings', 'data-link': true }, 'Settings'), ' to find these apps in App Store Connect.')
+        ? h('div', { class: 'add-app-callout' }, 'Add your App Store Connect key in ', settingsLink(),
+          ' to find these apps in App Store Connect.')
+        : null,
+      inspection.notes?.length
+        ? h('div', { class: 'add-app-callout add-app-notes' },
+          h('p', { class: 'add-app-notes-title' }, 'What Hangar found'),
+          h('ul', null, inspection.notes.map((note) => h('li', null, note))))
         : null,
       h('div', { class: 'add-app-links' }, showManual),
-      manual.element);
-    handle.setActions(state.manual ? [back, next] : [back]);
+      state.manualFor === null ? manual.element : null);
+    handle.setActions(manual ? [backToRepo, next] : [backToRepo]);
     listKeys(null, content.querySelector('.detected-list'));
-    (content.querySelector('.detected-item:not(:disabled)') ?? (state.manual ? null : showManual))?.focus();
-    if (state.manual) manual.focus();
+    if (manual) manual.focus();
+    else if (state.picking) content.querySelector('.asc-search')?.focus();
+    else (content.querySelector('.detected-item:not(:disabled), .detected-pick') ?? showManual).focus();
   }
 
   async function inspect() {
@@ -222,33 +252,56 @@ export function openAddAppSheet({ onAdded } = {}) {
       if (settings) ascConfigured = Boolean(settings.appStoreConnect);
       if (inspecting !== controller) return;
       state.inspection = inspection;
-      if (state.step === 'app') render();
+      state.picking = null;
+      state.manualFor = undefined;
+      if (state.step !== 'app') return;
+      // Exactly one app found in App Store Connect and not added yet: that is the one (Back shows the others).
+      const ready = inspection.apps.filter((app) => app.appStoreConnect && !app.appStoreConnect.registered);
+      if (ready.length === 1) {
+        state.app = ready[0];
+        state.manual = null;
+        go('review');
+        return;
+      }
+      render();
     } catch (error) {
       if (error.code === 'aborted' || inspecting !== controller || state.step !== 'app') return;
-      const retry = button('Try Again', { onClick: () => render() });
-      const message = error.code === 'no_project_found'
-        ? `Hangar found no Xcode project or XcodeGen project.yml in ${state.repo.fullName}.`
-        : error.message;
-      const manual = manualForm();
-      manual.element.hidden = false;
+      const retry = button('Try Again', { class: 'button button-secondary button-small', onClick: () => render() });
+      let message;
+      if (error.code === 'no_project_found') {
+        message = [`Hangar found no Xcode project or XcodeGen project.yml in ${state.repo.fullName}.`];
+      } else if (error.code === 'github_unauthorized') {
+        message = ['GitHub refused the token. Set a new one in ', settingsLink(), '.'];
+      } else if (error.code === 'repository_not_found') {
+        message = state.repo.pasted
+          ? ['The GitHub token can’t read this repository. Check the URL, or give the token access in ', settingsLink(), '.']
+          : [error.message];
+      } else {
+        message = [error.message];
+      }
+      state.manualFor = null;
+      const manual = manualForm(null);
       replaceChildren(content,
         h('div', { class: 'add-app-callout warning', role: 'alert' }, message, ' ', retry),
         manual.element);
-      handle.setActions([
-        { label: 'Back', kind: 'secondary', onClick: () => { go('repo'); return false; } },
-        { label: 'Next', kind: 'primary', onClick: () => { manual.submit(); return false; } },
-      ]);
+      handle.setActions([backToRepo, { label: 'Next', kind: 'primary', onClick: () => { manual.submit(); return false; } }]);
     } finally {
       if (inspecting === controller) inspecting = null;
     }
   }
 
+  function checkAgain() {
+    state.inspection = null;
+    render();
+  }
+
   function detectedCard(app) {
     const asc = app.appStoreConnect;
     const platforms = app.platforms.map((platform) => PLATFORM_NAMES[platform] ?? platform).join(' · ');
-    const details = h('span', { class: 'detected-detail' },
-      [app.bundleIDs.join(', '), platforms].filter(Boolean).join(' — '));
-    const icon = detectedIcon(app);
+    const text = (name, status) => h('span', { class: 'detected-text' },
+      h('span', { class: 'detected-name' }, name),
+      h('span', { class: 'detected-detail' }, [app.bundleIDs.join(', '), platforms].filter(Boolean).join(' — ')),
+      status);
     if (asc) {
       return h('button', {
         type: 'button',
@@ -261,34 +314,93 @@ export function openAddAppSheet({ onAdded } = {}) {
           go('review');
         },
       },
-      icon,
-      h('span', { class: 'detected-text' },
-        h('span', { class: 'detected-name' }, asc.name),
-        details,
-        asc.registered
-          ? h('span', { class: 'detected-status' }, 'Already in Hangar')
-          : h('span', { class: 'detected-status found' }, 'Found in App Store Connect ✓')));
+      detectedIcon(app),
+      text(asc.name, asc.registered
+        ? h('span', { class: 'detected-status' }, 'Already in Hangar')
+        : h('span', { class: 'detected-status found' }, 'Found in App Store Connect ✓')));
     }
-    // Not in App Store Connect: it cannot be picked until it is, or its ID is typed by hand.
-    return h('div', { class: 'detected-item unmatched' },
-      icon,
-      h('span', { class: 'detected-text' },
-        h('span', { class: 'detected-name' }, app.name),
-        details,
-        h('span', { class: 'detected-status' },
-          ascConfigured === false
-            ? 'App Store Connect is not connected.'
-            : 'Not in App Store Connect — Hangar needs the App Store Connect app to number builds.'),
-        ascConfigured === false ? null : h('span', { class: 'detected-actions' },
-          h('a', { href: ASC_APPS_URL, target: '_blank', rel: 'noopener noreferrer', class: 'button button-secondary button-small' },
-            'Create in App Store Connect'),
-          button('Check Again', {
-            class: 'button button-secondary button-small',
-            onClick: () => {
-              state.inspection = null;
-              render();
-            },
-          }))));
+    const small = 'button button-secondary button-small';
+    let status;
+    let actions;
+    let open; // what picking the card does
+    if (state.inspection.appStoreConnectUnavailable) {
+      status = `Couldn’t check App Store Connect: ${state.inspection.appStoreConnectError ?? 'it did not answer'}.`;
+      actions = [button('Try Again', { class: small, onClick: checkAgain })];
+      open = () => { state.picking = null; state.manualFor = app; renderAppStep(); };
+    } else if (ascConfigured === false) {
+      status = 'App Store Connect is not connected: type its app ID.';
+      actions = [];
+      open = () => { state.picking = null; state.manualFor = app; renderAppStep(); };
+    } else {
+      status = 'No App Store Connect app has its bundle ID. Hangar needs the App Store Connect app to number builds.';
+      open = () => { state.picking = app; state.manualFor = undefined; renderAppStep(); };
+      actions = [
+        button('Pick from App Store Connect', { class: 'button button-primary button-small', onClick: open }),
+        h('a', { href: ASC_APPS_URL, target: '_blank', rel: 'noopener noreferrer', class: small }, 'Create in App Store Connect'),
+        button('Check Again', { class: small, onClick: checkAgain }),
+      ];
+    }
+    return h('div', { class: ['detected-item', 'unmatched', (state.picking === app || state.manualFor === app) && 'open'] },
+      h('button', { type: 'button', class: 'detected-pick', 'aria-expanded': String(state.picking === app || state.manualFor === app), onClick: open },
+        detectedIcon(app),
+        text(app.name, h('span', { class: 'detected-status' }, status))),
+      actions.length ? h('span', { class: 'detected-actions' }, actions) : null);
+  }
+
+  /** The team's App Store Connect apps to pick `detected` from, closest name first; typing the ID is the last resort. */
+  function ascPicker(detected) {
+    const panel = h('div', { class: 'asc-pick-panel' });
+    const search = h('input', {
+      class: 'input asc-search', type: 'search', placeholder: 'Search App Store Connect', autocomplete: 'off',
+      spellcheck: 'false', 'aria-label': 'Search App Store Connect apps',
+    });
+    const list = h('ul', { class: 'pick-list', 'aria-label': 'App Store Connect apps' });
+    const typeID = h('button', {
+      type: 'button', class: 'link-button',
+      onClick: () => { state.picking = null; state.manualFor = detected; renderAppStep(); },
+    }, 'It’s not listed: type the app ID');
+
+    function renderList() {
+      const query = search.value.trim().toLowerCase();
+      const ranked = rankAppStoreConnectApps(ascApps, detected).filter((app) => !query
+        || app.name.toLowerCase().includes(query) || app.bundleID.toLowerCase().includes(query) || app.id.includes(query));
+      replaceChildren(list, ranked.length === 0
+        ? h('li', { class: 'pick-empty' }, 'No matching apps.')
+        : ranked.map((app) => h('li', null, h('button', {
+          type: 'button',
+          class: 'pick-item',
+          disabled: app.registered,
+          onClick: () => {
+            state.app = { ...detected, name: app.name, appStoreConnect: app };
+            state.manual = null;
+            go('review');
+          },
+        },
+        appIcon(app, 'small'),
+        h('span', { class: 'pick-item-text' },
+          h('span', { class: 'pick-item-name' }, app.name),
+          h('span', { class: 'pick-item-detail' }, `${app.bundleID} · ${app.id}`)),
+        app.registered ? h('span', { class: 'pick-badge' }, 'Added') : null))));
+    }
+
+    if (ascApps) {
+      search.addEventListener('input', renderList);
+      listKeys(search, list);
+      renderList();
+      replaceChildren(panel, search, list, h('div', { class: 'add-app-links' }, typeID));
+    } else {
+      replaceChildren(panel, h('div', { class: 'picker-status' }, spinner('Loading App Store Connect apps')), typeID);
+      api.get('/asc/apps').then((list) => {
+        ascApps = list ?? [];
+        if (state.picking === detected && state.step === 'app') renderAppStep();
+      }, (error) => {
+        if (!panel.isConnected) return;
+        replaceChildren(panel,
+          h('div', { class: 'add-app-callout warning' }, `App Store Connect apps could not be listed: ${error.message}`),
+          typeID);
+      });
+    }
+    return panel;
   }
 
   /** The icon found in the repository (served by Hangar), else App Store Connect's, else a monogram. */
@@ -305,13 +417,17 @@ export function openAddAppSheet({ onAdded } = {}) {
     return image;
   }
 
-  function manualForm() {
+  /** Name and App Store Connect ID typed by hand, for `detected` (its bundle IDs and schemes carry forward) or none. */
+  function manualForm(detected) {
+    const apps = state.inspection?.apps ?? [];
+    const defaultName = detected?.name ?? (apps.length === 1 ? apps[0].name : state.repo.repo);
     const name = h('input', {
       ...textAttrs, autocapitalize: 'words', placeholder: 'Legilo',
-      value: state.manual?.name ?? state.inspection?.apps?.[0]?.name ?? state.repo.repo,
+      value: state.manual && state.manual.for === detected ? state.manual.name : defaultName,
     });
     const ascID = h('input', {
-      ...textAttrs, class: 'input mono', inputmode: 'numeric', placeholder: '1234567890', value: state.manual?.ascID ?? '',
+      ...textAttrs, class: 'input mono', inputmode: 'numeric', placeholder: '1234567890',
+      value: state.manual && state.manual.for === detected ? state.manual.ascID : '',
     });
     for (const input of [name, ascID]) input.addEventListener('input', () => input.removeAttribute('aria-invalid'));
     const submit = () => {
@@ -324,8 +440,8 @@ export function openAddAppSheet({ onAdded } = {}) {
       if (!/^\d+$/.test(ascID.value.trim())) {
         return invalid(ascID, 'Enter the App Store Connect app ID: the number under App Information.');
       }
-      state.manual = { name: name.value.trim(), ascID: ascID.value.trim() };
-      state.app = null;
+      state.manual = { name: name.value.trim(), ascID: ascID.value.trim(), for: detected };
+      state.app = detected ? { ...detected, name: state.manual.name, appStoreConnect: null } : null;
       go('review');
       return undefined;
     };
@@ -348,9 +464,12 @@ export function openAddAppSheet({ onAdded } = {}) {
   function renderReviewStep() {
     const app = state.app;
     const asc = app?.appStoreConnect;
-    const name = asc?.name ?? state.manual?.name ?? '';
+    const name = asc?.name ?? state.manual?.name ?? app?.name ?? '';
     const ascID = asc?.id ?? state.manual?.ascID ?? '';
+    // The repository's bundle ID picks the schemes to build; App Store Connect's is shown when there is none.
+    const bundleID = app?.bundleIDs?.[0] ?? asc?.bundleID ?? null;
     const repoURL = state.repo.htmlURL ?? `https://github.com/${state.repo.fullName}`;
+    const hasWorkflowFile = Boolean(state.inspection?.hasWorkflowFile);
     const row = (label, value, mono = false) => h('div', { class: 'review-row' },
       h('dt', null, label), h('dd', { class: mono ? 'mono' : null }, value));
     replaceChildren(content,
@@ -363,10 +482,12 @@ export function openAddAppSheet({ onAdded } = {}) {
               ? h('p', { class: 'secondary' }, app.platforms.map((platform) => PLATFORM_NAMES[platform] ?? platform).join(' · '))
               : null)),
         h('dl', { class: 'review-rows' },
-          row('Bundle ID', asc?.bundleID ?? app?.bundleIDs?.[0] ?? '—', true),
+          row('Bundle ID', bundleID ?? '—', true),
           row('App Store Connect ID', ascID, true),
           row('Repository', state.repo.fullName))),
-      h('p', { class: 'section-footer' }, 'Next, Hangar sets up the workflow from what it found in the repository.'));
+      h('p', { class: 'section-footer' }, hasWorkflowFile
+        ? 'Builds use the repository’s .hangar.yml.'
+        : 'Next, Hangar sets up the workflow from what it found in the repository.'));
     handle.setActions([
       { label: 'Back', kind: 'secondary', onClick: () => { go('app'); return false; } },
       {
@@ -379,7 +500,7 @@ export function openAddAppSheet({ onAdded } = {}) {
           if (!created.iconURL) expectIcon(created.id);
           toast(`Added ${created.name}`, 'success');
           state.repo = null; // nothing left to lose: close without asking
-          onAdded?.(created);
+          onAdded?.(created, { hasWorkflowFile, bundleID });
         },
       },
     ]);
@@ -414,7 +535,8 @@ function lockBadge() {
  */
 function listKeys(search, list) {
   if (!list) return;
-  const items = () => [...list.querySelectorAll('button.pick-item:not(:disabled), button.detected-item:not(:disabled)')];
+  const items = () => [...list.querySelectorAll(
+    'button.pick-item:not(:disabled), button.detected-item:not(:disabled), button.detected-pick')];
   search?.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();

@@ -83,6 +83,18 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         .filter { wanted.contains($0.bundleID) }
     }
 
+    public func app(id: String) async throws -> ASCApp? {
+        struct One: Decodable { var data: Wire.Apps.Item }
+        guard id.allSatisfy(\.isNumber), !id.isEmpty else { return nil }
+        let query = [URLQueryItem(name: "fields[apps]", value: "name,bundleId")]
+        do {
+            let one = try decode(One.self, from: try await request("GET", url: try url(path: "/v1/apps/\(id)", query: query), body: nil))
+            return ASCApp(id: one.data.id, name: one.data.attributes.name, bundleID: one.data.attributes.bundleId)
+        } catch ASCError.http(status: 404, _) {
+            return nil
+        }
+    }
+
     public func appIconURL(appID: String) async throws -> String? {
         let query = [
             URLQueryItem(name: "filter[app]", value: appID), URLQueryItem(name: "sort", value: "-uploadedDate"),

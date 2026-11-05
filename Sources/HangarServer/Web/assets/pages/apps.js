@@ -109,8 +109,16 @@ export async function appsPage(params, context) {
   }
 
   function addApp() {
-    // Straight on to the workflow, pre-filled from what Hangar finds in the repository.
-    openAddAppSheet({ onAdded: (app) => navigate(`/apps/${encodeURIComponent(app.slug)}/workflow?suggest=1`) });
+    // Straight on to the workflow, pre-filled from what Hangar finds in the repository; a repository with its
+    // own .hangar.yml keeps building with it, so its app page is shown instead.
+    openAddAppSheet({
+      onAdded: (app, { hasWorkflowFile, bundleID } = {}) => {
+        const base = `/apps/${encodeURIComponent(app.slug)}`;
+        const query = new URLSearchParams({ suggest: '1' });
+        if (bundleID) query.set('bundleID', bundleID);
+        navigate(hasWorkflowFile ? base : `${base}/workflow?${query}`);
+      },
+    });
   }
 
   await load();

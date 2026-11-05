@@ -44,6 +44,8 @@ final class FakeSourceHost: SourceHost {
         var tree = RepositoryTree(paths: [])
         var data: [String: Data] = [:]
         var reads: [String] = []
+        var treeReads = 0
+        var treeError: SourceHostError?
         /// Each call waits this long first (real time), to test timeouts.
         var delay: Duration = .zero
     }
@@ -63,21 +65,25 @@ final class FakeSourceHost: SourceHost {
         try await readData(repoURL: repoURL, commit: commit, path: path, token: token).map { String(decoding: $0, as: UTF8.self) }
     }
 
-    func readData(repoURL: String, commit: String, path: String, token: String?) async throws -> Data? {
+    func readData(repoURL: String, commit: String, path: String, token: String?, maxBytes: Int?) async throws -> Data? {
         let delay = state.withLock { $0.delay }
         if delay > .zero { try await Task.sleep(for: delay) }
-        return state.withLock { state in
+        let data = state.withLock { state in
             state.tokens.append(token)
             state.reads.append(path)
             return state.data[path] ?? state.files[path].map { Data($0.utf8) }
         }
+        if let maxBytes, let data, data.count > maxBytes { throw SourceHostError.tooLarge(path: path, bytes: data.count) }
+        return data
     }
 
     func tree(repoURL: String, commit: String, token: String?) async throws -> RepositoryTree {
         let delay = state.withLock { $0.delay }
         if delay > .zero { try await Task.sleep(for: delay) }
-        return state.withLock { state in
+        return try state.withLock { state in
             state.tokens.append(token)
+            state.treeReads += 1
+            if let error = state.treeError { throw error }
             return state.tree
         }
     }

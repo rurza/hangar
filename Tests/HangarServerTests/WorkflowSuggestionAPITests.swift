@@ -172,10 +172,14 @@ private func legiloRepo(_ host: FakeSourceHost) {
 
     private struct BundleASC: AppStoreConnectClient {
         var apps: [ASCApp]
+        var fails = false
         func builds(appID: String, version: String?) async throws -> [ASCBuild] { [] }
         func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
         func apps() async throws -> [ASCApp] { apps }
-        func apps(bundleIDs: [String]) async throws -> [ASCApp] { apps.filter { bundleIDs.contains($0.bundleID) } }
+        func apps(bundleIDs: [String]) async throws -> [ASCApp] {
+            if fails { throw ASCError.http(status: 500, body: "down") }
+            return apps.filter { bundleIDs.contains($0.bundleID) }
+        }
         func appIconURL(appID: String) async throws -> String? { nil }
         func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
         func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
@@ -183,8 +187,8 @@ private func legiloRepo(_ host: FakeSourceHost) {
         func submitForBetaReview(buildID: String) async throws {}
     }
 
-    private func inspectFixture(asc: [ASCApp]?) throws -> APIFixture {
-        let fixture = try APIFixture(appStoreConnectFactory: { _ in BundleASC(apps: asc ?? []) })
+    private func inspectFixture(asc: [ASCApp]?, ascFails: Bool = false) throws -> APIFixture {
+        let fixture = try APIFixture(appStoreConnectFactory: { _ in BundleASC(apps: asc ?? [], fails: ascFails) })
         legiloRepo(fixture.host)
         fixture.host.state.withLock { state in
             state.files["project.yml"] = """
@@ -301,5 +305,118 @@ private func legiloRepo(_ host: FakeSourceHost) {
             }
         }
         #expect(fixture.host.state.withLock { $0.reads.filter { $0 == iconPath }.count } == 1)
+    }
+
+    // MARK: Review round
+
+    @Test func inspectSaysWhenAppStoreConnectCannotBeAsked() async throws {
+        let fixture = try inspectFixture(asc: [], ascFails: true)
+        fixture.host.state.withLock { $0.tree.paths.append(".hangar.yml") }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/github/repos/rurza/Legilo/inspect", method: .get) { response throws in
+                let inspection = try decode(RepositoryInspection.self, response)
+                #expect(inspection.appStoreConnectUnavailable)
+                #expect(inspection.appStoreConnectError == "it answered HTTP 500")
+                #expect(inspection.apps.first?.appStoreConnect == nil)
+                #expect(inspection.hasWorkflowFile)
+                #expect(!String(buffer: response.body).contains("down"))
+            }
+        }
+    }
+
+    /// Two apps in one repository: the bundle ID the sheet picked, else the app's from App Store Connect.
+    @Test func suggestionBuildsOnlyThePickedApp() async throws {
+        let fixture = try inspectFixture(asc: [ASCApp(id: "42", name: "Mobile", bundleID: "com.acme.mobile")])
+        fixture.host.state.withLock { state in
+            state.files["project.yml"] = """
+                name: Legilo
+                targets:
+                  Legilo:
+                    type: application
+                    platform: macOS
+                    settings:
+                      PRODUCT_BUNDLE_IDENTIFIER: com.acme.mac
+                  LegiloMobile:
+                    type: application
+                    platform: iOS
+                    settings:
+                      PRODUCT_BUNDLE_IDENTIFIER: com.acme.mobile
+                schemes:
+                  Legilo:
+                    build: {targets: {Legilo: all}}
+                  LegiloMobile:
+                    build: {targets: {LegiloMobile: all}}
+                """
+        }
+        try fixture.createApp()  // App Store Connect ID 42
+        try await fixture.test { client in
+            for (query, schemes) in [("?bundleID=com.acme.mac", ["Legilo"]), ("", ["LegiloMobile"])] {
+                try await client.execute(uri: "/api/v1/apps/legilo/workflow-suggestion\(query)", method: .get) { response throws in
+                    let suggestion = try decode(WorkflowSuggestion.self, response)
+                    #expect(suggestion.workflows.workflows["release"]?.actions.map(\.scheme) == schemes)
+                }
+            }
+        }
+    }
+
+    @Test func suggestionAfterInspectionReadsNothingAgain() async throws {
+        let fixture = try inspectFixture(asc: nil)
+        try fixture.server.apps.create(
+            CreateAppRequest(name: "Legilo", repoURL: "https://github.com/rurza/Legilo", appStoreConnectAppID: "42"))
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/github/repos/rurza/Legilo/inspect", method: .get) { #expect($0.status == .ok) }
+            let reads = fixture.host.state.withLock { $0.reads.count }
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-suggestion", method: .get) { #expect($0.status == .ok) }
+            #expect(fixture.host.state.withLock { ($0.treeReads, $0.reads.count) } == (1, reads))
+        }
+        // Another token reads for itself.
+        try fixture.server.variables.set(scope: .global, name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-other", isSecret: true))
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-suggestion", method: .get) { #expect($0.status == .ok) }
+        }
+        #expect(fixture.host.state.withLock { $0.treeReads } == 2)
+    }
+
+    @Test func rejectedAppTokenIsNamed() async throws {
+        let fixture = try inspectFixture(asc: nil)
+        let app = try fixture.createApp()
+        fixture.host.state.withLock { $0.treeError = .http(status: 401, body: "Bad credentials") }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-suggestion", method: .get) { response throws in
+                #expect(response.status == .badGateway)
+                #expect(try decode(APIError.self, response).message == "GitHub refused the token. Set a new one in Settings.")
+            }
+        }
+        try fixture.server.variables.set(scope: .app(app.id), name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-app", isSecret: true))
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/workflow-suggestion", method: .get) { response throws in
+                let error = try decode(APIError.self, response)
+                #expect(error.code == "github_unauthorized")
+                #expect(error.message.contains("Legilo's own GitHub token"))
+                #expect(!error.message.contains("ghp-app"))
+            }
+        }
+    }
+
+    @Test func rateLimitSaysWhenToTryAgain() async throws {
+        let fixture = try inspectFixture(asc: nil)
+        fixture.host.state.withLock { $0.treeError = .rateLimited(resetAt: Date(timeIntervalSince1970: 1_800_000_000)) }
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/github/repos/rurza/Legilo/inspect", method: .get) { response throws in
+                #expect(response.status == .serviceUnavailable)
+                let error = try decode(APIError.self, response)
+                #expect(error.code == "github_rate_limited")
+                #expect(error.message.hasPrefix("GitHub rate limit reached, try again at "))
+            }
+        }
+    }
+
+    @Test func workflowsWithoutRefUseTheDefaultBranch() async throws {
+        let fixture = try APIFixture()
+        try fixture.createApp()
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/workflows", method: .get) { #expect($0.status == .ok) }
+        }
+        #expect(fixture.host.state.withLock { $0.refs } == ["HEAD"])
     }
 }

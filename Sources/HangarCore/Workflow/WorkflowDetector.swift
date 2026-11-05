@@ -18,6 +18,14 @@ public enum WorkflowDetector {
     static let maxSchemeFetches = 3
     /// Apps whose `.appiconset` Contents.json is fetched.
     static let maxIconFetches = 4
+    /// How many files a reader fetches in all beyond the commit and the tree, and in how many rounds of
+    /// `filesToFetch` (shared by the server and the tests).
+    public static let maxFileFetches = 9
+    public static let maxFetchRounds = 4
+    /// Text files bigger than this are not fetched.
+    public static let maxTextBytes = 8 * 1024 * 1024
+    /// Icon images bigger than this are not served.
+    public static let maxImageBytes = 5 * 1024 * 1024
 
     /// Paths to fetch (with the contents API) to refine the suggestion, given the files fetched so far.
     public static func filesToFetch(tree: RepositoryTree, files: [String: String]) -> [String] {
@@ -31,9 +39,12 @@ public enum WorkflowDetector {
         bundleIDs: [String]? = nil
     ) throws(WorkflowDetectionError) -> WorkflowSuggestion {
         var analysis = try Analysis(tree: tree, files: files)
-        if let bundleIDs, analysis.apps.count > 1,
-            let app = analysis.apps.first(where: { !Set($0.bundleIDs).isDisjoint(with: bundleIDs) })
-        {
+        let picked = bundleIDs.flatMap { ids in analysis.apps.first { !Set($0.bundleIDs).isDisjoint(with: ids) } }
+        if picked == nil, analysis.apps.count > 1 {
+            analysis.notes.append(
+                "The repository builds \(analysis.apps.count) apps (\(analysis.apps.map(\.name).joined(separator: ", "))): every app's schemes are archived, so remove the ones that are not this app's.")
+        }
+        if let app = picked, analysis.apps.count > 1 {
             let names = Set(app.schemes.map(\.name))
             let actions = analysis.actions.filter { names.contains($0.scheme) }
             if !actions.isEmpty {
@@ -55,7 +66,7 @@ public enum WorkflowDetector {
         let file = WorkflowFile(version: 1, workflows: [workflowName: workflow])
         return WorkflowSuggestion(
             commit: commit, yaml: WorkflowYAMLWriter.yaml(file), notes: notes, workflows: file,
-            schemes: analysis.schemes.sorted { $0.name < $1.name }, icon: analysis.icon)
+            schemes: analysis.schemes.sorted { $0.name < $1.name }, icon: analysis.icon, hasWorkflowFile: tree.hasWorkflowFile)
     }
 
     /// The apps the repository builds, without App Store Connect matches (see `matchAppStoreConnect`).
@@ -69,7 +80,8 @@ public enum WorkflowDetector {
         }
         let others = analysis.layout.containers.filter { $0 != analysis.layout.container }.sorted()
         return RepositoryInspection(
-            commit: commit, apps: analysis.apps, projects: [analysis.layout.container] + others, notes: notes)
+            commit: commit, apps: analysis.apps, projects: [analysis.layout.container] + others, notes: notes,
+            hasWorkflowFile: tree.hasWorkflowFile)
     }
 
     /// Each app with the App Store Connect app that has one of its bundle IDs, named as there; matched apps first.
@@ -161,6 +173,8 @@ extension WorkflowDetector {
         var projectSettings: [String: String] = [:]
         /// The Release xcconfig, relative to project.yml.
         var projectConfigFile: String?
+        /// Files `include:` names, which are not followed.
+        var includes: [String] = []
     }
 
     struct PBXInfo {
@@ -198,6 +212,16 @@ extension WorkflowDetector {
 
             var spec = layout.projectYML.flatMap { files[$0] }.flatMap(WorkflowDetector.parseXcodeGen)
             var pbx = layout.pbxproj.flatMap { files[$0] }.flatMap(WorkflowDetector.parsePBXProj)
+            if let path = layout.projectYML, files[path] != nil, spec == nil {
+                notes.append("\(path) could not be read as YAML, so targets and schemes are guesses.")
+            }
+            if let path = layout.pbxproj, files[path] != nil, pbx == nil {
+                notes.append("\(path) could not be parsed, so targets and schemes are guesses.")
+            }
+            if let includes = spec?.includes, !includes.isEmpty {
+                notes.append(
+                    "project.yml includes \(includes.joined(separator: ", ")), which Hangar does not read: targets defined there are missing.")
+            }
             if layout.kind == .xcodegen {
                 layout.container = inDirectory("\(spec?.name ?? "App").xcodeproj")
             }
@@ -368,7 +392,19 @@ extension WorkflowDetector {
             }
             apps = detected
 
-            self.wanted = wanted.filter { files[$0] == nil }
+            // Files too big to be what they claim (a generated or vendored blob) are not fetched.
+            var fetchable: [String] = []
+            for path in wanted where files[path] == nil && !fetchable.contains(path) {
+                if let size = tree.sizes[path], size > WorkflowDetector.maxTextBytes {
+                    notes.append("\(path) is \(size / 1_048_576) MB, too big to read, so it was skipped.")
+                } else {
+                    fetchable.append(path)
+                }
+            }
+            self.wanted = fetchable
+            if let icon = self.icon, icon.kind == .appiconset, let size = tree.sizes[icon.path], size > WorkflowDetector.maxImageBytes {
+                notes.append("The app icon \(icon.path) is \(size / 1_048_576) MB, too big to show.")
+            }
         }
     }
 
@@ -605,7 +641,8 @@ extension WorkflowDetector {
         }
         return XcodeGenSpec(
             name: root["name"]?.string, team: projectSettings["DEVELOPMENT_TEAM"], targets: targets, schemes: schemes,
-            projectSettings: projectSettings, projectConfigFile: releaseConfigFile(root["configFiles"]))
+            projectSettings: projectSettings, projectConfigFile: releaseConfigFile(root["configFiles"]),
+            includes: (root["include"]?.sequence ?? root["include"].map { [$0] } ?? []).compactMap { $0.string ?? $0.mapping?["path"]?.string })
     }
 
     /// `value` with its `$(NAME)`, `$(NAME:modifier)`, `${NAME}` and `$NAME` references replaced from `settings`;

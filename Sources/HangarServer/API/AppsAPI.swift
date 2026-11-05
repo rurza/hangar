@@ -22,10 +22,9 @@ extension HangarServerApp {
         }
         api.get("apps/:id/workflows") { request, context in
             let app = try app(context)
-            guard let ref = request.uri.queryParameters.get("ref"), !ref.isEmpty else {
-                throw APIError(code: "invalid_request", message: "The 'ref' query parameter is required.")
-            }
-            let (commit, file, source) = try await buildService.workflows(app: app, ref: ref)
+            // Without a ref: the repository's default branch.
+            let ref = request.uri.queryParameters.get("ref").flatMap { $0.isEmpty ? nil : String($0) } ?? "HEAD"
+            let (commit, file, source) = try await withAppToken(app) { _ in try await buildService.workflows(app: app, ref: ref) }
             return try Response.json(WorkflowsResponse(commit: commit, workflows: file, source: source))
         }
     }

@@ -29,17 +29,24 @@ extension HangarServerApp {
         }
         api.get("apps/:id/workflow-suggestion") { request, context in
             let app = try app(context)
-            let suggestion = try await repositoryDetector.suggestion(
-                repoURL: app.repoURL, ref: request.uri.queryParameters.get("ref"), token: try appGitHubToken(app),
-                machines: try machines.all(), bundleIDs: await bundleIDs(of: app))
+            // The bundle ID the Add App sheet picked, else the app's from App Store Connect.
+            let picked = request.uri.queryParameters.get("bundleID").flatMap { $0.isEmpty ? nil : [String($0)] }
+            let bundleIDs: [String]? = if let picked { picked } else { await bundleIDs(of: app) }
+            let suggestion = try await withAppToken(app) { token in
+                try await repositoryDetector.suggestion(
+                    repoURL: app.repoURL, ref: request.uri.queryParameters.get("ref"), token: token,
+                    machines: try machines.all(), bundleIDs: bundleIDs)
+            }
             return try Response.json(suggestion)
         }
         api.get("apps/:id/repo-icon") { request, context in
             let app = try app(context)
             let ref = request.uri.queryParameters.get("ref") ?? ""
-            let image = try await repositoryDetector.icon(
-                key: "\(app.id)|\(app.repoURL)|\(ref)", repoURL: app.repoURL, ref: ref, token: try appGitHubToken(app),
-                bundleIDs: await bundleIDs(of: app))
+            let bundleIDs = await bundleIDs(of: app)
+            let image = try await withAppToken(app) { token in
+                try await repositoryDetector.icon(
+                    key: "\(app.id)|\(app.repoURL)|\(ref)", repoURL: app.repoURL, ref: ref, token: token, bundleIDs: bundleIDs)
+            }
             return Self.imageResponse(image)
         }
     }
@@ -54,13 +61,28 @@ extension HangarServerApp {
         try variables.resolvedEntries(appID: app.id).first { $0.name == BuildService.tokenVariable }?.value
     }
 
-    /// The app's bundle ID from App Store Connect, nil without a key or when App Store Connect cannot be asked:
-    /// detection then works without it.
+    /// The app's bundle ID from App Store Connect (`GET /v1/apps/{id}`), nil without a key or when App Store
+    /// Connect cannot be asked: detection then works without it.
     private func bundleIDs(of app: App) async -> [String]? {
         guard let client = try? appStoreConnectClient(),
-            let found = try? await client.apps().first(where: { $0.id == app.appStoreConnectAppID })
+            let found = try? await client.app(id: app.appStoreConnectAppID)
         else { return nil }
         return [found.bundleID]
+    }
+
+    /// Runs `body` with the token the app's builds use. GitHub refusing it is reported against the token that was
+    /// used: the app's own `HANGAR_GITHUB_TOKEN` or the global one.
+    func withAppToken<T>(_ app: App, _ body: (String?) async throws -> T) async throws -> T {
+        do {
+            return try await body(try appGitHubToken(app))
+        } catch SourceHostError.http(status: 401, _) {
+            let own = try variables.summaries(scope: .app(app.id)).contains { $0.name == BuildService.tokenVariable }
+            throw APIError(
+                code: "github_unauthorized",
+                message: own
+                    ? "GitHub rejected \(app.name)'s own GitHub token (its HANGAR_GITHUB_TOKEN variable). Set a new one on the app's page."
+                    : "GitHub refused the token. Set a new one in Settings.")
+        }
     }
 
     /// `https://github.com/{owner}/{repo}` from the path, refused unless both are plain GitHub names.
@@ -81,7 +103,9 @@ extension HangarServerApp {
         do {
             found = try await client.apps(bundleIDs: bundleIDs)
         } catch {
-            inspection.notes.append("App Store Connect could not be asked for these apps, so they are not matched yet.")
+            inspection.appStoreConnectUnavailable = true
+            inspection.appStoreConnectError = Self.appStoreConnectReason(error)
+            inspection.notes.append("App Store Connect could not be asked for these apps (\(inspection.appStoreConnectError!)), so they are not matched yet.")
             return inspection
         }
         let registered = Set(try apps.all().map(\.appStoreConnectAppID))
@@ -92,6 +116,17 @@ extension HangarServerApp {
         }
         inspection.apps = WorkflowDetector.matchAppStoreConnect(inspection.apps, ascApps: summaries)
         return inspection
+    }
+
+    /// A short reason App Store Connect failed, without its response text.
+    static func appStoreConnectReason(_ error: any Error) -> String {
+        switch error {
+        case ASCError.http(let status, _) where status == 401 || status == 403: "it refused the key (HTTP \(status))"
+        case ASCError.http(let status, _): "it answered HTTP \(status)"
+        case ASCError.invalidPrivateKey: "the key in Settings is not a valid .p8 key"
+        case is URLError: "it could not be reached"
+        default: "it sent a response Hangar cannot read"
+        }
     }
 
     /// `commit` (a SHA) and `path` (an image inside an `.appiconset`) of an icon request.
