@@ -30,6 +30,16 @@ import Testing
             try await client.execute(uri: "/api/v1/jobs/\(job.id.uuidString)/log?step=archive&tail=1", method: .get) { response throws in
                 #expect(try decode([LogEntry].self, response) == [entries[2]])
             }
+            try await client.execute(uri: "/api/v1/jobs/\(job.id.uuidString)/log?format=text", method: .get) { response throws in
+                #expect(response.headers[.contentType] == "text/plain; charset=utf-8")
+                #expect(response.headers[.contentDisposition] == "attachment; filename=\"log-\(job.id.uuidString.lowercased()).txt\"")
+                #expect(String(buffer: response.body) == """
+                    2027-01-15T08:00:00.000Z [checkout] a
+                    2027-01-15T08:00:01.000Z [archive] b
+                    2027-01-15T08:00:02.000Z [archive] c
+
+                    """)
+            }
             try await client.execute(uri: "/api/v1/jobs/\(UUID().uuidString)/log", method: .get) { response throws in
                 #expect(response.status == .notFound)
                 #expect(try decode(APIError.self, response).code == "job_not_found")

@@ -34,7 +34,9 @@ extension HangarServerApp {
             if let follow = request.query.get("follow"), follow == "1" || follow == "true" {
                 return logFollowResponse(jobID: job.id, step: step)
             }
-            return try await Response.json(logStore.read(jobID: job.id, step: step, tail: request.integer("tail")))
+            let entries = try await logStore.read(jobID: job.id, step: step, tail: request.integer("tail"))
+            if request.query.get("format") == "text" { return Self.logText(entries, jobID: job.id) }
+            return try Response.json(entries)
         }
         api.get("jobs/:id/artifacts") { _, context in try Response.json(artifactStore.list(jobID: job(context).id)) }
         api.get("jobs/:id/artifacts/:name") { _, context in
@@ -53,6 +55,22 @@ extension HangarServerApp {
                 ],
                 body: body)
         }
+    }
+
+    /// The log as a text file to save, one `2026-11-05T13:32:03.736Z [archive] line` per entry, like the worker's
+    /// full log.
+    static func logText(_ entries: [LogEntry], jobID: UUID) -> Response {
+        let time = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+        var text = ""
+        for entry in entries { text += "\(entry.t.formatted(time)) [\(entry.step)] \(entry.line)\n" }
+        let data = ByteBuffer(string: text)
+        return Response(
+            status: .ok,
+            headers: [
+                .contentType: "text/plain; charset=utf-8", .contentLength: "\(data.readableBytes)",
+                .contentDisposition: "attachment; filename=\"log-\(jobID.uuidString.lowercased()).txt\"",
+            ],
+            body: ResponseBody(byteBuffer: data))
     }
 
     private func build(_ context: HangarRequestContext) throws -> Build {
