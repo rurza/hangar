@@ -4,7 +4,10 @@ Date: 2026-11-05
 Status: implemented on branch `worker-isolation` (from `workflow-editor` at `9615a07`); not yet verified on a
 real Mac. Revised the same day: setup is automated (a generated password kept in the administrator's keychain,
 `hangar-worker isolate` instead of a shell migration script). Where this text and the first draft differ, this
-text is the decision.
+text is the decision. Revised again for 0.9.0 (branch `worker-daemon`): the worker is a LaunchDaemon with its own
+CI keychain, and nobody logs in as `hangar`. Paragraphs marked *(revised: LaunchDaemon)*, and the section *Revised:
+LaunchDaemon and the CI keychain*, replace what earlier paragraphs say about the graphical login and the login
+keychain.
 
 ## Intent
 
@@ -28,7 +31,8 @@ console user moves over. Those are the decisions below.
 ## Goals
 
 1. **A separate user, per machine.** Every job on a build Mac runs as an
-   unprivileged user named `hangar`, in that user's GUI session. The interactive
+   unprivileged user named `hangar` *(revised: LaunchDaemon: from a LaunchDaemon, not
+   in a GUI session)*. The interactive
    user and, on a Mac that also runs the server, the server's user are different
    accounts.
 2. **Performance of a native run.** `xcodebuild` and `codesign` run on the Mac,
@@ -37,7 +41,8 @@ console user moves over. Those are the decisions below.
 3. **Little disk.** One Xcode and one set of simulator runtimes per Mac, shared.
    No second macOS, no second Xcode, no copy per job.
 4. **The worker can still build, sign and upload** iOS and macOS apps, including
-   the login-keychain step `codesign` already requires.
+   the keychain step `codesign` requires *(revised: LaunchDaemon: a CI keychain the
+   worker unlocks, not the login keychain)*.
 5. **Another user on the same Mac cannot read a job's files.** The home, the
    keychain, the worker token, git credentials, signing material, DerivedData
    and temp are private to `hangar`. Xcode stays readable because the build
@@ -51,7 +56,9 @@ console user moves over. Those are the decisions below.
    operator never invents one), shows it once, keeps it in the administrator's
    login keychain, installs the worker there and guides the one step a script
    cannot do: a graphical login as `hangar`. It detects that login and
-   finishes. A worker already enrolled as the console user moves the same way,
+   finishes. *(revised: LaunchDaemon: there is no such step any more; the
+   command finishes on its own and the worker survives a reboot without a
+   login.)* A worker already enrolled as the console user moves the same way,
    without a new pairing and without throwing away its DerivedData.
 
 ## Non-goals
@@ -285,7 +292,10 @@ A keychain created and unlocked with `security` during setup locks again at
 the next boot. Keeping the password on disk so a script can unlock it after
 every boot would store the signing key's password next to the builds. Automatic
 login as `hangar` is not a substitute: it takes the console, and on a FileVault
-Mac the preboot password still comes first.
+Mac the preboot password still comes first. *(revised: LaunchDaemon: the
+password of a dedicated CI keychain is now kept on disk, and the login is gone;
+see *Revised: LaunchDaemon and the CI keychain*. The account password itself is
+still never on disk, and is only for emergencies.)*
 
 The same command therefore installs everything first (the worker, its
 configuration and its launch agent are in the `hangar` home before the login,
@@ -324,7 +334,84 @@ The agent does not move to a LaunchDaemon, and the plist does not gain a
 keychain stays locked, `codesign` does not return, `canSignWithoutPrompt` stays
 false, and the scheduler then assigns the machine nothing. The plist keeps
 `LimitLoadToSessionType` = `Aqua`, `RunAtLoad` and `KeepAlive`, and it keeps
-being bootstrapped into `gui/<hangar uid>`.
+being bootstrapped into `gui/<hangar uid>`. *(revised: LaunchDaemon: reversed.
+The owner rejected a login after every reboot. The worker is now a LaunchDaemon
+with `UserName` `hangar`, and signs with a keychain that is not the login
+keychain, so the locked login keychain no longer matters.)*
+
+### Revised: LaunchDaemon and the CI keychain
+
+*(revised: LaunchDaemon, 0.9.0)* The graphical login had one job: unlock a
+keychain `codesign` can use. It had to be repeated after every reboot, by a
+person, through fast user switching, and codesign could still stop at an
+"Always Allow" prompt in a session nobody watches. Both are gone:
+
+- **The worker is a LaunchDaemon.** `/Library/LaunchDaemons/app.hangar.worker.plist`,
+  root:wheel 0644, bootstrapped into `system`: `UserName` `hangar`, `GroupName`
+  `staff`, `InitGroups`, `RunAtLoad`, `KeepAlive` (a crash, and the idle
+  self-update's exit path, rely on launchd starting it again; the update itself
+  re-execs in place, as before), `SessionCreate` (a security session of its own
+  for the keychain), and `EnvironmentVariables` with `HOME`, `USER`, `LOGNAME`
+  and the `PATH` a launch agent gets, since a daemon gets no login environment.
+  Logs stay in `~/Library/Logs/Hangar/worker.log`. It starts at boot, before
+  anyone logs in, FileVault unlock aside.
+- **A dedicated CI keychain.** `isolate` creates
+  `/Users/hangar/Library/Keychains/hangar-ci.keychain-db` as `hangar` (`sudo -u
+  hangar security`), with a generated password (the generator of the account
+  password) in `~/Library/Application Support/Hangar/worker/keychain-password`,
+  mode 0600, owner `hangar`, and no automatic locking (`set-keychain-settings`
+  without `-t` or `-l`). The password reaches `security` only on standard
+  input (`security -i`, one command per run so its exit status is that
+  command's); it is not on a command line, in a log, in the configuration or
+  on the server. A keychain that unlocks with its stored password survives a
+  rerun; any other is replaced, and the next archive creates the identity
+  again.
+- **The worker manages the keychain.** Its password file is what makes a
+  worker headless (`CIKeychain.installed`); a worker without one, in anyone's
+  login session, is unchanged. Before each job, and in the doctor on every
+  heartbeat, it unlocks the keychain and keeps it the default and first on
+  `hangar`'s user search list, where xcodebuild puts a new identity and
+  codesign looks for one. After the archive, the export and a test (each runs
+  `-allowProvisioningUpdates`), whether the step succeeded or not, it runs
+  `security set-key-partition-list -S apple-tool:,apple:,codesign:`, so no key
+  in the keychain ever needs the prompt. These settings are made by the daemon,
+  in its own context, not by `isolate` through `sudo -u`.
+- **The doctor checks that keychain instead of the login keychain.** It
+  exists, unlocks with the stored password and is the default; once it holds
+  an Apple Development identity, codesign signs with it (when it does not, the
+  partition list is set again and codesign tried once more). The report gains
+  `headless` and `keychainProblem`. A ready keychain without an identity counts
+  as able to sign: the first archive creates the identity, and a machine that
+  "cannot sign" would never get that archive.
+- **A team App Store Connect key is required to sign.** The headless worker
+  has no Xcode account: an account's credentials live in a login keychain. It
+  reports `xcodeAccountSignedIn: false` and `headless: true`, and the
+  scheduler keeps an archive whose key has no issuer ID off it with "needs a
+  team App Store Connect key (with an issuer ID): this Mac's worker runs
+  without an Xcode account" (`Ineligibility.needsTeamKey`, in queue notes and
+  the deploy check), instead of letting xcodebuild fail deep in the archive.
+  The worker checks the same before checkout, for an older server.
+
+*Why the password may now sit on disk.* The earlier text rejected it as storing
+the signing key's password next to the builds. That is still true, and it adds
+little: during every job the keychain is unlocked, and the build's own code
+runs as `hangar`, so a build that wants the key can already use it without the
+file. The file is readable only by `hangar` and root, like the keychain. The
+keychain holds only Hangar's signing identity, created for `hangar`; never the
+operator's keys, which stay in the operator's login keychain. In exchange, no
+person has to log in after every reboot, and codesign never waits for a click.
+
+*What was tried before deciding* (as the author, not as `hangar`, without sudo:
+a launchd job in the Background session of `user/<uid>`, with `SessionCreate`):
+creating, unlocking and setting the partition list of a keychain over
+`security -i` worked; with a scratch `HOME`, the keychain became the default
+and the search list; codesign with a key whose ACL lists codesign failed at
+once with `errSecInternalComponent` before the partition list and signed after
+it, and failed at once (no hang) on a locked keychain. Keys Xcode creates list
+Xcode, codesign and productbuild and partition `apple:`. `xcrun simctl`, a
+simulator boot and an app-hosted XCTest in `xcodebuild test` on an iOS 27.2
+simulator passed in that session. Not tried, because it needs root: the same
+from the `system` domain with `UserName`. See *Manual verification*.
 
 ### What is shared, what is private
 
@@ -345,8 +432,9 @@ itself is 0644:
 | What | Where | Notes |
 |---|---|---|
 | Home | `/Users/hangar` | Mode 0700, owner `hangar`, group `staff`. No ACL that grants another user read or execute. |
-| Login keychain and Apple Development identity | `~/Library/Keychains` | Created by the GUI login. Persistent across jobs, as the 2026-11-04 design requires. Not copied from the console user. |
-| Xcode account, provisioning profiles, per-user simulator devices | `~/Library/Developer` | Devices are small. Runtimes are the shared ones above, not a copy of this tree. An individual App Store Connect key still means signing in to Xcode once as `hangar`. |
+| Login keychain and Apple Development identity | `~/Library/Keychains` | Created by the GUI login. Persistent across jobs, as the 2026-11-04 design requires. Not copied from the console user. *(revised: LaunchDaemon: the CI keychain `hangar-ci.keychain-db` holds the identity; no login creates a login keychain.)* |
+| CI keychain password *(revised: LaunchDaemon)* | `~/Library/Application Support/Hangar/worker/keychain-password` | Mode 0600, owner `hangar`. Read by the worker, given to `security` on stdin. |
+| Xcode account, provisioning profiles, per-user simulator devices | `~/Library/Developer` | Devices are small. Runtimes are the shared ones above, not a copy of this tree. An individual App Store Connect key still means signing in to Xcode once as `hangar`. *(revised: LaunchDaemon: no Xcode account; a team key is required to sign.)* |
 | Worker token | `~/Library/Application Support/Hangar/worker/config.json` | Mode 0600, directory 0700, as `WorkerConfiguration.write` already does. The configuration names the work directory explicitly. |
 | Checkouts and DerivedData | `~/.hangar/worker/workspaces/<appSlug>/repository` and `…/DerivedData` | *(revised)* The work directory, no spaces in the path, mode 0700 like `~/.hangar`. One warm cache per app per machine. Not the console user's DerivedData, and not a world-readable directory under `/Library`. |
 | This user's package and Xcode caches | `~/Library/Caches` (including `org.swift.swiftpm`) | Warm across jobs. Not shared with the console user: that cache can hold their source and credentials, and a shared cache would be readable both ways. The disk cost is one cache, not an Xcode. |
@@ -419,7 +507,8 @@ Unchanged pipeline, unchanged paths, with the uid and the umask above.
   `hangar` user creates the Apple Development identity there. The operator
   allows `codesign` in Keychain Access as that user if the doctor says
   `canSignWithoutPrompt` is false. That is the existing worker-setup step, done
-  once, not per job.
+  once, not per job. *(revised: LaunchDaemon: the CI keychain, unlocked by the
+  worker before the job; the partition list replaces the Keychain Access step.)*
 - A job does not see the console user's home, that user's keychain, that user's
   git credentials, or the server's `master.key`, provided the homes are 0700
   and the users differ. The migration checks the server directory explicitly.
@@ -494,7 +583,8 @@ The Mac mini may run the server and a worker, as the 2026-11-04 design allows.
 The server stays the user it already runs as. The worker becomes `hangar`.
 Two LaunchAgents, two gui domains, two homes. The server's agent is
 `app.hangar.server` in the console user's domain. The worker's agent is
-`app.hangar.worker` in `gui/<hangar uid>`.
+`app.hangar.worker` in `gui/<hangar uid>`. *(revised: LaunchDaemon: the worker
+is `system/app.hangar.worker`.)*
 
 `master.key` is mode 0600. That only helps if the `hangar` user cannot traverse
 to it. The server user's `~/Library` is mode 0700 on a normal account. The
@@ -516,7 +606,8 @@ same dedicated account, which is isolated from any other interactive user, and
 there is no second home to protect). Otherwise it returns `409` with code
 `dedicated_user_required` and a message that says to run the install command
 in Terminal as an administrator. That command creates the user with a
-generated password and waits for one switch to the `hangar` user. The setup
+generated password and waits for one switch to the `hangar` user *(revised:
+LaunchDaemon: no switch; it starts the daemon)*. The setup
 page (`Sources/HangarServer/Web/assets/pages/setup.js`) stops offering the
 button in that case and shows the install command (`curl -fsSL
 <origin>/install | sh`), which creates the user. An old page that still
@@ -555,7 +646,8 @@ enrolled worker, updates an isolated one and resumes an interrupted run.
 - `--server-data DIR`: default `<home>/Library/Application Support/Hangar/server`,
   checked only when it exists. Empty skips the check.
 - `--dry-run`, `--reset-password` (a new generated password for an existing
-  `hangar`), `--no-wait` (stop before the login; run again to finish).
+  `hangar`). *(revised: LaunchDaemon: `--no-wait` is gone; there is no login to
+  wait for.)*
 
 It refuses to run as root, as `hangar`, or as a standard account (creating a
 user needs an administrator; the message names `HANGAR_AS_CURRENT_USER=1`).
@@ -614,6 +706,20 @@ In order:
     program the new binary, logs under the `hangar` home, `Aqua`), owner
     `hangar`, mode 0644.
 12. The login and the agent, as in *The user*.
+
+    *(revised: LaunchDaemon)* Steps 11 and 12 are now: before step 7, a
+    `hangar` set up by an older version loses its agent (`sudo launchctl
+    bootout gui/<hangar uid>/app.hangar.worker` when loaded, then `sudo rm` of
+    `~/Library/LaunchAgents/app.hangar.worker.plist`), so a later login cannot
+    start a second worker with the same token. After step 10, create the CI
+    keychain; install the daemon plist (root:wheel 0644) and `sudo launchctl
+    bootstrap system` it; a daemon already loaded is restarted with SIGTERM as
+    in *The user*, or booted out and bootstrapped again when its plist
+    changed; then wait for `launchctl print system/app.hangar.worker` to say
+    `state = running`. In step 13 only a heartbeat that reports `headless`
+    counts (from an older server, one after the old workers stopped): the old
+    agent in the account also reported `hangar`. A `keychainProblem` in it is
+    printed as a warning.
 13. Poll the server, in process with the token, until it reports the machine
     with `runningUser == "hangar"` (or, from a server that does not keep that
     field, a heartbeat after the old agent stopped). In update mode, where
@@ -627,7 +733,8 @@ In order:
     and Keychain Access may need the existing `codesign` click; with an
     individual App Store Connect key, sign in to Xcode as `hangar` once; a
     missing Homebrew tool means fixing the prefix's permissions, not a second
-    Homebrew.
+    Homebrew. *(revised: LaunchDaemon: the follow-ups are that signing needs a
+    team key, and the Homebrew note.)*
 
 After this, idle self-update targets `/Users/hangar/.local/bin/hangar-worker`.
 The server's binary is untouched. The first build uses the moved checkout,
@@ -648,7 +755,7 @@ can still:
 
 - Read and write everything that uid can. That includes the `hangar` login
   keychain (the Apple Development private key and any Xcode account stored
-  there), the worker token in `config.json`, every app's cached checkout and
+  there) *(revised: LaunchDaemon: the CI keychain and its password file)*, the worker token in `config.json`, every app's cached checkout and
   DerivedData on this Mac, and this user's package cache. DerivedData may
   contain `HANGAR_GITHUB_TOKEN`, because the resolve step puts that variable
   in xcodebuild's environment and xcodebuild records the environment. The warm
@@ -712,6 +819,10 @@ not a hole in this design.
    binary other Macs download. No change to `WorkerSelfUpdate`.
 6. **The agent stays a LaunchAgent in the `hangar` Aqua session.** A system
    daemon leaves the keychain locked, and the scheduler then assigns no jobs.
+   *(revised: LaunchDaemon: reversed. The worker is a LaunchDaemon running as
+   `hangar` and signs with a CI keychain it unlocks itself; its password is in
+   a 0600 file in the `hangar` home. No login after a reboot, no codesign
+   prompt. A team App Store Connect key is required to sign there.)*
 7. **Migration keeps the machine token and moves `workspaces/`. It does not
    copy the login keychain or re-pair.** The token is the enrollment.
    `dataDirectory` and `workDirectory` inside the copied configuration are
@@ -740,6 +851,10 @@ not a hole in this design.
     unlocked only for this run, the password on the build account's disk, and
     automatic login are rejected. No FileVault secure token is granted.
     `HANGAR_AS_CURRENT_USER=1` keeps installing as the current user.
+    *(revised: LaunchDaemon: there is no graphical login. The password on the
+    build account's disk is now accepted for the CI keychain only, for the
+    reasons in *Revised: LaunchDaemon and the CI keychain*; the account
+    password is still kept only in the administrator's keychain.)*
 
 ## Open Questions
 
@@ -773,6 +888,13 @@ other home through `sudo`.
    `isolate`; `prepareDataDirectory` makes both directories 0700; an update
    restarts `hangar`'s agent with SIGTERM.
 
+8. **The worker becomes a LaunchDaemon with a CI keychain** *(revised: 0.9.0, branch
+   `worker-daemon`)*: `isolate` installs the daemon and the keychain, drops the
+   login wait and `--no-wait`, and moves an older `hangar` agent; the worker
+   unlocks the keychain and sets its partition list; the doctor reports
+   `headless` and `keychainProblem`; the scheduler requires a team key to sign
+   on a headless Mac; the setup page and the install script know the daemon.
+
 None of it is verified on a real Mac yet; the list below is to be done before
 merging.
 
@@ -789,9 +911,13 @@ On a spare Mac (or after a backup), not on the live build Mac, with a Hangar
    `security find-generic-password -s app.hangar.worker-account -a hangar -w`;
    a server whose binary changed after the script was fetched stops with
    "SHA-256 mismatch" before anything runs.
-3. Log in as `hangar` with fast user switching, switch back: `isolate` reports
-   the agent running, the keychain present and the heartbeat as `hangar`; the
-   Machines page shows **Runs as** `hangar`, same machine, no new pairing.
+3. *(revised: LaunchDaemon)* Without logging in as `hangar`: `isolate` reports
+   the daemon running and the heartbeat as `hangar`; `sudo launchctl print
+   system/app.hangar.worker` shows `state = running`; the Machines page shows
+   **Runs as** `hangar`, **Xcode account** "None (no login)", "Can sign with
+   its CI keychain", same machine, no new pairing. `sudo -u hangar -H
+   /Users/hangar/.local/bin/hangar-worker doctor` shows `headless: true` and no
+   `keychainProblem`.
 4. As root: `/Users/hangar` is 0700 with no ACL; `~/.hangar` and
    `~/.hangar/worker` are 0700 and owned by `hangar`; `config.json` is 0600 and
    names `"workDirectory" : "/Users/hangar/.hangar/worker"`; the moved apps
@@ -802,6 +928,14 @@ On a spare Mac (or after a backup), not on the live build Mac, with a Hangar
 5. Run a Legilo build: it fetches (no clone), resolves packages from the kept
    mirrors, archives and signs (allow `codesign` once if the doctor asks).
    The log says nothing about "artifact bundle info.json not found".
+   *(revised: LaunchDaemon)* With the team key: the first archive creates the
+   Apple Development identity in `hangar-ci.keychain-db`, signs, exports and
+   uploads with no prompt. If that very first archive fails in codesign
+   (`errSecInternalComponent`), run it again: the worker set the partition
+   list after the failure. With the issuer ID removed, the archive waits with
+   "needs a team App Store Connect key". Run a test workflow on an iOS
+   simulator: this is the one thing not tried before (a simulator from the
+   `system` domain); if it fails, record how.
 6. A hook that writes `/tmp/x` leaves a 0600 file owned by `hangar`; as the
    administrator, `cat /Users/hangar/.hangar/worker/...` is refused.
 7. Self-update: install a newer server, wait for an idle heartbeat; the agent
@@ -813,7 +947,12 @@ On a spare Mac (or after a backup), not on the live build Mac, with a Hangar
    (SIGTERM)", its job and tmp folders are gone, and the agent comes back on
    the new binary without `kickstart -k` (the log shows a clean stop).
 9. Reboot: after the administrator unlocks FileVault and switches to `hangar`
-   once, the worker heartbeats and signs again.
+   once, the worker heartbeats and signs again. *(revised: LaunchDaemon: with
+   nobody logged in at all, the Machines page shows the Mac online and able to
+   sign within a minute of boot, FileVault unlock aside.)*
 10. Server on the same Mac: `isolate` stops when `hangar` can read
     `master.key`, and **Use This Mac for Builds** shows the command instead of
     installing.
+11. *(revised: LaunchDaemon)* On a Mac set up by 0.8 (an agent and a logged-in
+    `hangar`): `isolate` boots the agent out, removes its plist and starts the
+    daemon; logging `hangar` out afterwards changes nothing.
