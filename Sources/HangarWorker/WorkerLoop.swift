@@ -25,6 +25,7 @@ public actor WorkerLoop {
     private let doctor: Doctor
     private let jobRunner: any JobRunning
     private let clock: any Clock<Duration>
+    private let temporaryRoot: String
     private let logger = Logger(label: "app.hangar.worker")
     private let jobs = RunningJobs()
     /// The hash of a worker update that failed, and when it may be tried again. One bad download does not retry on
@@ -34,8 +35,9 @@ public actor WorkerLoop {
 
     public init(
         configuration: WorkerConfiguration, connection: any ServerConnection, doctor: Doctor, jobRunner: any JobRunning,
-        clock: any Clock<Duration> = ContinuousClock()
+        clock: any Clock<Duration> = ContinuousClock(), temporaryRoot: String = WorkspaceLayout.systemTemporaryRoot
     ) {
+        self.temporaryRoot = temporaryRoot
         self.configuration = configuration
         self.connection = connection
         self.doctor = doctor
@@ -65,6 +67,7 @@ public actor WorkerLoop {
             logger.error("could not create the data directory \(root): \(error)")
             return
         }
+        sweepTemporaryDirectories()
         guard let leftovers = try? FileManager.default.contentsOfDirectory(atPath: jobsDirectory) else { return }
         for name in leftovers.sorted() {
             let path = jobsDirectory + "/" + name
@@ -74,6 +77,20 @@ public actor WorkerLoop {
                 logger.info("swept leftover job directory \(name)")
             } catch {
                 logger.error("could not sweep leftover job directory \(name): \(error)")
+            }
+        }
+    }
+
+    /// Removes the `TMPDIR`s of jobs a crashed run left in the system temp directory.
+    private func sweepTemporaryDirectories() {
+        let root = URL(fileURLWithPath: temporaryRoot).standardizedFileURL.path
+        guard let leftovers = try? FileManager.default.contentsOfDirectory(atPath: root) else { return }
+        for name in leftovers.sorted() {
+            do {
+                try SafeRemoval.removeItem(atPath: root + "/" + name, within: root)
+                logger.info("swept leftover temporary directory \(name)")
+            } catch {
+                logger.error("could not sweep leftover temporary directory \(name): \(error)")
             }
         }
     }

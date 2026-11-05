@@ -9,7 +9,8 @@ import Testing
     let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
     let paths = CIEnvironment.Paths(
         repository: "/w/repo", projectFile: "/w/repo/Legilo.xcodeproj", derivedData: "/w/DD",
-        archive: "/j/archive/App.xcarchive", resultBundle: "/j/result.xcresult", workspace: "/j")
+        archive: "/j/archive/App.xcarchive", resultBundle: "/j/result.xcresult", workspace: "/j",
+        temporary: "/var/folders/x/T/hangar-jobs/job-1")
     let jobID = UUID()
     let buildID = UUID()
 
@@ -81,7 +82,7 @@ import Testing
         #expect(env["USER"] == "hangar")
         #expect(env["LOGNAME"] == "hangar-l")
         // TMPDIR is the job's own, not the worker's.
-        #expect(env["TMPDIR"] == "/j/tmp")
+        #expect(env["TMPDIR"] == "/var/folders/x/T/hangar-jobs/job-1")
         #expect(env["SHELL"] == "/bin/zsh")
         #expect(env["LANG"] == "pl_PL.UTF-8")
         #expect(env["LC_ALL"] == "pl_PL.UTF-8")
@@ -94,7 +95,7 @@ import Testing
         #expect(env["USER"] == NSUserName())
         #expect(env["LOGNAME"] == NSUserName())
         #expect(make(processEnvironment: ["USER": "a"])["LOGNAME"] == "a")
-        #expect(env["TMPDIR"] == "/j/tmp")
+        #expect(env["TMPDIR"] == "/var/folders/x/T/hangar-jobs/job-1")
     }
 
     @Test func setsDefaultUTF8LanguageWhenMissing() {
@@ -113,7 +114,7 @@ import Testing
             ], secretsDirectory: "/s")
         #expect(merged.env["LANG"] == "C")
         #expect(merged.env["USER"] == "hangar")
-        #expect(merged.env["TMPDIR"] == "/j/tmp")
+        #expect(merged.env["TMPDIR"] == "/var/folders/x/T/hangar-jobs/job-1")
     }
 
     @Test func shaRefSetsNoBranch() {

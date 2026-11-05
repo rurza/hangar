@@ -100,6 +100,8 @@ private final class Shared<Value: Sendable>: Sendable {
 
     private struct Fixture {
         let dataDirectory = NSTemporaryDirectory() + "hangar-job-" + UUID().uuidString
+        /// Stands in for the per-user temp directory's `hangar-jobs`, so tests never touch the real one.
+        let temporaryRoot = NSTemporaryDirectory() + "hangar-job-tmp-" + UUID().uuidString
         let applications: String
         let runner = PipelineRunner()
         let connection: FakeServerConnection
@@ -134,7 +136,8 @@ private final class Shared<Value: Sendable>: Sendable {
         }
 
         var layout: WorkspaceLayout {
-            WorkspaceLayout(dataDirectory: dataDirectory, appSlug: "demo", jobID: assignment.job.id)
+            WorkspaceLayout(
+                dataDirectory: dataDirectory, appSlug: "demo", jobID: assignment.job.id, temporaryRoot: temporaryRoot)
         }
 
         /// Makes the job a test action of `DemoTests` and scripts the simulator list and the result summary.
@@ -161,7 +164,7 @@ private final class Shared<Value: Sendable>: Sendable {
             let jobRunner = JobRunner(
                 connection: connection, runner: runner,
                 locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: applications),
-                dataDirectory: dataDirectory, machineName: "Studio", clock: clock,
+                dataDirectory: dataDirectory, temporaryRoot: temporaryRoot, machineName: "Studio", clock: clock,
                 appStoreConnectFactory: { [credentials, appStoreConnect] received in
                     credentials.update { $0.append(received) }
                     return appStoreConnect
@@ -187,6 +190,7 @@ private final class Shared<Value: Sendable>: Sendable {
 
         func removeAll() {
             try? FileManager.default.removeItem(atPath: dataDirectory)
+            try? FileManager.default.removeItem(atPath: temporaryRoot)
             try? FileManager.default.removeItem(atPath: applications)
         }
     }
@@ -225,7 +229,9 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postClone.environment["CI_WORKFLOW_ID"] == "release")
         #expect(postClone.environment["HANGAR_ASC_KEY_PATH"] == layout.secrets + "/HANGAR_ASC_KEY_PATH")
         #expect(postClone.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
-        #expect(postClone.environment["TMPDIR"] == layout.jobDirectory + "/tmp")
+        #expect(postClone.environment["TMPDIR"] == fixture.temporaryRoot + "/" + fixture.assignment.job.id.uuidString)
+        #expect(postClone.environment["TMPDIR"] == layout.temporary)
+        #expect(!layout.temporary.hasPrefix(layout.jobDirectory))
         #expect(temporaryExisted.get() == true)
         #expect(!FileManager.default.fileExists(atPath: layout.temporary))
 
