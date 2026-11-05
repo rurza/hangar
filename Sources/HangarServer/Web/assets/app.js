@@ -10,6 +10,7 @@ import { buildPage } from './pages/build.js';
 import { historyPage } from './pages/history.js';
 import { machinesPage } from './pages/machines.js';
 import { settingsPage } from './pages/settings.js';
+import { setupPage } from './pages/setup.js';
 
 // MARK: Icons
 
@@ -47,7 +48,7 @@ const TABS = [
   { label: 'Apps', href: '/', icon: 'apps', matches: (path) => path === '/' || path.startsWith('/apps/') },
   { label: 'History', href: '/builds', icon: 'history', matches: (path) => path.startsWith('/builds') },
   { label: 'Machines', href: '/machines', icon: 'machines', matches: (path) => path.startsWith('/machines') },
-  { label: 'Settings', href: '/settings', icon: 'settings', matches: (path) => path.startsWith('/settings') },
+  { label: 'Settings', href: '/settings', icon: 'settings', matches: (path) => path.startsWith('/settings') || path === '/setup' },
 ];
 
 function navigation(className) {
@@ -128,6 +129,7 @@ route('/builds', historyPage);
 route('/builds/:id', buildPage);
 route('/machines', machinesPage);
 route('/settings', settingsPage);
+route('/setup', setupPage);
 
 const app = shell(document.getElementById('app'));
 start(app.main, { onRendered: (path) => app.rendered(path) });

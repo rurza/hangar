@@ -123,7 +123,7 @@ export async function machinesPage(params, context) {
 // MARK: Widget
 
 /** A machine's widget. `update(machine)` redraws it with new data, `tick()` re-evaluates the online state. */
-function machineWidget(initial, { onRemove }) {
+export function machineWidget(initial, { onRemove }) {
   let machine = initial;
   const title = h('h2', { class: 'machine-name' });
   const status = h('p', { class: 'machine-status' });
@@ -174,6 +174,7 @@ function reportView(machine) {
     h('dd', { class: 'fact-value' }, value));
   const xcodes = [...(report.xcodes ?? [])].sort((a, b) => b.version.localeCompare(a.version, 'en', { numeric: true }));
   const tools = Object.entries(report.tools ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const identities = Array.isArray(report.signingIdentities) ? report.signingIdentities : [];
 
   return [
     h('div', { class: 'machine-load' },
@@ -187,9 +188,11 @@ function reportView(machine) {
       fact('Memory', `${report.memoryGB} GB`),
       fact('Free disk', `${formatGB(report.freeDiskGB)} GB`),
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
-      fact('macOS', report.macOSVersion || '–')),
+      fact('macOS', report.macOSVersion || '–'),
+      fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn))),
     chipGroup('Xcode', xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
     chipGroup('Tools', tools.map(([name, version]) => (version ? `${name} ${version}` : name)), 'None reported'),
+    chipGroup('Signing identities', identities, 'None in the keychain yet'),
     report.canSignWithoutPrompt
       ? h('p', { class: 'signing signing-ok' },
         h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '✓'),
@@ -202,6 +205,13 @@ function reportView(machine) {
             'Signing jobs skip this Mac until it can sign. As the hangar user, open Keychain Access, find the '
             + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.'))),
   ];
+}
+
+/** "Signed in", "Not signed in" or "–" (an older worker does not report it). */
+export function xcodeAccountText(signedIn) {
+  if (signedIn === true) return 'Signed in';
+  if (signedIn === false) return 'Not signed in';
+  return '–';
 }
 
 function chipGroup(label, items, emptyText) {
@@ -230,7 +240,7 @@ function minutesAndSeconds(seconds) {
  * was not in `knownIDs` to enroll and then to send its first heartbeat. `listen(fn)` delivers machine events and
  * returns the function that stops them; `onManual` opens the token flow instead.
  */
-function openAddMacSheet({ knownIDs, listen, onManual }) {
+export function openAddMacSheet({ knownIDs, listen, onManual }) {
   const command = `curl -fsSL ${location.origin}/install | sh`;
   const commandBlock = h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'Install command' },
     h('code', null, command));
@@ -379,7 +389,7 @@ function openAddMacSheet({ knownIDs, listen, onManual }) {
 
 // MARK: Add Machine
 
-function openAddMachineSheet({ onAdded }) {
+export function openAddMachineSheet({ onAdded }) {
   const nameInput = h('input', {
     class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', autocorrect: 'off',
     placeholder: 'mac-mini-1', autofocus: true,

@@ -4,10 +4,8 @@
 import { api } from '../api.js';
 import { button, card, confirm, field, h, page, replaceChildren, section, toast } from '../ui.js';
 import { variablesEditor } from './variables.js';
+import { appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, problem, withBusy } from './setup.js';
 
-const ASC_KEY_ID = 'HANGAR_ASC_KEY_ID';
-const ASC_ISSUER_ID = 'HANGAR_ASC_ISSUER_ID';
-const ASC_KEY_PATH = 'HANGAR_ASC_KEY_PATH';
 const GITHUB_TOKEN = 'HANGAR_GITHUB_TOKEN';
 
 /** The `/settings` route. */
@@ -44,7 +42,10 @@ export async function settingsPage(params, context) {
   github.render();
   renderAbout();
 
-  return page({ title: 'Settings' },
+  return page({
+    title: 'Settings',
+    actions: h('a', { href: '/setup', 'data-link': true, class: 'button button-secondary' }, 'Run Setup Again'),
+  },
     section({
       title: 'App Store Connect',
       footer: 'Hangar uses the API key for build numbers and TestFlight. Jobs get it as HANGAR_ASC_KEY_ID, '
@@ -95,6 +96,17 @@ async function busy(buttons, work) {
 function ascCard(getStatus, refresh) {
   const element = card({ class: 'settings-card' });
   let editing = false;
+  let counted = null; // { keyID, count } — the app count of the key on screen, -1 when it could not be read
+
+  async function countApps(keyID) {
+    counted = { keyID, count: null };
+    try {
+      counted = { keyID, count: (await api.get('/asc/apps')).length };
+    } catch {
+      counted = { keyID, count: -1 };
+    }
+    if (!editing) render();
+  }
 
   function render() {
     const key = getStatus().appStoreConnect;
@@ -103,6 +115,8 @@ function ascCard(getStatus, refresh) {
       return;
     }
     const team = key.kind === 'team';
+    if (counted?.keyID !== key.keyID) countApps(key.keyID);
+    const count = counted?.keyID === key.keyID ? counted.count : null;
     replaceChildren(element,
       cardTitle('API Key'),
       h('p', { class: 'card-headline settings-state' },
@@ -110,6 +124,7 @@ function ascCard(getStatus, refresh) {
         team ? 'Team key' : 'Individual key'),
       h('dl', { class: 'facts' },
         fact('Key ID', key.keyID),
+        typeof count === 'number' && count >= 0 ? fact('Apps in App Store Connect', String(count)) : null,
         team && key.issuerID ? fact('Issuer ID', key.issuerID) : null),
       team ? null : h('p', { class: 'card-note' }, 'Builds sign with the Apple account signed in to Xcode on each worker Mac.'),
       h('div', { class: 'card-actions' },
@@ -165,7 +180,8 @@ function ascCard(getStatus, refresh) {
       reader.readAsText(file);
     }
 
-    const save = button('Save Key', {
+    const message = h('div');
+    const save = button('Test & Save Key', {
       kind: 'primary',
       onClick: async () => {
         const keyID = keyIDInput.value.trim();
@@ -182,39 +198,22 @@ function ascCard(getStatus, refresh) {
           toast('Choose the .p8 file.', 'error');
           return;
         }
-        // The key ID goes last: the key counts as configured once the ID and the key are both set, so until then
-        // a half-saved key stays unconfigured (or keeps its old ID, which then fails visibly) instead of
-        // pairing a new ID with an old key.
-        let writes = 0;
-        let failure = null;
-        const buttons = [save, cancel].filter(Boolean);
-        buttons.forEach((b) => { b.disabled = true; });
+        // The server tests the key with App Store Connect and saves it only when it is accepted.
+        replaceChildren(message);
+        let result;
         try {
-          await api.put(`/variables/${ASC_KEY_PATH}`, { value: keyText, isSecret: true, asFile: true });
-          writes += 1;
-          if (issuerID) await api.put(`/variables/${ASC_ISSUER_ID}`, { value: issuerID, isSecret: false, asFile: false });
-          else await api.del(`/variables/${ASC_ISSUER_ID}`);
-          writes += 1;
-          await api.put(`/variables/${ASC_KEY_ID}`, { value: keyID, isSecret: false, asFile: false });
+          result = await withBusy(save, 'Testing…', () => api.post('/settings/asc-key',
+            { keyID, privateKey: keyText, ...(issuerID ? { issuerID } : {}) }));
         } catch (error) {
-          failure = error;
-        } finally {
-          buttons.forEach((b) => { if (b.isConnected) b.disabled = false; });
-        }
-        if (failure) {
-          // The form stays as it is (the .p8 file too), so Save Key tries every write again.
-          if (writes > 0) {
-            toast(`Partially saved — save again. ${failure.message}`, 'error');
-            // The status changes, but the form keeps what was entered so Save Key can run again.
-            await refresh({ redraw: false });
-          } else {
-            toast(failure.message, 'error');
-          }
+          if (error.code === 'issuer_required') issuerInput.setAttribute('aria-invalid', 'true');
+          replaceChildren(message, problem(error.message));
+          if (error.code === 'issuer_required') issuerInput.focus();
           return;
         }
+        counted = { keyID: result.keyID, count: result.appCount };
         keyText = null;
         fileInput.value = '';
-        toast(`Saved the ${issuerID ? 'team' : 'individual'} key ${keyID}`, 'success');
+        toast(`Connected — ${appCountText(result.appCount)} in App Store Connect`, 'success');
         editing = false;
         await refresh();
         focusFirst(element);
@@ -237,8 +236,9 @@ function ascCard(getStatus, refresh) {
         'Not set up. Create a key in App Store Connect under Users and Access › Integrations, with the App Manager role.'),
       h('div', { class: 'field-pair' },
         field({ label: 'Key ID', control: keyIDInput }),
-        field({ label: 'Issuer ID', hint: 'Leave empty for an individual key.', control: issuerInput })),
+        field({ label: 'Issuer ID', hint: 'Leave empty: Hangar asks for it if the key needs one.', control: issuerInput })),
       field({ label: 'Private key (.p8)', hint: fileHint, control: fileInput }),
+      message,
       h('div', { class: 'card-actions' }, cancel, save));
   }
 
@@ -253,6 +253,7 @@ function githubCard(getStatus, refresh) {
 
   function render() {
     const isSet = getStatus().githubTokenSet;
+    const github = getStatus().github;
     if (!isSet || editing) {
       replaceChildren(element, form(isSet));
       return;
@@ -285,8 +286,10 @@ function githubCard(getStatus, refresh) {
       cardTitle('Token'),
       h('p', { class: 'card-headline settings-state' },
         h('span', { class: 'online-dot online', 'aria-hidden': 'true' }),
-        'Token set'),
-      h('p', { class: 'card-note' }, 'The token cannot be shown. Replace it to use a different one.'),
+        github?.login ? `Connected as ${github.login}` : 'Token set'),
+      h('p', { class: 'card-note' }, github?.source === 'gh'
+        ? GH_NOTE
+        : 'The token cannot be shown. Replace it to use a different one.'),
       h('div', { class: 'card-actions' }, replace, remove));
   }
 
@@ -302,6 +305,7 @@ function githubCard(getStatus, refresh) {
         }
       },
     });
+    const message = h('div');
     const save = button('Save Token', {
       kind: 'primary',
       onClick: async () => {
@@ -312,11 +316,17 @@ function githubCard(getStatus, refresh) {
           toast('Enter the token.', 'error');
           return;
         }
-        const saved = await busy([save, cancel].filter(Boolean),
-          () => api.put(`/variables/${GITHUB_TOKEN}`, { value: token, isSecret: true, asFile: false }));
-        if (!saved) return;
+        replaceChildren(message);
+        let login;
+        try {
+          ({ login } = await withBusy(save, 'Checking…', () => api.post('/settings/github-token', { token })));
+        } catch (error) {
+          input.setAttribute('aria-invalid', 'true');
+          replaceChildren(message, problem(error.message));
+          return;
+        }
         input.value = '';
-        toast('Saved the GitHub token', 'success');
+        toast(`Connected to GitHub as ${login}`, 'success');
         editing = false;
         await refresh();
         focusFirst(element);
@@ -336,9 +346,11 @@ function githubCard(getStatus, refresh) {
       isSet ? null : h('p', { class: 'card-detail' }, 'Not set.'),
       field({
         label: 'Personal access token',
-        hint: 'A fine-grained token with read access to Contents. It cannot be read back after saving.',
+        hint: h('span', null, externalLink(GITHUB_TOKEN_URL, 'Create a fine-grained token'),
+          ' with Contents: Read-only. GitHub checks it before it is saved; it cannot be read back.'),
         control: input,
       }),
+      message,
       h('div', { class: 'card-actions' }, cancel, save));
   }
 
