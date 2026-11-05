@@ -29,6 +29,30 @@ import Testing
         #expect(!output.text.contains(Fixtures.token))
     }
 
+    @Test func listVariablesGivesNamesAndSourcesNeverValues() async throws {
+        transport.on("GET apps/legilo/variables", json: [
+            VariableSummary(scope: .app(Fixtures.appID), name: "SENTRY_DSN", isSecret: false, asFile: false, workflows: ["beta"], updatedAt: Fixtures.t0),
+        ])
+        transport.on("GET apps/legilo/variable-groups", json: [AppVariableGroupLink(groupID: UUID(), name: "Sentry", workflows: [], variables: [
+            VariableSummary(scope: .group(UUID()), name: "SENTRY_AUTH_TOKEN", isSecret: true, asFile: false, updatedAt: Fixtures.t0),
+        ])])
+        let output = try await Fixtures.call("list_variables", tools, ["app": .string("legilo")])
+        #expect(!output.isError)
+        let object = try object(output)
+        guard case .array(let groups)? = object["linkedGroups"], case .object(let group) = groups.first else {
+            Issue.record("no groups: \(output.text)"); return
+        }
+        #expect(group["variables"] == .array([.string("SENTRY_AUTH_TOKEN")]))
+        #expect(!output.text.contains("updatedAt"))
+
+        transport.on("GET apps/legilo/environment?workflow=beta", json: [EffectiveVariable(
+            name: "SENTRY_DSN", isSecret: false, asFile: false, source: VariableSource(kind: .app, workflows: ["beta"]))])
+        let environment = try await Fixtures.call("list_variables", tools, ["app": .string("legilo"), "workflow": .string("beta")])
+        #expect(!environment.isError)
+        #expect(environment.text.contains("SENTRY_DSN"))
+        #expect(Fixtures.tool("list_variables", tools).hints.readOnly)
+    }
+
     @Test func listMachinesSaysWhichArePaused() async throws {
         var paused = Fixtures.machine
         paused.paused = true

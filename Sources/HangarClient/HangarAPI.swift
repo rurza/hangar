@@ -51,16 +51,75 @@ public struct HangarAPI: Sendable {
         try await get(variablesPath(app))
     }
 
+    /// `input.workflows` limits an app variable to those workflows; empty means all of them.
     public func setVariable(_ name: String, _ input: VariableInput, app: String? = nil) async throws {
         try await sendEmpty("PUT", "\(variablesPath(app))/\(segment(name))", body: input)
     }
 
-    public func deleteVariable(_ name: String, app: String? = nil) async throws {
-        try await sendEmpty("DELETE", "\(variablesPath(app))/\(segment(name))")
+    /// Deletes the app variable limited to exactly `workflows` (empty: the one for all workflows).
+    public func deleteVariable(_ name: String, app: String? = nil, workflows: [String] = []) async throws {
+        _ = try await perform(request("DELETE", "\(variablesPath(app))/\(segment(name))", items: Self.workflowItems(workflows)))
+    }
+
+    /// Changes the app variable limited to exactly `workflows`.
+    public func updateVariable(_ name: String, app: String, workflows: [String] = [], _ update: VariableUpdate) async throws {
+        var request = request("PATCH", "\(variablesPath(app))/\(segment(name))", items: Self.workflowItems(workflows))
+        request.httpBody = try JSONCoding.encoder.encode(update)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        _ = try await perform(request)
+    }
+
+    /// What a job of `workflow` gets (names and sources, no values).
+    public func environment(app: String, workflow: String?) async throws -> [EffectiveVariable] {
+        try await get("apps/\(segment(app))/environment", query: ["workflow": workflow])
     }
 
     private func variablesPath(_ app: String?) -> String {
         app.map { "apps/\(segment($0))/variables" } ?? "variables"
+    }
+
+    private static func workflowItems(_ workflows: [String]) -> [URLQueryItem] {
+        workflows.map { URLQueryItem(name: "workflow", value: $0) }
+    }
+
+    // MARK: - Variable groups (`group` is an id or a name)
+
+    public func variableGroups() async throws -> [VariableGroup] { try await get("variable-groups") }
+    public func variableGroup(_ group: String) async throws -> VariableGroup { try await get("variable-groups/\(segment(group))") }
+
+    public func createVariableGroup(name: String) async throws -> VariableGroup {
+        try await send("POST", "variable-groups", body: VariableGroupRequest(name: name))
+    }
+
+    public func renameVariableGroup(_ group: String, to name: String) async throws -> VariableGroup {
+        try await send("PATCH", "variable-groups/\(segment(group))", body: VariableGroupRequest(name: name))
+    }
+
+    public func deleteVariableGroup(_ group: String) async throws {
+        try await sendEmpty("DELETE", "variable-groups/\(segment(group))")
+    }
+
+    public func setGroupVariable(_ name: String, _ input: VariableInput, group: String) async throws {
+        try await sendEmpty("PUT", "variable-groups/\(segment(group))/variables/\(segment(name))", body: input)
+    }
+
+    public func deleteGroupVariable(_ name: String, group: String) async throws {
+        try await sendEmpty("DELETE", "variable-groups/\(segment(group))/variables/\(segment(name))")
+    }
+
+    /// The groups the app links, in precedence order.
+    public func variableGroupLinks(app: String) async throws -> [AppVariableGroupLink] {
+        try await get("apps/\(segment(app))/variable-groups")
+    }
+
+    /// Links the group for `workflows` (empty: all), or changes the link's workflows.
+    public func linkVariableGroup(_ group: String, app: String, workflows: [String] = []) async throws {
+        try await sendEmpty(
+            "PUT", "apps/\(segment(app))/variable-groups/\(segment(group))", body: LinkVariableGroupRequest(workflows: workflows))
+    }
+
+    public func unlinkVariableGroup(_ group: String, app: String) async throws {
+        try await sendEmpty("DELETE", "apps/\(segment(app))/variable-groups/\(segment(group))")
     }
 
     // MARK: - Numbers and workflows
@@ -230,12 +289,18 @@ public struct HangarAPI: Sendable {
 
     /// `path` is already percent-encoded (fixed words, UUIDs and `segment(_:)` output). Nil query values are left out.
     func request(_ method: String, _ path: String, query: [String: String?] = [:]) -> URLRequest {
+        request(
+            method, path,
+            items: query.sorted { Self.queryOrder($0.key) < Self.queryOrder($1.key) }
+                .compactMap { key, value in value.map { URLQueryItem(name: key, value: $0) } })
+    }
+
+    /// As above with the query items as given, so a name may repeat (`workflow=A&workflow=B`).
+    func request(_ method: String, _ path: String, items: [URLQueryItem]) -> URLRequest {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) ?? URLComponents()
         var root = components.percentEncodedPath
         while root.hasSuffix("/") { root.removeLast() }
         components.percentEncodedPath = root + "/api/v1/" + path
-        let items = query.sorted { Self.queryOrder($0.key) < Self.queryOrder($1.key) }
-            .compactMap { key, value in value.map { URLQueryItem(name: key, value: $0) } }
         components.queryItems = items.isEmpty ? nil : items
         // URLComponents leaves `+` as it is, which the server (like any form decoder) reads as a space.
         components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")

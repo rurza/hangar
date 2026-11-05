@@ -135,9 +135,10 @@ workflows, never values.
 
 ## CLI and MCP
 
-- `hangar var set|list|rm` gain `--workflow <name>` (repeatable) for app variables; `hangar var list --app x
-  --workflow W` shows the environment workflow W gets, with sources. `hangar var group create|list|rename|rm|set|unset`
-  manage groups, and `hangar var link|unlink --app x <group> [--workflow …]` manage links.
+- `hangar var set|list|remove` gain `--workflow <name>` (repeatable) for app variables; `hangar var list --app x
+  --workflow W` shows the environment workflow W gets, with sources. `hangar var group create|list|rename|remove`
+  manage groups, `--group <name>` on `set|list|remove` their variables, and `hangar var link|unlink <group> --app x
+  [--workflow …]` the links.
 - MCP: a read tool `list_variables` (app, optional workflow) returns names, flags, workflows and sources, never
   values. It deviates from the MCP spec's "variables are not in scope": API tokens could already list variable names
   with any `GET`, and an agent reading an `undefined-variables` notice needs to see where a name is set. Changing

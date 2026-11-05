@@ -129,6 +129,23 @@ import Testing
         #expect(urls[2] == "http://mini:8787/api/v1/jobs/\(jobID.uuidString)/log?step=post-action:testflight&tail=40")
     }
 
+    @Test func workflowRestrictionsRepeatTheQueryName() async throws {
+        let transport = StubTransport(responses: [
+            StubTransport.Response(status: 204), StubTransport.Response(status: 204), StubTransport.Response(status: 204),
+        ])
+        let api = HangarAPI(baseURL: Self.base, transport: transport)
+        try await api.deleteVariable("SENTRY_DSN", app: "legilo", workflows: ["UX Review", "Beta"])
+        try await api.updateVariable("SENTRY_DSN", app: "legilo", workflows: ["Beta"], VariableUpdate(workflows: []))
+        try await api.linkVariableGroup("Crash Reports", app: "legilo", workflows: ["Beta"])
+        let requests = transport.requests
+        #expect(requests[0].httpMethod == "DELETE")
+        #expect(requests[0].url?.query == "workflow=UX%20Review&workflow=Beta")
+        #expect(requests[1].httpMethod == "PATCH")
+        #expect(requests[1].url?.path == "/api/v1/apps/legilo/variables/SENTRY_DSN")
+        #expect(try JSONCoding.decoder.decode(VariableUpdate.self, from: requests[1].httpBody ?? Data()) == VariableUpdate(workflows: []))
+        #expect(requests[2].url?.absoluteString.hasSuffix("/api/v1/apps/legilo/variable-groups/Crash%20Reports") == true)
+    }
+
     @Test func queryValuesSurviveFormDecoding() async throws {
         let transport = StubTransport(responses: [try Self.json([Build]())])
         let api = HangarAPI(baseURL: Self.base, transport: transport)

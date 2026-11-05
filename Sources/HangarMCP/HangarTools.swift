@@ -46,7 +46,7 @@ public struct HangarTools: Sendable {
         [
             serverStatus, listApps, listRepositories, inspectRepo, listAppStoreConnectApps, addApp, getWorkflows,
             suggestWorkflow, setWorkflow, clearWorkflowFile, listBranches, deployCheck, startBuild, listBuilds, getBuild,
-            waitForBuild, getBuildLog, listArtifacts, cancelBuild, listMachines, listTestFlightGroups,
+            waitForBuild, getBuildLog, listArtifacts, cancelBuild, listMachines, listVariables, listTestFlightGroups,
             createTestFlightGroup, deleteApp,
         ]
     }
@@ -597,6 +597,33 @@ public struct HangarTools: Sendable {
                 result.append(JobArtifacts(job: job.id, action: Views.label(job.action), status: job.status, artifacts: artifacts))
             }
             return try .json(result)
+        }
+    }
+
+    // MARK: - Variables
+
+    /// Names and where they come from, never values; changing variables is outside every token scope.
+    var listVariables: MCPTool {
+        MCPTool(
+            name: "list_variables", title: "List variables",
+            description: """
+                The app's environment variables by name, never their values. Without `workflow`: the app's own                 variables (each for all workflows or limited to some) and its linked variable groups, in precedence                 order. With `workflow`: what a job of that workflow gets, each name's source (app, group or global) and                 what it replaces. A job gets the first of: an app variable limited to its workflow, the app's for all                 workflows, a group linked for its workflow, a group linked for all, a global one. Use it to explain an                 `undefined-variables` notice of deploy_check; only the user can change variables, in the web UI or                 with `hangar var`.
+                """,
+            inputSchema: Schema.object(
+                ["app": Schema.app, "workflow": Schema.string("A workflow's name: show what its jobs get.")], required: ["app"]),
+            hints: .read
+        ) { arguments in
+            let app = try arguments.string("app")
+            if let workflow = try arguments.optionalString("workflow") {
+                return try .json(try await api.environment(app: app, workflow: workflow))
+            }
+            let variables = try await api.variables(app: app)
+            let links = try await api.variableGroupLinks(app: app)
+            return try .json(Views.Variables(
+                variables: variables.map { Views.Variable(name: $0.name, isSecret: $0.isSecret, asFile: $0.asFile, workflows: $0.workflows) },
+                linkedGroups: links.map {
+                    Views.LinkedGroup(name: $0.name, workflows: $0.workflows, variables: $0.variables.map(\.name))
+                }))
         }
     }
 

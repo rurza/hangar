@@ -3,6 +3,26 @@ import HangarCore
 
 /// The shapes tools return: what an agent needs to decide its next step, not every stored field.
 enum Views {
+    /// `list_variables` without a workflow: names and flags only. `workflows` empty means all workflows.
+    struct Variables: Encodable {
+        var variables: [Variable]
+        /// In precedence order: the first wins a name two groups share.
+        var linkedGroups: [LinkedGroup]
+    }
+
+    struct Variable: Encodable {
+        var name: String
+        var isSecret: Bool
+        var asFile: Bool
+        var workflows: [String]
+    }
+
+    struct LinkedGroup: Encodable {
+        var name: String
+        var workflows: [String]
+        var variables: [String]
+    }
+
     struct AppView: Encodable {
         var id: UUID
         var slug: String

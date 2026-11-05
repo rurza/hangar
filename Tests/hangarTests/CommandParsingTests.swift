@@ -84,6 +84,75 @@ import Testing
         #expect(result.err.contains("shell history"))
     }
 
+    @Test func varSetForWorkflowsAndGroups() async throws {
+        let app = await H(responses: [StubTransport.Response(status: 204)], stdin: "dsn\n")
+            .run(["var", "set", "SENTRY_DSN", "--app", "legilo", "--workflow", "Beta", "--workflow", "Release"])
+        #expect(app.exitCode == 0)
+        #expect(try app.bodies(VariableInput.self) == [VariableInput(value: "dsn", workflows: ["Beta", "Release"])])
+        #expect(app.out.contains("for legilo (Beta, Release)"))
+
+        let group = await H(responses: [StubTransport.Response(status: 204)], stdin: "t\n")
+            .run(["var", "set", "SENTRY_AUTH_TOKEN", "--group", "Sentry", "--secret"])
+        #expect(group.requests.first?.url?.path == "/api/v1/variable-groups/Sentry/variables/SENTRY_AUTH_TOKEN")
+        #expect(group.out.contains("in group Sentry"))
+
+        let refused = await H().run(["var", "set", "X", "--workflow", "Beta", "--value", "v"])
+        #expect(refused.exitCode == 64)
+        #expect(refused.requests.isEmpty)
+        let both = await H().run(["var", "set", "X", "--app", "a", "--group", "g", "--value", "v"])
+        #expect(both.exitCode == 64)
+    }
+
+    @Test func varRemoveNamesTheRowByItsWorkflows() async throws {
+        let result = await H(responses: [StubTransport.Response(status: 204)])
+            .run(["var", "remove", "SENTRY_DSN", "--app", "legilo", "--workflow", "Beta"])
+        #expect(result.exitCode == 0)
+        let request = try #require(result.requests.first)
+        #expect(request.httpMethod == "DELETE")
+        #expect(request.url?.path == "/api/v1/apps/legilo/variables/SENTRY_DSN")
+        #expect(request.url?.query == "workflow=Beta")
+    }
+
+    @Test func varListShowsWorkflowsLinksAndAWorkflowsEnvironment() async throws {
+        let variables = [
+            VariableSummary(scope: .app(UUID()), name: "SENTRY_DSN", isSecret: false, asFile: false, workflows: ["Beta"], updatedAt: H.t0),
+        ]
+        let links = [AppVariableGroupLink(groupID: UUID(), name: "Sentry", workflows: [], variables: [
+            VariableSummary(scope: .group(UUID()), name: "SENTRY_AUTH_TOKEN", isSecret: true, asFile: false, updatedAt: H.t0),
+        ])]
+        let listed = await H(responses: [try H.json(variables), try H.json(links)]).run(["var", "list", "--app", "legilo"])
+        #expect(listed.exitCode == 0)
+        #expect(listed.out.contains("WORKFLOWS"))
+        #expect(listed.out.contains("Beta"))
+        #expect(listed.out.contains("Sentry (all workflows): SENTRY_AUTH_TOKEN"))
+
+        let effective = [EffectiveVariable(
+            name: "SENTRY_AUTH_TOKEN", isSecret: true, asFile: false, source: VariableSource(kind: .group, group: "Sentry"))]
+        let environment = await H(responses: [try H.json(effective)]).run(["var", "list", "--app", "legilo", "--workflow", "Beta"])
+        #expect(environment.requests.first?.url?.path == "/api/v1/apps/legilo/environment")
+        #expect(environment.requests.first?.url?.query == "workflow=Beta")
+        #expect(environment.out.contains("group Sentry"))
+    }
+
+    @Test func varGroupAndLinkCommands() async throws {
+        let group = VariableGroup(id: UUID(), name: "Sentry", createdAt: H.t0)
+        let created = await H(responses: [try H.json(group, status: 201)]).run(["var", "group", "create", "Sentry"])
+        #expect(created.requests.first?.httpMethod == "POST")
+        #expect(try created.bodies(VariableGroupRequest.self) == [VariableGroupRequest(name: "Sentry")])
+
+        let linked = await H(responses: [StubTransport.Response(status: 204)])
+            .run(["var", "link", "Sentry", "--app", "legilo", "--workflow", "Beta"])
+        #expect(linked.requests.first?.httpMethod == "PUT")
+        #expect(linked.requests.first?.url?.path == "/api/v1/apps/legilo/variable-groups/Sentry")
+        #expect(try linked.bodies(LinkVariableGroupRequest.self) == [LinkVariableGroupRequest(workflows: ["Beta"])])
+
+        let unlinked = await H(responses: [StubTransport.Response(status: 204)]).run(["var", "unlink", "Sentry", "--app", "legilo"])
+        #expect(unlinked.requests.first?.httpMethod == "DELETE")
+
+        let removed = await H(responses: [StubTransport.Response(status: 204)]).run(["var", "group", "remove", "Sentry"])
+        #expect(removed.requests.first?.url?.path == "/api/v1/variable-groups/Sentry")
+    }
+
     @Test func varSetReadsValueFileAndRejectsTwoSources() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-\(UUID().uuidString).txt")
         try "line one\nline two\n".write(to: file, atomically: true, encoding: .utf8)
