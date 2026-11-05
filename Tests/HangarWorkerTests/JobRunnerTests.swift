@@ -648,7 +648,7 @@ private final class Shared<Value: Sendable>: Sendable {
 
         #expect(result.status == .succeeded)
         #expect(fixture.connection.logLines.contains("archived"))
-        #expect(fixture.connection.logLines.contains("git clone https://github.com/acme/demo.git \(fixture.layout.repository)"))
+        #expect(fixture.connection.logLines.contains("git clone -- https://github.com/acme/demo.git \(fixture.layout.repository)"))
         #expect(fixture.connection.events.last == .finish(result))
     }
 

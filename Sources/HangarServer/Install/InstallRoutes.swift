@@ -15,7 +15,8 @@ struct InstallRoutes: Sendable {
             guard let origin = request.authority.flatMap(InstallScript.origin(authority:)) else {
                 throw APIError(code: "invalid_request", message: "The Host header cannot be used as the server's address.")
             }
-            let script = InstallScript.render(origin: origin)
+            let script = InstallScript.render(
+                origin: origin, workerSHA256: WorkerBinaryDigest.current(at: workerBinaryPath))
             return Response(
                 status: .ok,
                 headers: [

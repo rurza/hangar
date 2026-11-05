@@ -8,7 +8,8 @@ import Testing
 
 @Suite struct WebUITests {
     static let csp =
-        "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'"
+        "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
+        + "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
     @Test func rootServesIndex() async throws {
         try await APIFixture().test { client in
@@ -54,6 +55,17 @@ import Testing
                 #expect(response.headers[.contentSecurityPolicy] == Self.csp)
                 #expect(response.headers[.xContentTypeOptions] == "nosniff")
                 #expect(response.headers[.init("Referrer-Policy")!] == "same-origin")
+            }
+        }
+    }
+
+    /// No other page may frame the UI: a cross-site page could overlay it and steer a click onto Delete or Add Mac.
+    @Test(arguments: ["/", "/apps/legilo", "/assets/app.js"])
+    func noPageMayFrameTheUI(path: String) async throws {
+        try await APIFixture().test { client in
+            try await client.execute(uri: path, method: .get) { response in
+                #expect(response.headers[.contentSecurityPolicy]?.contains("frame-ancestors 'none'") == true)
+                #expect(response.headers[.init("X-Frame-Options")!] == "DENY")
             }
         }
     }

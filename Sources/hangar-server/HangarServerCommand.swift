@@ -56,7 +56,7 @@ struct HangarServerCommand: AsyncParsableCommand {
                 }
             }
 
-            try FileManager.default.createDirectory(atPath: resolvedDirectory, withIntermediateDirectories: true)
+            try ServerConfiguration.prepareDataDirectory(at: resolvedDirectory)
             let database = try Database(path: resolvedDirectory + "/hangar.sqlite")
             try database.migrate()
             let extraHosts = allowedHosts
