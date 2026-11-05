@@ -125,3 +125,25 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: root + "/work"))
     }
 }
+
+@Suite struct DerivedDataPruningTests {
+    @Test func keepsOnlyThePackageMirrorsAndTheOwnerRecord() throws {
+        let root = try WorkDirectoryMigrationTests.makeRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let derived = root + "/workspaces/legilo/DerivedData"
+        for path in ["Build/Products/Release/Legilo.app/x", "CompilationCache.noindex/x", "ModuleCache.noindex/x",
+                     "Logs/Build/x", "SDKExplicitPrecompiledModules/x", "SourcePackages/checkouts/p/Package.swift",
+                     "SourcePackages/artifacts/p/x", "SourcePackages/workspace-state.json",
+                     "SourcePackages/repositories/p-1/HEAD", ".hangar-workspace"] {
+            try WorkDirectoryMigrationTests.write(derived + "/" + path)
+        }
+
+        try DerivedDataPruning.prune(derived)
+
+        let left = try FileManager.default.subpathsOfDirectory(atPath: derived).sorted()
+        #expect(left == [".hangar-workspace", "SourcePackages", "SourcePackages/repositories",
+                         "SourcePackages/repositories/p-1", "SourcePackages/repositories/p-1/HEAD"])
+        // Nothing there yet is fine.
+        try DerivedDataPruning.prune(root + "/none/DerivedData")
+    }
+}

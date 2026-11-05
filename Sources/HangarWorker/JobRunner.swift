@@ -432,6 +432,7 @@ public struct JobRunner: Sendable {
                 if outcome.exitCode != 0 { throw CheckoutError.gitFailed(command: "git clean -ffdx", exitCode: outcome.exitCode) }
             }
         }
+        await attempt("empty DerivedData") { try DerivedDataPruning.prune(layout.derivedData) }
         await attempt("remove the temporary directory") {
             try SafeRemoval.removeItem(atPath: layout.temporary, within: layout.temporaryRoot)
         }
