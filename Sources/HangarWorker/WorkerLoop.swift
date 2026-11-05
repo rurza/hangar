@@ -27,6 +27,10 @@ public actor WorkerLoop {
     private let clock: any Clock<Duration>
     private let logger = Logger(label: "app.hangar.worker")
     private let jobs = RunningJobs()
+    /// The hash of a worker update that failed, and when it may be tried again. One bad download does not retry on
+    /// every heartbeat.
+    private var updateHoldoff: (sha256: String, until: ContinuousClock.Instant)?
+    private var updating = false
 
     public init(
         configuration: WorkerConfiguration, connection: any ServerConnection, doctor: Doctor, jobRunner: any JobRunning,
@@ -80,10 +84,12 @@ public actor WorkerLoop {
         var backoff = Backoff()
         while !Task.isCancelled {
             do {
-                let report = await doctor.report(runningJobIDs: jobs.runningIDs)
+                var report = await doctor.report(runningJobIDs: jobs.runningIDs)
+                report.binarySHA256 = WorkerSelfUpdate.executableSHA256
                 let response = try await connection.heartbeat(HeartbeatRequest(report: report))
                 backoff.reset()
                 jobs.cancel(response.cancelJobIDs)
+                if let update = response.workerUpdate { Task { await self.applyUpdate(update) } }
                 await sleep(Self.heartbeatInterval)
             } catch {
                 if Task.isCancelled { break }
@@ -129,6 +135,33 @@ public actor WorkerLoop {
 
     private func sleep(_ duration: Duration) async {
         try? await clock.sleep(for: duration)
+    }
+
+    /// Downloads the server's `hangar-worker` and re-executes into it when this process is idle. A job that is
+    /// running, or that starts while the download is in flight, keeps this binary: the restart would forget the job.
+    private func applyUpdate(_ update: WorkerUpdate) async {
+        guard !updating, jobs.runningIDs.isEmpty else { return }
+        guard update.sha256 != WorkerSelfUpdate.executableSHA256 else { return }
+        if let holdoff = updateHoldoff, holdoff.sha256 == update.sha256, ContinuousClock.now < holdoff.until { return }
+        updating = true
+        defer { updating = false }
+        do {
+            let data = try await WorkerSelfUpdate.download(from: configuration.serverURL)
+            guard jobs.runningIDs.isEmpty, let executable = Bundle.main.executableURL else { return }
+            let staged = try WorkerSelfUpdate.stage(data, sha256: update.sha256, nextTo: executable)
+            guard jobs.runningIDs.isEmpty else {
+                try? FileManager.default.removeItem(at: staged)
+                return
+            }
+            try WorkerSelfUpdate.replace(executable, with: staged)
+            logger.info("updated hangar-worker; restarting into it")
+            if !WorkerSelfUpdate.relaunch() {
+                logger.error("could not restart into the updated hangar-worker")
+            }
+        } catch {
+            updateHoldoff = (update.sha256, ContinuousClock.now.advanced(by: .seconds(300)))
+            logger.error("worker update failed: \(error)")
+        }
     }
 }
 

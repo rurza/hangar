@@ -38,9 +38,9 @@ final class ManualNow: Sendable {
 
         init(
             clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = { WorkerAPITests.t0 },
-            assign: Bool = true, workflow: String = "testflight"
+            assign: Bool = true, workflow: String = "testflight", workerBinaryPath: String? = nil
         ) async throws {
-            fixture = try APIFixture(clock: clock, now: now)
+            fixture = try APIFixture(clock: clock, now: now, workerBinaryPath: workerBinaryPath)
             try fixture.createApp()
             (machine, token) = try fixture.server.machines.create(name: "studio")
             build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: workflow, ref: "main"))
@@ -370,6 +370,33 @@ final class ManualNow: Sendable {
         ) {
             #expect($0.status == .ok)
             return try decode(HeartbeatResponse.self, $0).cancelJobIDs
+        }
+    }
+
+    /// A worker that reports its binary's hash is told to replace it only when the server has a different one.
+    /// A worker that reports no hash is left alone: it cannot apply the update.
+    @Test func heartbeatOffersAWorkerUpdateOnlyWhenTheBinaryDiffers() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-worker-\(UUID().uuidString)")
+        try Data("hangar-worker-bytes".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let current = try #require(SHA256File.hex(of: url))
+        let setup = try await Setup(assign: false, workerBinaryPath: url.path)
+        try await setup.fixture.test { client in
+            func beat(_ hash: String?) async throws -> HeartbeatResponse {
+                var report = WorkerAPITests.report()
+                report.binarySHA256 = hash
+                return try await client.execute(
+                    uri: "/api/v1/worker/heartbeat", method: .post, headers: setup.auth,
+                    body: try body(HeartbeatRequest(report: report))
+                ) { response in
+                    #expect(response.status == .ok)
+                    return try decode(HeartbeatResponse.self, response)
+                }
+            }
+            #expect(try await beat(nil).workerUpdate == nil)
+            #expect(try await beat(current).workerUpdate == nil)
+            let offered = try await beat(String(repeating: "ab", count: 32)).workerUpdate
+            #expect(offered == WorkerUpdate(sha256: current))
         }
     }
 

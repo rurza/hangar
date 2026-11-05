@@ -43,12 +43,16 @@ public struct MachineReport: Codable, Equatable, Sendable {
     public var simulatorRuntimes: [String]
     /// `WorkerCapability` names; empty for a worker from before capabilities.
     public var capabilities: [String]
+    /// SHA-256 of the running `hangar-worker`, computed when that process started. Nil from a worker that does not
+    /// report it yet. The server offers a replacement when this differs from the binary it would hand out.
+    public var binarySHA256: String?
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
         canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
-        xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = []
+        xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = [],
+        binarySHA256: String? = nil
     ) {
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
@@ -64,11 +68,12 @@ public struct MachineReport: Codable, Equatable, Sendable {
         self.xcodeAccountSignedIn = xcodeAccountSignedIn
         self.simulatorRuntimes = simulatorRuntimes
         self.capabilities = capabilities
+        self.binarySHA256 = binarySHA256
     }
 
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
-        case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities
+        case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities, binarySHA256
     }
 
     /// An older worker sends none of the newer fields (`signingIdentities`, `xcodeAccountSignedIn`,
@@ -89,6 +94,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
         xcodeAccountSignedIn = try container.decodeIfPresent(Bool.self, forKey: .xcodeAccountSignedIn)
         simulatorRuntimes = try container.decodeIfPresent([String].self, forKey: .simulatorRuntimes) ?? []
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
+        binarySHA256 = try container.decodeIfPresent(String.self, forKey: .binarySHA256)
     }
 }
 

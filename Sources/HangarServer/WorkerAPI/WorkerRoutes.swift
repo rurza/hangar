@@ -34,7 +34,9 @@ extension HangarServerApp {
                 if job == nil || job?.status.isTerminal == true || job?.machineID != machine.id { cancel.insert(id) }
             }
             scheduler.poke()
-            return try Response.json(HeartbeatResponse(cancelJobIDs: cancel.sorted { $0.uuidString < $1.uuidString }))
+            return try Response.json(HeartbeatResponse(
+                cancelJobIDs: cancel.sorted { $0.uuidString < $1.uuidString },
+                workerUpdate: workerUpdate(reportedSHA256: input.report.binarySHA256)))
         }
 
         worker.get("jobs/next") { request, context in
@@ -107,6 +109,16 @@ extension HangarServerApp {
             scheduler.poke()
             return try Response.json(finished)
         }
+    }
+
+    /// A replacement for the worker when it reported its own binary and that is not the one this server hands out.
+    /// A worker that reports no hash cannot apply an update, so it is not offered one.
+    private func workerUpdate(reportedSHA256: String?) -> WorkerUpdate? {
+        guard let reportedSHA256, !reportedSHA256.isEmpty,
+            let current = WorkerBinaryDigest.current(at: configuration.workerBinaryPath),
+            current != reportedSHA256.lowercased()
+        else { return nil }
+        return WorkerUpdate(sha256: current)
     }
 
     /// Fails the machine's running jobs its heartbeat no longer lists once they have run longer than the grace: the

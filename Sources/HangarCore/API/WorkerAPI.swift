@@ -32,10 +32,22 @@ public struct HeartbeatRequest: Codable, Equatable, Sendable {
     public init(report: MachineReport) { self.report = report }
 }
 
+/// The server has a different `hangar-worker` than the one that just heartbeated. `sha256` is the binary
+/// `GET /install/hangar-worker` serves. Absent when the worker did not report its own hash, or the two match.
+public struct WorkerUpdate: Codable, Equatable, Sendable {
+    public var sha256: String
+
+    public init(sha256: String) { self.sha256 = sha256 }
+}
+
 public struct HeartbeatResponse: Codable, Equatable, Sendable {
     public var cancelJobIDs: [UUID]
+    public var workerUpdate: WorkerUpdate?
 
-    public init(cancelJobIDs: [UUID] = []) { self.cancelJobIDs = cancelJobIDs }
+    public init(cancelJobIDs: [UUID] = [], workerUpdate: WorkerUpdate? = nil) {
+        self.cancelJobIDs = cancelJobIDs
+        self.workerUpdate = workerUpdate
+    }
 }
 
 public struct StepUpdate: Codable, Equatable, Sendable {
