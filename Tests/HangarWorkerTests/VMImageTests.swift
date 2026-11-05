@@ -111,3 +111,17 @@ import Testing
         }
     }
 }
+
+@Suite struct VMDiskGrowthTests {
+    @Test func aDiskGrowsToTheAskedSizeAndNeverShrinks() throws {
+        let disk = FileManager.default.temporaryDirectory.appendingPathComponent("grow-\(UUID().uuidString).img").path
+        defer { try? FileManager.default.removeItem(atPath: disk) }
+        FileManager.default.createFile(atPath: disk, contents: Data(count: 1_000))
+        func size() throws -> Int64 { try #require(FileManager.default.attributesOfItem(atPath: disk)[.size] as? NSNumber).int64Value }
+
+        try VMImageBuilder.grow(disk, toGB: 2)
+        #expect(try size() == 2_000_000_000)
+        try VMImageBuilder.grow(disk, toGB: 1)
+        #expect(try size() == 2_000_000_000)
+    }
+}

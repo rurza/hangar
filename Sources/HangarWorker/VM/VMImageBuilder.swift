@@ -48,8 +48,22 @@ public struct VMImageBuilder: Sendable {
         return (version, build)
     }
 
+    /// The default size of a job image's disk. Clones share blocks with the image, so only what a job writes costs space.
+    public static let defaultDiskGB = 120
+
+    /// Makes a (sparse) disk file at least `gigabytes` long; a smaller request leaves it as it is.
+    static func grow(_ disk: String, toGB gigabytes: Int) throws {
+        let size = Int64(gigabytes) * 1_000_000_000
+        let current = (try? FileManager.default.attributesOfItem(atPath: disk)[.size] as? NSNumber)?.int64Value ?? 0
+        guard size > current else { return }
+        let descriptor = open(disk, O_RDWR | O_CLOEXEC)
+        guard descriptor >= 0 else { throw SecretsError.io(path: disk, errno: errno) }
+        defer { close(descriptor) }
+        guard ftruncate(descriptor, size) == 0 else { throw SecretsError.io(path: disk, errno: errno) }
+    }
+
     public func build(
-        from baseName: String, xcodePath: String, name: String?, platforms: [String], homebrew: Bool = false,
+        from baseName: String, xcodePath: String, name: String?, platforms: [String], diskGB: Int = VMImageBuilder.defaultDiskGB, homebrew: Bool = false,
         metalToolchain: Bool = false, now: Date = Date()
     ) async throws -> VMImage {
         let storage = host.storage
@@ -67,7 +81,7 @@ public struct VMImageBuilder: Sendable {
         try FileManager.default.createDirectory(atPath: partial.path + "/share", withIntermediateDirectories: true)
         do {
             let image = try await provision(base: base, into: partial, xcodePath: xcodePath, xcode: xcode, platforms: platforms,
-                homebrew: homebrew, metalToolchain: metalToolchain, now: now)
+                diskGB: diskGB, homebrew: homebrew, metalToolchain: metalToolchain, now: now)
             try FileManager.default.removeItem(atPath: partial.path + "/share")
             try? FileManager.default.removeItem(atPath: partial.path + "/askpass.sh")
             try FileManager.default.moveItem(atPath: partial.path, toPath: storage.image(name).path)
@@ -80,9 +94,10 @@ public struct VMImageBuilder: Sendable {
 
     private func provision(
         base: VMImage, into partial: VMImageDirectory, xcodePath: String, xcode: (version: String, build: String),
-        platforms: [String], homebrew: Bool, metalToolchain: Bool, now: Date
+        platforms: [String], diskGB: Int, homebrew: Bool, metalToolchain: Bool, now: Date
     ) async throws -> VMImageMetadata {
         try VMVolume.clone(base.directory.disk, to: partial.disk)
+        try Self.grow(partial.disk, toGB: diskGB)
         try VMVolume.clone(base.directory.nvram, to: partial.nvram)
         var config = base.config
         config.cpuCount = max(host.settings.cpus, config.cpuCountMin)
@@ -157,6 +172,18 @@ public struct VMImageBuilder: Sendable {
                 "read -r p && sudo -n dscl . -passwd /Users/admin \(Self.vanillaPassword) \"$p\" && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo -n tee /etc/ssh/sshd_config.d/100-hangar.conf >/dev/null",
                 input: SensitiveText(passwords.generate().value + "\n"))
         }
+        // The disk file grew before boot; the APFS container takes the new space (the vanilla image has no recovery
+        // partition behind it). A job's DerivedData and archive need room the vanilla image's 50 GB does not leave.
+        try await step("grow the system volume to the disk's size") {
+            try await ssh.require(
+                "grow the APFS container", user: "admin", host: address,
+                """
+                store=$(diskutil info / | awk -F': *' '/APFS Physical Store/ {print $2}') && \\
+                (yes | sudo -n diskutil repairDisk disk0 >/dev/null 2>&1 || true) && \\
+                sudo -n diskutil apfs resizeContainer "$store" 0 >/dev/null && \\
+                df -h / | tail -1
+                """, onLine: progress)
+        }
         // 2. builder: a standard user, no sudo, logged in automatically so the saved state holds its GUI session.
         let user = Self.buildUser
         try await step("create the build user \(user) (not an administrator) with automatic login") {
@@ -209,7 +236,7 @@ public struct VMImageBuilder: Sendable {
             try await step("download the Metal toolchain") {
                 try await ssh.require(
                     "download the Metal toolchain", user: "admin", host: address,
-                    "sudo -n xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -3", onLine: progress)
+                    "set -o pipefail; sudo -n xcodebuild -downloadComponent MetalToolchain 2>&1 | tail -3", onLine: progress)
             }
             try floor.check()
         }
@@ -217,7 +244,7 @@ public struct VMImageBuilder: Sendable {
             try await step("download the \(platform) simulator platform") {
                 try await ssh.require(
                     "download \(platform)", user: "admin", host: address,
-                    "sudo -n xcodebuild -downloadPlatform \(GuestSSH.quote(platform)) 2>&1 | tail -3", onLine: progress)
+                    "set -o pipefail; sudo -n xcodebuild -downloadPlatform \(GuestSSH.quote(platform)) 2>&1 | tail -3", onLine: progress)
             }
             try floor.check()
         }
