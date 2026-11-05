@@ -19,12 +19,16 @@ public struct SetupStatus: Codable, Equatable, Sendable {
     /// A worker already set up on this Mac (a worker configuration or a loaded launchd agent), whether or not
     /// Hangar knows its machine; "Use This Mac" never replaces it. Nil for a remote viewer.
     public var installedWorker: InstalledWorker?
+    /// The server does not run as the dedicated `hangar` user, so "Use This Mac for Builds" is refused: the worker
+    /// is set up with the install command in Terminal, which creates that user (worker isolation design).
+    public var dedicatedUserRequired: Bool
 
     public init(
         appStoreConnect: ASCKeyStatus?, github: GitHubStatus?, machines: Int, apps: Int, localWorker: Bool,
         localHostName: String? = nil, workerInstallAvailable: Bool = false, viewerIsLocal: Bool = false,
-        installedWorker: InstalledWorker? = nil
+        installedWorker: InstalledWorker? = nil, dedicatedUserRequired: Bool = false
     ) {
+        self.dedicatedUserRequired = dedicatedUserRequired
         self.appStoreConnect = appStoreConnect
         self.github = github
         self.machines = machines

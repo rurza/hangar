@@ -101,7 +101,7 @@ private struct KeyHome {
 /// this Mac (the router test client has no socket peer).
 private func setupEnvironment(
     _ keys: KeyHome, runner: RecordingProcessRunner = RecordingProcessRunner(), installer: FakeInstaller = FakeInstaller(),
-    environment: [String: String] = [:], agentLoaded: Bool = false, local: Bool = true
+    environment: [String: String] = [:], agentLoaded: Bool = false, local: Bool = true, processUser: String = "hangar"
 ) -> SetupEnvironment {
     runner.script(
         { $0.executable == "/bin/launchctl" && $0.arguments.first == "print" },
@@ -110,7 +110,7 @@ private func setupEnvironment(
     return SetupEnvironment(
         homeDirectory: keys.home.path, currentDirectory: keys.cwd.path,
         environment: ["PATH": "/usr/bin:/bin", "HOME": keys.home.path].merging(environment) { $1 },
-        runner: runner, installer: installer, isLocalPeer: { _ in local })
+        runner: runner, installer: installer, isLocalPeer: { _ in local }, processUser: processUser)
 }
 
 private func isGh(_ arguments: [String]) -> @Sendable (ProcessCommand) -> Bool {
@@ -441,7 +441,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
     private func localWorkerFixture(
         runner: RecordingProcessRunner = RecordingProcessRunner(), installer: FakeInstaller = FakeInstaller(),
         workerBinary: Bool = true, environment: [String: String] = [:], agentLoaded: Bool = false,
-        keys: KeyHome? = nil, port: Int = 8787
+        keys: KeyHome? = nil, port: Int = 8787, processUser: String = "hangar"
     ) throws -> (APIFixture, KeyHome) {
         let keys = try keys ?? KeyHome()
         scriptHostName(runner)
@@ -449,7 +449,9 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         if workerBinary { binary = try keys.write("bin/hangar-worker", in: keys.cwd, age: 0, contents: "#!/bin/sh\n") }
         let fixture = try APIFixture(
             workerBinaryPath: binary, port: port,
-            setup: setupEnvironment(keys, runner: runner, installer: installer, environment: environment, agentLoaded: agentLoaded))
+            setup: setupEnvironment(
+                keys, runner: runner, installer: installer, environment: environment, agentLoaded: agentLoaded,
+                processUser: processUser))
         return (fixture, keys)
     }
 
@@ -463,6 +465,34 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         }
         Issue.record("the install did not finish")
         return LocalWorkerInstall(state: .running)
+    }
+
+    @Test func useThisMacIsRefusedWhenTheServerIsNotTheHangarUser() async throws {
+        let installer = FakeInstaller()
+        let (fixture, _) = try localWorkerFixture(installer: installer, processUser: "adam")
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                #expect(try decode(SetupStatus.self, response).dedicatedUserRequired)
+            }
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { response throws in
+                #expect(response.status == .conflict)
+                let error = try decode(APIError.self, response)
+                #expect(error.code == "dedicated_user_required")
+                #expect(error.message.contains("not as adam"))
+                #expect(error.message.contains("curl -fsSL http://127.0.0.1:8787/install | sh"))
+            }
+        }
+        #expect(installer.runs.isEmpty, "no script ran")
+    }
+
+    @Test func theHangarUserMayStillUseThisMac() async throws {
+        let (fixture, _) = try localWorkerFixture()
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                #expect(try !decode(SetupStatus.self, response).dedicatedUserRequired)
+            }
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { #expect($0.status == .accepted) }
+        }
     }
 
     @Test func useThisMacRunsTheInstallScriptWithAFreshPairingCode() async throws {

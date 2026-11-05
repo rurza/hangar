@@ -23,7 +23,8 @@ extension HangarServerApp {
                         ?? false,
                     localHostName: hostName,
                     workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil,
-                    viewerIsLocal: local, installedWorker: local ? await setup.installedWorker() : nil))
+                    viewerIsLocal: local, installedWorker: local ? await setup.installedWorker() : nil,
+                    dedicatedUserRequired: setup.dedicatedUserRequired))
         }
 
         // MARK: App Store Connect
@@ -190,6 +191,13 @@ extension HangarServerApp {
     /// Never touches a worker already set up on this Mac.
     func startLocalWorkerInstall() async throws -> LocalWorkerInstall {
         if let current = localWorkerSetup.current, current.state == .running { return current }
+        if setup.dedicatedUserRequired {
+            // The server must not sudo, and must not build as the user that holds master.key.
+            let command = localOrigin.map { "curl -fsSL \($0)/install | sh" } ?? "the install command from Machines › Add Mac"
+            throw APIError(
+                code: "dedicated_user_required",
+                message: "Builds run as a separate macOS user, not as \(setup.processUser), who runs Hangar's server. In Terminal on this Mac, as an administrator, run \(command): it creates the hangar user and sets up the worker there.")
+        }
         guard let name = await localHostName.value(setup) else {
             throw APIError(code: "host_name_unknown", message: "Hangar cannot read this Mac's name (scutil --get LocalHostName).")
         }
