@@ -16,10 +16,10 @@ import { setupPage } from './pages/setup.js';
 
 const ICON_PATHS = {
   apps: [
-    ['rect', { x: 4, y: 4, width: 7, height: 7, rx: 2 }],
-    ['rect', { x: 13, y: 4, width: 7, height: 7, rx: 2 }],
-    ['rect', { x: 4, y: 13, width: 7, height: 7, rx: 2 }],
-    ['rect', { x: 13, y: 13, width: 7, height: 7, rx: 2 }],
+    ['rect', { x: 4.5, y: 4.5, width: 6, height: 6, rx: 1.5 }],
+    ['rect', { x: 13.5, y: 4.5, width: 6, height: 6, rx: 1.5 }],
+    ['rect', { x: 4.5, y: 13.5, width: 6, height: 6, rx: 1.5 }],
+    ['rect', { x: 13.5, y: 13.5, width: 6, height: 6, rx: 1.5 }],
   ],
   history: [
     ['circle', { cx: 12, cy: 12, r: 8.5 }],
