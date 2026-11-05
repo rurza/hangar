@@ -10,6 +10,9 @@ public struct HangarRequestContext: RemoteAddressRequestContext {
     public var machine: Machine?
     /// The connected peer; the pairing rate limit counts failures per address.
     public let remoteAddress: SocketAddress?
+    /// Set by `ProxyMark` when the request carries a reverse proxy's forwarding headers: the socket peer is then
+    /// the proxy, not the browser, so it never counts as this Mac.
+    public var relayedByProxy = false
 
     public init(source: ApplicationRequestContextSource) {
         coreContext = .init(source: source)
@@ -32,6 +35,7 @@ extension HangarServerApp {
         router.add(middleware: APIErrorMiddleware())
         // Every route, the UI's included: a DNS-rebinding page arrives under a Host that is not this server's.
         router.add(middleware: HostCheck(policy: configuration.hostPolicy))
+        router.add(middleware: ProxyMark())
         // The cross-site guard skips the worker routes, which a machine token authenticates.
         let api = router.group("api/v1").add(middleware: CrossSiteGuard())
         api.get("health") { _, _ in try Response.json(HealthResponse(ok: true, version: HangarVersion.current)) }

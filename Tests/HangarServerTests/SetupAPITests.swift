@@ -684,6 +684,26 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         }
     }
 
+    /// A reverse proxy on this Mac (`tailscale serve`, nginx) connects from loopback for every tailnet peer; its
+    /// forwarding headers make the request remote whatever the socket says.
+    @Test(arguments: ["X-Forwarded-For", "Forwarded", "X-Real-IP", "Tailscale-User-Login", "X-Forwarded-Host"])
+    func aRequestRelayedByAProxyIsNotLocal(header: String) async throws {
+        let keys = try KeyHome()
+        let fixture = try APIFixture(port: 0, setup: SetupEnvironment(
+            homeDirectory: keys.home.path, currentDirectory: keys.cwd.path, environment: [:],
+            runner: RecordingProcessRunner(), installer: FakeInstaller()))
+        let relayed: HTTPFields = [HTTPFields.Element.Name(header)!: "100.80.1.2"]
+        try await fixture.server.build().test(.live) { client in
+            try await client.execute(uri: "/api/v1/setup/asc-keys", method: .get, headers: relayed) { response throws in
+                #expect(response.status == .forbidden)
+                #expect(try decode(APIError.self, response).code == "local_only")
+            }
+            try await client.execute(uri: "/api/v1/setup", method: .get, headers: relayed) { response throws in
+                #expect(try decode(SetupStatus.self, response).viewerIsLocal == false)
+            }
+        }
+    }
+
     @Test func localPeers() {
         let interfaces: Set<String> = ["100.71.242.42", "192.168.1.20", "fe80::1"]
         for peer in ["127.0.0.1", "127.8.0.1", "::1", "100.71.242.42", "::ffff:100.71.242.42", "192.168.1.20", "fe80::1%en0"] {

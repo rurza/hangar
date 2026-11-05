@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Hummingbird
 
 /// Whether a request comes from the Mac the server runs on, judged by the socket's peer address only (never a
 /// header): loopback, the bound address or one of this Mac's interface addresses. A browser on this Mac that
@@ -38,5 +39,25 @@ enum LocalPeer {
             addresses.insert(normalize(text))
         }
         return addresses
+    }
+}
+
+/// Marks a request that a reverse proxy relayed (`tailscale serve`, nginx, Caddy...). Such a proxy on this Mac
+/// connects from loopback for every tailnet peer, so the peer address would make them all look local. A header can
+/// only take the local privilege away, never grant it, so a client adding one gains nothing.
+struct ProxyMark: RouterMiddleware {
+    typealias Context = HangarRequestContext
+
+    static let forwardingHeaders = [
+        "Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Tailscale-User-Login",
+    ].map { HTTPFields.Element.Name($0)! }
+
+    func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
+        guard Self.forwardingHeaders.contains(where: { request.headers[$0] != nil }) else {
+            return try await next(request, context)
+        }
+        var context = context
+        context.relayedByProxy = true
+        return try await next(request, context)
     }
 }

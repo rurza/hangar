@@ -95,6 +95,7 @@ extension HangarServerApp {
 
     /// The request's socket peer is this Mac. Never a header: only the channel's remote address counts.
     func viewerIsLocal(_ context: HangarRequestContext) -> Bool {
+        guard !context.relayedByProxy else { return false }
         let peer = context.remoteAddress?.ipAddress
         if let check = setup.isLocalPeer { return check(peer) }
         return LocalPeer.isLocal(peer, boundHost: configuration.host, interfaces: LocalPeer.interfaceAddresses())
