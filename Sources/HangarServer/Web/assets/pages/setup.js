@@ -686,6 +686,17 @@ function machinesStep(getStatus, onChange, context) {
       replaceChildren(local);
       return;
     }
+    if (status.dedicatedUserRequired) {
+      // Builds run as their own macOS user; creating it needs an administrator in Terminal, not the server.
+      replaceChildren(local,
+        h('p', { class: 'card-detail' },
+          `To build on ${status.localHostName}, the Mac Hangar runs on, run this in Terminal on it as an administrator. `
+          + 'It creates a separate macOS user named hangar for builds, so a build cannot read your files or '
+          + "Hangar's data, and asks you to log in as that user once."),
+        h('pre', { class: 'code-block install-log', tabindex: '0', 'aria-label': 'Install command' },
+          h('code', null, `curl -fsSL ${location.origin}/install | sh`)));
+      return;
+    }
     if (!status.workerInstallAvailable) {
       replaceChildren(local, h('p', { class: 'card-note' },
         'This server has no hangar-worker to install, so it cannot build on this Mac by itself. Reinstall the '

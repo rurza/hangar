@@ -122,18 +122,15 @@ public actor WorkerLoop {
 
     // MARK: Start-up
 
-    /// Creates the work directory, moves the workspaces into it from the data directory the first time they differ,
-    /// and removes what a crashed run left in `jobs/` (of either): each job's secrets are wiped first.
+    /// Creates the data and work directories at mode 0700, moves the workspaces into the work directory from the data
+    /// directory the first time they differ, and removes what a crashed run left in `jobs/` (of either): each job's
+    /// secrets are wiped first.
     private func prepareDataDirectory() {
         let data = URL(fileURLWithPath: configuration.dataDirectory).standardizedFileURL.path
         let work = configuration.resolvedWorkDirectory
-        do {
-            try FileManager.default.createDirectory(
-                atPath: work, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        } catch {
-            logger.error("could not create the work directory \(work): \(error)")
-            return
-        }
+        guard Self.createPrivateDirectory(data, role: "data", logger: logger),
+            Self.createPrivateDirectory(work, role: "work", logger: logger)
+        else { return }
         if work.contains(where: \.isWhitespace) {
             logger.warning("the work directory \(work) has a space in its path; scripts written for Xcode Cloud may break")
         }
@@ -158,6 +155,26 @@ public actor WorkerLoop {
                 logger.error("could not sweep leftover job directory \(name): \(error)")
             }
         }
+    }
+
+    /// Creates `path` if needed and sets it to mode 0700 with a real `chmod`: the create attribute is subject to umask
+    /// and does not change a directory that already exists. Does not walk the cache inside it. False when the
+    /// directory cannot be created; a failed chmod is only logged.
+    @discardableResult
+    static func createPrivateDirectory(_ path: String, role: String = "data", logger: Logger) -> Bool {
+        let root = URL(fileURLWithPath: path).standardizedFileURL.path
+        do {
+            try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        } catch {
+            logger.error("could not create the \(role) directory \(root): \(error)")
+            return false
+        }
+        do {
+            try WorkerPrivacy.setMode(0o700, at: root)
+        } catch {
+            logger.warning("could not set the \(role) directory \(root) to mode 0700: \(error)")
+        }
+        return true
     }
 
     /// Removes the `TMPDIR`s of jobs a crashed run left in `<work directory>/tmp`.

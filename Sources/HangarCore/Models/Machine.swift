@@ -46,13 +46,16 @@ public struct MachineReport: Codable, Equatable, Sendable {
     /// SHA-256 of the running `hangar-worker`, computed when that process started. Nil from a worker that does not
     /// report it yet. The server offers a replacement when this differs from the binary it would hand out.
     public var binarySHA256: String?
+    /// The macOS user the worker runs as (`NSUserName()`), e.g. "hangar". Nil from a worker that does not report it.
+    /// Anything other than `hangar` means a build can read that user's files (worker isolation design).
+    public var runningUser: String?
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
         canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
         xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = [],
-        binarySHA256: String? = nil
+        binarySHA256: String? = nil, runningUser: String? = nil
     ) {
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
@@ -69,11 +72,13 @@ public struct MachineReport: Codable, Equatable, Sendable {
         self.simulatorRuntimes = simulatorRuntimes
         self.capabilities = capabilities
         self.binarySHA256 = binarySHA256
+        self.runningUser = runningUser
     }
 
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
         case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities, binarySHA256
+        case runningUser
     }
 
     /// An older worker sends none of the newer fields (`signingIdentities`, `xcodeAccountSignedIn`,
@@ -95,6 +100,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
         simulatorRuntimes = try container.decodeIfPresent([String].self, forKey: .simulatorRuntimes) ?? []
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
         binarySHA256 = try container.decodeIfPresent(String.self, forKey: .binarySHA256)
+        runningUser = try container.decodeIfPresent(String.self, forKey: .runningUser)
     }
 }
 

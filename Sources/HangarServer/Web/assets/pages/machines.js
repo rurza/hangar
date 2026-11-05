@@ -221,7 +221,9 @@ function reportView(machine, jobInfo) {
       fact('Free disk', `${formatGB(report.freeDiskGB)} GB`),
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
       fact('macOS', report.macOSVersion || '–'),
-      fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn))),
+      fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn)),
+      fact('Runs as', report.runningUser || '–')),
+    runningUserWarning(report.runningUser),
     chipGroup('Xcode', xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
     // The name only; where it lives is a tooltip.
     chipGroup('Tools', tools.map(([name, detail]) => ({ text: name, title: detail || null })), 'None reported'),
@@ -238,6 +240,21 @@ function reportView(machine, jobInfo) {
             'Signing jobs skip this Mac until it can sign. As the hangar user, open Keychain Access, find the '
             + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.'))),
   ];
+}
+
+/**
+ * A warning when the worker runs as someone other than the dedicated hangar user: a build can then read that user's
+ * files. Nothing for hangar, or for an older worker that does not say.
+ */
+function runningUserWarning(user) {
+  if (!user || user === 'hangar') return null;
+  return h('div', { class: 'signing signing-warning' },
+    h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
+    h('div', null,
+      h('p', { class: 'signing-title' }, `Builds run as ${user}`),
+      h('p', { class: 'card-note' },
+        `A build on this Mac can read ${user}'s files. In Terminal on this Mac, as an administrator, run `
+        + 'hangar-worker isolate to move the worker to its own hangar user.')));
 }
 
 /** "Signed in", "Not signed in" or "–" (an older worker does not report it). */
@@ -470,8 +487,9 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
           })),
         commandBlock,
         h('p', { class: 'field-hint' },
-          'Run it as the user that builds. It installs hangar-worker into ~/.local/bin and starts it at login; '
-          + 'no sudo, no checkout.')),
+          'Run it in Terminal as an administrator. It creates a separate macOS user named hangar for builds '
+          + '(the password is generated and kept in your keychain), sets up the worker there and asks you to log '
+          + 'in as hangar once. No checkout.')),
       h('div', { class: 'code-field' },
         h('div', { class: 'field-label-row' },
           h('span', { class: 'field-label' }, 'Pairing code'),

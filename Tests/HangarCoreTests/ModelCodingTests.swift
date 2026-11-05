@@ -128,7 +128,17 @@ struct ModelCodingTests {
         let report = try JSONCoding.decoder.decode(MachineReport.self, from: Data(json.utf8))
         #expect(report.signingIdentities == [])
         #expect(report.xcodeAccountSignedIn == nil)
+        #expect(report.runningUser == nil)
         #expect(report.chip == "M4")
+    }
+
+    @Test func machineReportRunningUserRoundTrips() throws {
+        let report = MachineReport(
+            macOSVersion: "26.1", xcodes: [], chip: "M4", performanceCores: 10, memoryGB: 16, freeDiskGB: 100,
+            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [], runningUser: "hangar")
+        let data = try JSONCoding.encoder.encode(report)
+        #expect(try JSONCoding.decoder.decode(MachineReport.self, from: data) == report)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""runningUser":"hangar""#))
     }
 
     @Test func machineReportSigningDetailsRoundTrip() throws {
