@@ -19,15 +19,19 @@ struct Machines: AsyncParsableCommand {
             cli.print(Self.render(machines, now: Date(), timeZone: cli.timeZone, bold: cli.console.isTTY))
         }
 
+        /// A VM Mac (`report.vm`) shows its VM slots and its images' Xcode versions: what a job there gets.
         static func render(_ machines: [Machine], now: Date, timeZone: TimeZone, bold: Bool = false) -> String {
             let rows = machines.map { machine in
                 let report = machine.report
+                let vm = report?.vm
+                var state = (machine.isOnline(now: now) ? "online" : "offline") + (machine.paused ? ", paused" : "")
+                if let vm { state += vm.slots > 0 ? ", VM" : ", VM not ready" }
                 return [
                     machine.name,
-                    (machine.isOnline(now: now) ? "online" : "offline") + (machine.paused ? ", paused" : ""),
-                    "\(report?.runningJobIDs.count ?? 0)/\(machine.maxConcurrentJobs)",
+                    state,
+                    "\(report?.runningJobIDs.count ?? 0)/\(vm?.configuredSlots ?? machine.maxConcurrentJobs)",
                     report?.macOSVersion ?? "-",
-                    report.map { $0.xcodes.map(\.version).joined(separator: ", ") } ?? "-",
+                    report.map { (vm?.xcodeVersions ?? $0.xcodes.map(\.version)).joined(separator: ", ") } ?? "-",
                     report.map { String(format: "%.0f GB", $0.freeDiskGB) } ?? "-",
                     machine.lastSeenAt.map { Format.dateTime($0, timeZone: timeZone) } ?? "never",
                 ]

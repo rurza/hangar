@@ -42,6 +42,28 @@ import Testing
         #expect(machine["online"] != nil)
     }
 
+    @Test func listMachinesShowsAVMMacsSlotsAndImages() async throws {
+        var mini = Fixtures.machine
+        mini.report = MachineReport(
+            macOSVersion: "26.6", xcodes: [], chip: "M4", performanceCores: 10, memoryGB: 32, freeDiskGB: 300,
+            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [],
+            vm: VMReport(
+                slots: 0, configuredSlots: 1, freeSlots: 0, storageFreeGB: 120, networkFilter: false,
+                problem: "the network filter is not installed",
+                images: [VMImageInfo(name: "xcode-27.2", macOS: "26.6.2", xcode: "27.2")]))
+        transport.on("GET machines", json: [mini, Fixtures.machine])
+        let output = try await Fixtures.call("list_machines", tools)
+        #expect(!output.isError)
+        guard case .array(let machines) = try JSONCoding.decoder.decode(JSONValue.self, from: Data(output.text.utf8)),
+            case .object(let machine) = machines.first, case .object(let vm) = machine["vm"]
+        else { Issue.record("no vm: \(output.text)"); return }
+        #expect(vm["slots"] == .int(0))
+        #expect(vm["problem"] == .string("the network filter is not installed"))
+        // A Mac that builds on the host has none.
+        guard case .object(let host) = machines.last else { Issue.record("not a machine: \(output.text)"); return }
+        #expect(host["vm"] == nil)
+    }
+
     @Test func serverErrorsExplainTokenProblems() {
         let revoked = HangarAPIError.server(APIError(code: "invalid_api_token", message: "The API token is unknown or was revoked."), status: 401)
         #expect(HangarTools.describe(revoked, server: Fixtures.server).contains("Settings › Agent Access"))

@@ -208,6 +208,25 @@ import Testing
         #expect(lines.contains { $0.hasPrefix("studio") && $0.contains("offline") && !$0.contains("paused") })
     }
 
+    @Test func machinesListShowsAVMMacsSlotsAndImages() {
+        func machine(_ name: String, slots: Int) -> Machine {
+            Machine(
+                id: UUID(), name: name, maxConcurrentJobs: 1, lastSeenAt: H.t0,
+                report: MachineReport(
+                    macOSVersion: "26.6", xcodes: [InstalledXcode(version: "26.1", build: "A", path: "/Applications/Xcode.app")],
+                    chip: "M4", performanceCores: 10, memoryGB: 32, freeDiskGB: 300, onACPower: true, tools: [:],
+                    canSignWithoutPrompt: true, runningJobIDs: [UUID()],
+                    vm: VMReport(
+                        slots: slots, configuredSlots: 2, freeSlots: max(slots - 1, 0), storageFreeGB: 120,
+                        networkFilter: slots > 0, images: [VMImageInfo(name: "xcode-27.2", macOS: "26.6.2", xcode: "27.2")])),
+                createdAt: H.t0)
+        }
+        let text = Machines.List.render([machine("mini", slots: 2), machine("studio", slots: 0)], now: H.t0, timeZone: H.utc)
+        let lines = text.split(separator: "\n").map(String.init)
+        #expect(lines.contains { $0.hasPrefix("mini") && $0.contains("online, VM ") && $0.contains("1/2") && $0.contains("27.2") && !$0.contains("26.1") })
+        #expect(lines.contains { $0.hasPrefix("studio") && $0.contains("online, VM not ready") })
+    }
+
     @Test func logsFallsBackFromJobToBuild() async throws {
         let entry = LogEntry(t: H.t0, step: "archive", line: "Compiling")
         let harness = H(responses: [

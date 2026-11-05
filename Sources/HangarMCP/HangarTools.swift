@@ -605,7 +605,7 @@ public struct HangarTools: Sendable {
     var listMachines: MCPTool {
         MCPTool(
             name: "list_machines", title: "List build Macs",
-            description: "The build Macs: online, paused (builds turned off: no new jobs until its owner resumes it), running jobs, Xcode versions, simulator runtimes, tools, signing and free disk. Never tokens.",
+            description: "The build Macs: online, paused (builds turned off: no new jobs until its owner resumes it), running jobs, Xcode versions, simulator runtimes, tools, signing, free disk, and VM builds (vm: slots and images, when every job there runs in a VM). Never tokens.",
             inputSchema: Schema.object([:]), hints: .read
         ) { _ in
             try .json(try await api.machines().map { Views.machine($0, now: now()) })
