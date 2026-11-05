@@ -20,6 +20,7 @@ public enum StepName {
     public static let postClone = "post-clone"
     public static let preXcodebuild = "pre-xcodebuild"
     public static let archive = "archive"
+    public static let test = "test"
     public static let stamp = "stamp"
     public static let export = "export"
     public static let postXcodebuild = "post-xcodebuild"
@@ -28,6 +29,17 @@ public enum StepName {
 
     /// `"post-action:testflight"` for `"testflight"`.
     public static func postAction(_ name: String) -> String { "post-action:\(name)" }
+
+    /// Every step a job of `action` reports, in order. Test jobs have no stamp, export or post-actions.
+    public static func sequence(for action: WorkflowAction, postActions: [String]) -> [String] {
+        switch action.kind {
+        case .archive:
+            [checkout, postClone, preXcodebuild, archive, stamp, export, postXcodebuild]
+                + postActions.map(postAction) + [uploadArtifacts, cleanup]
+        case .test:
+            [checkout, postClone, preXcodebuild, test, postXcodebuild, uploadArtifacts, cleanup]
+        }
+    }
 }
 
 public struct StepRecord: Codable, Equatable, Sendable {
@@ -47,7 +59,7 @@ public struct StepRecord: Codable, Equatable, Sendable {
 public struct Job: Codable, Equatable, Sendable, Identifiable {
     public var id: UUID
     public var buildID: UUID
-    public var action: ArchiveAction
+    public var action: WorkflowAction
     public var status: JobStatus
     public var machineID: UUID?
     public var steps: [StepRecord]
@@ -60,7 +72,7 @@ public struct Job: Codable, Equatable, Sendable, Identifiable {
     public var finishedAt: Date?
 
     public init(
-        id: UUID, buildID: UUID, action: ArchiveAction, status: JobStatus, machineID: UUID? = nil,
+        id: UUID, buildID: UUID, action: WorkflowAction, status: JobStatus, machineID: UUID? = nil,
         steps: [StepRecord] = [], queueNote: String? = nil, failureReason: String? = nil,
         outputs: [String: String] = [:], createdAt: Date, assignedAt: Date? = nil,
         startedAt: Date? = nil, finishedAt: Date? = nil

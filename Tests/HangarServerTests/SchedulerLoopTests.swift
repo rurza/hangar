@@ -70,7 +70,7 @@ private struct FixedSource: KnownNumberSource {
     func deploy() async throws -> (Build, UUID) {
         let buildID = UUID()
         let number = try await numbers.reserve(app: app, buildID: buildID)
-        let action = ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect)
         let job = Job(id: UUID(), buildID: buildID, action: action, status: .queued, createdAt: now)
         let build = Build(
             id: buildID, appID: app.id, workflow: "release", ref: "main", commit: "abc", buildNumber: number,

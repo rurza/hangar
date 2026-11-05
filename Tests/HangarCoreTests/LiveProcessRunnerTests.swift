@@ -24,6 +24,16 @@ final class LineCollector: Sendable {
         #expect(outcome.output == "one\ntwo\nthree\nlast")
     }
 
+    @Test func canDiscardStandardError() async throws {
+        let received = LineCollector()
+        let command = ProcessCommand(
+            executable: "/bin/sh", arguments: ["-c", "echo noise >&2; echo '{}'; echo more >&2"],
+            discardsStandardError: true)
+        let outcome = try await runner.run(command) { received.append($0) }
+        #expect(outcome.output == "{}")
+        #expect(received.values == ["{}"])
+    }
+
     @Test func usesOnlyTheGivenEnvironmentAndDirectory() async throws {
         let outcome = try await runner.run(
             ProcessCommand(

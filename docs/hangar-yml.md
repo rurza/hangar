@@ -35,16 +35,44 @@ workflows:
 | `xcode` | yes | Quoted string, prefix-matched against installed Xcodes (`"27.2"`; unquoted `27.10` would become 27.1, so numbers are rejected). |
 | `team` | no | Apple developer team ID (quote it; numeric values are rejected). |
 | `tools` | no | Tool names the worker must report (for example `brew`). Default: none. |
-| `actions` | yes | One or more archive actions. |
-| `post-actions` | no | Steps run after all actions succeed, in order. Default: none. |
+| `actions` | yes | One or more archive or test actions. Each becomes one job of the build. |
+| `post-actions` | no | Steps run after each archive action succeeds, in order. Test actions have none. Default: none. |
 
 ### Action
 
-| Key | Values |
-| --- | --- |
-| `scheme` | Xcode scheme name. |
-| `platform` | `ios`, `macos`, `visionos`, `tvos`, `watchos`. |
-| `export` | `app-store-connect`, `developer-id`. |
+An action archives a scheme or runs its tests, like Xcode Cloud's Archive and Test actions. There are no Build or Analyze actions.
+
+```yaml
+    actions:
+      - { scheme: LegiloMobile, platform: ios, export: app-store-connect }              # archive (flat form)
+      - archive: { scheme: Legilo, platform: macos, export: developer-id }              # archive (explicit form)
+      - test: { scheme: LegiloMobile, platform: ios, destination: "iPhone 17 Pro", test-plan: Smoke }
+      - test: { scheme: Legilo, platform: macos }
+```
+
+| Key | Archive | Test | Values |
+| --- | --- | --- | --- |
+| `scheme` | required | required | Xcode scheme name. |
+| `platform` | required | required | `ios`, `macos`, `visionos`, `tvos`, `watchos`. |
+| `export` | required | not allowed | `app-store-connect`, `developer-id`. |
+| `destination` | not allowed | optional | A simulator name, or `recommended` (the default). Not allowed on a macOS test. |
+| `test-plan` | not allowed | optional | Test plan passed to `xcodebuild -testPlan`; default: the scheme's. |
+
+#### What a test action runs
+
+A test job runs `checkout` → `post-clone` → `pre-xcodebuild` → `test` → `post-xcodebuild` → `upload-artifacts` → `cleanup`. It has no stamp, export or post-actions. The `test` step resolves Swift packages as an archive does, then runs `xcodebuild test -scheme … -destination … [-testPlan …] -resultBundlePath <job>/result.xcresult` with the same signing flags as an archive (`-allowProvisioningUpdates`, and the team API key when there is one) and without secret variables. The worker does not need the App Store Connect key for a test job, but a deploy still does: the server reserves the build number through App Store Connect, for test-only workflows too.
+
+Destinations:
+
+- macOS tests run on the worker itself (`platform=macOS`).
+- iOS, visionOS, tvOS and watchOS tests run on a simulator from `xcrun simctl list devices available`, using the workflow's Xcode. `recommended` picks the newest runtime of the platform and its newest iPhone, Apple Vision, Apple TV or Apple Watch. A name picks the device with that name or device type (case-insensitive) on the newest runtime that has it.
+- With no simulator for the platform, the job fails before checkout ("No iOS simulator available on <machine>; install one in Xcode › Settings › Components"). The scheduler already skips machines that report no runtime for the platform ("no iOS simulator"). It knows runtimes only, not device names, so a test that names a device can go to a Mac that lacks it and fail there. Workers list runtimes with the Xcode `xcode-select` points at, every 10 minutes; the job uses the workflow's Xcode, so a runtime only one of them can use may make the two disagree.
+- Two test jobs running at once on one Mac (`maxConcurrentJobs` above 1) pick the same simulator; give test-heavy Macs one slot.
+- Test jobs need an updated worker: one from before test actions shows "update the worker (run the install command again)" in the queue note and gets no test jobs. Its archive jobs keep running.
+
+The environment has `CI_XCODEBUILD_ACTION=test`, `CI_RESULT_BUNDLE_PATH`, `CI_TEST_DESTINATION_DEVICE_TYPE` and `CI_TEST_DESTINATION_RUNTIME` (for example `iPhone 17` and `iOS 27.2`), and `CI_TEST_PLAN` when set. `CI_ARCHIVE_PATH` is not set.
+
+After the tests, pass or fail, Hangar reads the result bundle with `xcrun xcresulttool get test-results summary` (Xcode 16 or later; with an older Xcode there are no totals and the job keeps xcodebuild's reason) and logs the totals and each failing test. Failing tests fail the job with "test: 3 tests failed"; when xcodebuild fails for another reason (a compile error, say), the reason stays "test: xcodebuild exited with 65". The result bundle is uploaded as `<scheme>.xcresult.zip`, and the totals become job outputs (see the [API](api.md#test-outputs)).
 
 ### Secret variables
 
@@ -56,7 +84,7 @@ Hangar sets `CI_*` (the Xcode Cloud variables), `PATH`, `HOME`, `DEVELOPER_DIR`,
 
 ### Private Swift packages
 
-Swift packages are resolved before the archive, in a separate `xcodebuild -resolvePackageDependencies` run that uses the system git. That run, and only that run, can authenticate to github.com with the `HANGAR_GITHUB_TOKEN` variable, so private packages hosted on GitHub resolve as long as the token can read them. The archive itself then runs with automatic package resolution disabled and without the token. Packages on other hosts must be reachable without credentials.
+Swift packages are resolved before the archive (or the tests), in a separate `xcodebuild -resolvePackageDependencies` run that uses the system git. That run, and only that run, can authenticate to github.com with the `HANGAR_GITHUB_TOKEN` variable, so private packages hosted on GitHub resolve as long as the token can read them. The archive itself then runs with automatic package resolution disabled and without the token. Packages on other hosts must be reachable without credentials.
 
 ### Post-actions
 

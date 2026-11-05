@@ -69,7 +69,7 @@ let package = Package(
             .product(name: "HummingbirdTesting", package: "hummingbird"),
             .product(name: "ServiceLifecycle", package: "swift-service-lifecycle"),
         ]),
-        .testTarget(name: "HangarWorkerTests", dependencies: ["HangarWorker"]),
+        .testTarget(name: "HangarWorkerTests", dependencies: ["HangarWorker"], resources: [.copy("Fixtures")]),
         .testTarget(name: "HangarClientTests", dependencies: ["HangarClient", "HangarCore"]),
         .testTarget(name: "hangarTests", dependencies: ["hangar", "HangarClient", "HangarCore"]),
     ],

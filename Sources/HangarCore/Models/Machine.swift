@@ -12,6 +12,15 @@ public struct InstalledXcode: Codable, Equatable, Sendable {
     }
 }
 
+/// What a worker build can do beyond the original protocol; the scheduler gives a job only to workers that have every
+/// capability it needs.
+public enum WorkerCapability {
+    /// Runs test actions and decodes assignments that contain them.
+    public static let testActions = "test-actions"
+    /// Everything this build of the worker can do.
+    public static let all = [testActions]
+}
+
 public struct MachineReport: Codable, Equatable, Sendable {
     public var macOSVersion: String
     public var xcodes: [InstalledXcode]
@@ -29,12 +38,17 @@ public struct MachineReport: Codable, Equatable, Sendable {
     /// Whether Xcode on the worker has an Apple account signed in (Xcode › Settings › Accounts); nil when unknown,
     /// e.g. from an older worker.
     public var xcodeAccountSignedIn: Bool?
+    /// Simulator runtimes with at least one available device, e.g. ["iOS 27.2", "visionOS 27.1"]. Empty when the
+    /// worker reports none or predates the field.
+    public var simulatorRuntimes: [String]
+    /// `WorkerCapability` names; empty for a worker from before capabilities.
+    public var capabilities: [String]
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
         canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
-        xcodeAccountSignedIn: Bool? = nil
+        xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = []
     ) {
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
@@ -48,14 +62,17 @@ public struct MachineReport: Codable, Equatable, Sendable {
         self.runningJobIDs = runningJobIDs
         self.signingIdentities = signingIdentities
         self.xcodeAccountSignedIn = xcodeAccountSignedIn
+        self.simulatorRuntimes = simulatorRuntimes
+        self.capabilities = capabilities
     }
 
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
-        case runningJobIDs, signingIdentities, xcodeAccountSignedIn
+        case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities
     }
 
-    /// An older worker sends neither `signingIdentities` nor `xcodeAccountSignedIn`: read as none and unknown.
+    /// An older worker sends none of the newer fields (`signingIdentities`, `xcodeAccountSignedIn`,
+    /// `simulatorRuntimes`, `capabilities`): read as none and unknown.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         macOSVersion = try container.decode(String.self, forKey: .macOSVersion)
@@ -70,6 +87,8 @@ public struct MachineReport: Codable, Equatable, Sendable {
         runningJobIDs = try container.decode([UUID].self, forKey: .runningJobIDs)
         signingIdentities = try container.decodeIfPresent([String].self, forKey: .signingIdentities) ?? []
         xcodeAccountSignedIn = try container.decodeIfPresent(Bool.self, forKey: .xcodeAccountSignedIn)
+        simulatorRuntimes = try container.decodeIfPresent([String].self, forKey: .simulatorRuntimes) ?? []
+        capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
     }
 }
 

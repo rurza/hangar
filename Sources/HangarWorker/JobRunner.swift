@@ -2,13 +2,18 @@ import Foundation
 import HangarAppStoreConnect
 import HangarCore
 import Logging
+import SystemConfiguration
+import Synchronization
 
-/// Runs one assigned job end to end in the order the spec fixes:
+/// Runs one assigned job end to end in the order the spec fixes (`StepName.sequence(for:postActions:)`):
 /// `checkout` → `post-clone` → `pre-xcodebuild` → `archive` → `stamp` → `export` → `post-xcodebuild` →
-/// `post-action:<name>`… → `upload-artifacts` → `cleanup`.
+/// `post-action:<name>`… → `upload-artifacts` → `cleanup` for an archive, and
+/// `checkout` → `post-clone` → `pre-xcodebuild` → `test` → `post-xcodebuild` → `upload-artifacts` → `cleanup`
+/// for a test.
 ///
-/// The job's environment is prepared inside the `checkout` step, before any git command: Xcode is picked, the CI
-/// environment merged with the job's variables, as-file variables written, and the App Store Connect key checked.
+/// The job's environment is prepared inside the `checkout` step, before any git command: Xcode is picked, a test's
+/// simulator chosen, the CI environment merged with the job's variables, as-file variables written, and for an
+/// archive the App Store Connect key checked.
 /// When that fails, `checkout` reports `failed` and the failure reason is the preparation error alone.
 ///
 /// Secrets never leave the machine unmasked: every line goes through `JobLog`, which masks each secret value and the
@@ -23,12 +28,15 @@ public struct JobRunner: Sendable {
     private let runner: any ProcessRunner
     private let locator: XcodeLocator
     private let dataDirectory: String
+    /// Names this Mac in failure reasons.
+    private let machineName: String
     private let clock: any Clock<Duration>
     private let appStoreConnectFactory: AppStoreConnectFactory
     private let logger = Logger(label: "app.hangar.worker.job")
 
     public init(
         connection: any ServerConnection, runner: any ProcessRunner, locator: XcodeLocator, dataDirectory: String,
+        machineName: String = JobRunner.computerName,
         clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
@@ -38,6 +46,7 @@ public struct JobRunner: Sendable {
         self.runner = runner
         self.locator = locator
         self.dataDirectory = dataDirectory
+        self.machineName = machineName
         self.clock = clock
         self.appStoreConnectFactory = appStoreConnectFactory
     }
@@ -52,6 +61,8 @@ public struct JobRunner: Sendable {
         var developerDir: String
         /// Nil for an individual key: xcodebuild then signs with the Xcode account on this Mac.
         var key: ASCKeyArguments?
+        /// Test jobs only.
+        var testDestination: TestDestination?
     }
 
     public func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
@@ -81,10 +92,12 @@ public struct JobRunner: Sendable {
 
         var outputs: [String: String] = [:]
         if let prepared {
-            outputs = await build(assignment, prepared: prepared, layout: layout, log: log, pipeline: &pipeline)
+            outputs = await build(
+                assignment, prepared: prepared, layout: layout, log: log, masker: masker, pipeline: &pipeline)
         } else {
-            let later = [StepName.postClone, StepName.preXcodebuild, StepName.archive, StepName.stamp, StepName.export,
-                         StepName.postXcodebuild] + assignment.workflow.postActions.map { StepName.postAction($0.name) }
+            let sequence = StepName.sequence(
+                for: assignment.job.action, postActions: assignment.workflow.postActions.map(\.name))
+            let later = sequence.filter { ![StepName.checkout, StepName.uploadArtifacts, StepName.cleanup].contains($0) }
             for name in later { await pipeline.skip(name) }
         }
 
@@ -118,6 +131,12 @@ public struct JobRunner: Sendable {
         await reportFinish(jobID: jobID, result)
         return result
     }
+
+    /// The Mac's computer name (System Settings › General › Sharing), read once without a DNS lookup.
+    public static let computerName: String = {
+        if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty { return name }
+        return "this Mac"
+    }()
 
     /// Delays between attempts to report a job's result; five attempts in all.
     static let finishRetryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
@@ -158,6 +177,10 @@ public struct JobRunner: Sendable {
         }
         log("using Xcode \(xcode.version) (\(xcode.build)) at \(xcode.path)")
         let developerDir = xcode.path + "/Contents/Developer"
+        let testDestination = action.kind == .test ? try await destination(for: action, developerDir: developerDir) : nil
+        if let testDestination {
+            log("testing on \([testDestination.deviceType, testDestination.runtime].compactMap { $0 }.joined(separator: ", "))")
+        }
         let paths = CIEnvironment.Paths(
             repository: layout.repository, projectFile: layout.repository + "/" + workflow.projectOrWorkspacePath,
             derivedData: layout.derivedData, archive: layout.archive(scheme: action.scheme),
@@ -165,26 +188,54 @@ public struct JobRunner: Sendable {
         let ci = CIEnvironment.make(
             app: assignment.app, workflow: assignment.workflowName, action: action, buildNumber: assignment.buildNumber,
             jobID: assignment.job.id, buildID: assignment.job.buildID, commit: assignment.commit, ref: assignment.ref,
-            teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH)
+            teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH,
+            testDestination: testDestination)
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
         // TMPDIR must exist before the first hook; cleanup removes it with the job directory.
         try FileManager.default.createDirectory(
             atPath: layout.temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         merged.warnings.forEach(log)
         try materializer.write(merged.filesToWrite)
-        guard Self.nonEmpty(merged.env["HANGAR_ASC_KEY_ID"]) != nil, Self.nonEmpty(merged.env["HANGAR_ASC_KEY_PATH"]) != nil
-        else { throw PreparationError.appStoreConnectKeyMissing }
+        // Tests sign with the key when there is one, but do not need it.
+        let keyConfigured = Self.nonEmpty(merged.env["HANGAR_ASC_KEY_ID"]) != nil
+            && Self.nonEmpty(merged.env["HANGAR_ASC_KEY_PATH"]) != nil
+        if action.kind == .archive, !keyConfigured { throw PreparationError.appStoreConnectKeyMissing }
         let key = ASCKeyArguments(environment: merged.env)
-        if key == nil { log("No team API key; xcodebuild signs with the Xcode account on this Mac.") }
+        if key == nil, action.kind == .archive { log("No team API key; xcodebuild signs with the Xcode account on this Mac.") }
         let secretNames = Set(assignment.environment.filter(\.isSecret).map(\.name))
         return Prepared(
             environment: merged.env, xcodebuildEnvironment: merged.env.filter { !secretNames.contains($0.key) },
-            developerDir: developerDir, key: key)
+            developerDir: developerDir, key: key, testDestination: testDestination)
+    }
+
+    /// `platform=macOS` for macOS; otherwise the simulator `SimulatorCatalog.select` picks from this Mac's list,
+    /// read with the job's Xcode.
+    private func destination(for action: WorkflowAction, developerDir: String) async throws -> TestDestination {
+        if action.platform == .macOS { return TestDestination(xcodebuildDestination: "platform=macOS", deviceType: "Mac") }
+        var environment = CIEnvironment.identityEnvironment(from: ProcessInfo.processInfo.environment)
+        environment["DEVELOPER_DIR"] = developerDir
+        environment["PATH"] = Self.basePATH
+        let command = ProcessCommand(
+            executable: "/usr/bin/xcrun", arguments: SimulatorCatalog.listArguments, environment: environment,
+            discardsStandardError: true)
+        let outcome = try await runner.run(command, onLine: { _ in })
+        let devices = outcome.exitCode == 0 ? SimulatorCatalog.devices(fromJSON: Data(outcome.output.utf8)) : []
+        let platform = action.platform.ciName
+        guard let device = SimulatorCatalog.select(platform: action.platform, destination: action.destination, from: devices)
+        else {
+            let available = devices.filter { $0.platform == action.platform }.map(\.name)
+            if let name = action.destination, !available.isEmpty {
+                throw PreparationError.simulatorNotFound(
+                    name: name, platform: platform, machine: machineName, available: Array(Set(available)).sorted())
+            }
+            throw PreparationError.noSimulator(platform: platform, machine: machineName)
+        }
+        return device.testDestination
     }
 
     /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs.
     private func build(
-        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog,
+        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog, masker: SecretMasker,
         pipeline: inout JobPipeline
     ) async -> [String: String] {
         let workflow = assignment.workflow
@@ -201,6 +252,15 @@ public struct JobRunner: Sendable {
                 try await hooks.run(hook, scriptsDirectory: scripts, environment: environment, log: log.lines(name))
             }
         }
+        switch action.kind {
+        case .archive: break
+        case .test:
+            guard let destination = prepared.testDestination else { preconditionFailure("prepare picks a test's destination") }
+            let summary = await test(
+                assignment, prepared: prepared, destination: destination, layout: layout, log: log, pipeline: &pipeline,
+                hooks: hooks, scripts: scripts)
+            return summary?.masked(by: masker.mask).outputs ?? [:]
+        }
         await pipeline.step(StepName.archive, .xcodebuild) { [runner] in
             try await ArchiveStep(runner: runner).run(
                 workflow: workflow, action: action, repository: layout.repository, layout: layout,
@@ -211,9 +271,10 @@ public struct JobRunner: Sendable {
             try BuildNumberStamper().stamp(
                 archivePath: archivePath, buildNumber: assignment.buildNumber, log: log.lines(StepName.stamp))
         }
+        guard let export = action.export else { preconditionFailure("the parser requires an archive's export") }
         let exported = await pipeline.step(StepName.export, .xcodebuild) { [runner] in
             try await ExportStep(runner: runner).run(
-                archivePath: archivePath, method: action.export, destination: "export", exportPath: layout.export,
+                archivePath: archivePath, method: export, destination: "export", exportPath: layout.export,
                 jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
                 key: prepared.key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
                 log: log.lines(StepName.export))
@@ -245,6 +306,34 @@ public struct JobRunner: Sendable {
             }
         }
         return outputs
+    }
+
+    /// `test` and `post-xcodebuild` of a test job; returns the summary when the result bundle could be read, whether
+    /// the tests passed or not.
+    private func test(
+        _ assignment: JobAssignment, prepared: Prepared, destination: TestDestination, layout: WorkspaceLayout,
+        log: JobLog, pipeline: inout JobPipeline, hooks: HookRunner, scripts: String
+    ) async -> TestSummary? {
+        let action = assignment.job.action
+        let summary = Captured<TestSummary?>(nil)
+        await pipeline.step(StepName.test, .xcodebuild) { [runner] in
+            let run = try await TestStep(runner: runner).run(
+                workflow: assignment.workflow, action: action, repository: layout.repository, layout: layout,
+                developerDir: prepared.developerDir, destination: destination, key: prepared.key,
+                environment: prepared.xcodebuildEnvironment, gitHubToken: prepared.environment["HANGAR_GITHUB_TOKEN"],
+                log: log.lines(StepName.test))
+            summary.set(run.summary)
+            try run.check()
+        }
+        let additions = CIEnvironment.postXcodebuildAdditions(
+            exitCode: pipeline.xcodebuildExitCode ?? 0, action: action, exportedAppPath: nil)
+        await pipeline.step(StepName.postXcodebuild, .postXcodebuild, skippedIf: { $0 == .absent }) {
+            try await hooks.run(
+                .postXcodebuild, scriptsDirectory: scripts,
+                environment: prepared.environment.merging(additions) { _, new in new },
+                log: log.lines(StepName.postXcodebuild))
+        }
+        return summary.get()
     }
 
     /// Credentials from the reserved variables; the private key is read from the file `HANGAR_ASC_KEY_PATH` names,
@@ -288,4 +377,12 @@ public struct JobRunner: Sendable {
         }
         return succeeded
     }
+}
+
+/// A value a `@Sendable` step body hands back to the code around it.
+final class Captured<Value: Sendable>: Sendable {
+    private let value: Mutex<Value>
+    init(_ value: Value) { self.value = Mutex(value) }
+    func get() -> Value { value.withLock { $0 } }
+    func set(_ new: Value) { value.withLock { $0 = new } }
 }

@@ -9,8 +9,17 @@ public struct QueuedJob: Sendable {
     public var xcode: String
     public var tools: [String]
     public var pinnedMachineID: UUID?
+    /// Set for a test on a simulator platform: the machine needs a runtime of it.
+    public var simulatorPlatform: Platform?
+    /// `WorkerCapability` names the worker must report.
+    public var requiredCapabilities: Set<String>
 
-    public init(id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?) {
+    public init(
+        id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?,
+        simulatorPlatform: Platform? = nil, requiredCapabilities: Set<String> = []
+    ) {
+        self.simulatorPlatform = simulatorPlatform
+        self.requiredCapabilities = requiredCapabilities
         self.id = id
         self.buildID = buildID
         self.createdAt = createdAt
@@ -33,11 +42,17 @@ public struct MachineSnapshot: Sendable {
     public var performanceCores: Int
     public var onACPower: Bool
     public var canSign: Bool
+    /// "iOS 27.2"…, as the machine reports them.
+    public var simulatorRuntimes: [String]
+    public var capabilities: Set<String>
 
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
-        tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool
+        tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
+        simulatorRuntimes: [String] = [], capabilities: Set<String> = []
     ) {
+        self.simulatorRuntimes = simulatorRuntimes
+        self.capabilities = capabilities
         self.id = id
         self.name = name
         self.isOnline = isOnline
@@ -61,6 +76,10 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case toolMissing(String)
     case cannotSign
     case notPinned
+    /// No simulator runtime of this platform ("iOS").
+    case simulatorMissing(String)
+    /// The worker lacks a capability the job needs: it predates the feature.
+    case workerOutdated
 
     public var description: String {
         switch self {
@@ -71,6 +90,8 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
         case .toolMissing(let tool): "\(tool) not installed"
         case .cannotSign: "cannot sign without a prompt"
         case .notPinned: "job is pinned to another machine"
+        case .simulatorMissing(let platform): "no \(platform) simulator"
+        case .workerOutdated: "update the worker (run the install command again)"
         }
     }
 
@@ -138,6 +159,8 @@ public enum Scheduler {
     static func ineligibility(of job: QueuedJob, on machine: MachineSnapshot, minFreeDiskGB: Double) -> [Ineligibility] {
         if let pinned = job.pinnedMachineID, pinned != machine.id { return [.notPinned] }
         guard machine.isOnline else { return [.offline] }
+        // An outdated worker could not even read the assignment; its other data says nothing about this job.
+        guard job.requiredCapabilities.isSubset(of: machine.capabilities) else { return [.workerOutdated] }
         var reasons: [Ineligibility] = []
         if machine.freeSlots <= 0 { reasons.append(.busy) }
         if !machine.xcodeVersions.contains(where: { XcodeVersion.matches(requested: job.xcode, installed: $0) }) {
@@ -148,6 +171,11 @@ public enum Scheduler {
         }
         reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing)
         if !machine.canSign { reasons.append(.cannotSign) }
+        if let platform = job.simulatorPlatform,
+            !machine.simulatorRuntimes.contains(where: { $0.hasPrefix(platform.ciName + " ") })
+        {
+            reasons.append(.simulatorMissing(platform.ciName))
+        }
         return reasons
     }
 

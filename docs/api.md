@@ -15,7 +15,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /health` | | `200` `{"ok": true, "version": "0.3.0"}` |
+| `GET /health` | | `200` `{"ok": true, "version": "0.4.0"}` |
 | `GET /apps` | | `200` `[App]`; apps without `iconURL` get one resolved in the background (at most one attempt per app per hour), shown on a later request |
 | `POST /apps` | `CreateAppRequest` | `201` `App`; `400` `invalid_input` when `iconURL` is not an https URL with a host; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
 | `GET /apps/{id}` | | `200` `App` |
@@ -65,6 +65,14 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /apps/{id}/workflow-suggestion?ref=&bundleID=` | both optional; `ref` defaults to the default branch | `200` `WorkflowSuggestion` `{commit, yaml, notes, workflows: WorkflowFile, schemes: [DetectedScheme], icon: DetectedIcon?, hasWorkflowFile}`: a `release` workflow worked out from the repository (with the app's token, as `.hangar.yml` reads): the top-most workspace (not one inside a project, nor deeper than the top-most project), else project, else the project XcodeGen's `project.yml` generates; shared schemes (else XcodeGen's, else the application targets), each scheme's platform from XcodeGen or the target's `SDKROOT`; the team; the highest Xcode version online machines report; `tools` (`xcodegen`, and `brew` when `ci_scripts` use it); export `app-store-connect` and no post-actions. When the repository builds several apps, only the schemes of the app with `bundleID` (else this app's bundle ID from App Store Connect, `GET /v1/apps/{id}`) are archived; without either, every app's are, with a note. `yaml` parses to `workflows`; `notes` say what was guessed. `schemes` lists every scheme found, sorted. `icon` is the first app's: the largest image of its `.appiconset` (`kind: "appiconset"`) or an Icon Composer `.icon` bundle (`kind: "iconcomposer"`, which only a build can render). `Pods`, `Carthage`, `.build`, `DerivedData` and `node_modules` are skipped. Nothing is stored. `422` `no_project_found`; `504` `detection_timeout` after 15 s; `404` `ref_not_found` |
 | `GET /apps/{id}/repo-icon?ref=` | `ref` optional | `200` the image of the `appiconset` icon `workflow-suggestion` finds, cached in memory for an hour; `404` `icon_not_found` when there is none (or only an Icon Composer icon) |
 | `GET /events` | | SSE stream, see below |
+
+### Jobs
+
+A `Job`'s `action` is the workflow action it runs: `{kind: "archive", scheme, platform, export}` or `{kind: "test", scheme, platform, destination?, testPlan?}` (an action without `kind`, stored before test actions existed, is an archive). A deploy creates one job per action of either kind; they share the build's number. A test job's `steps` are `checkout`, `post-clone`, `pre-xcodebuild`, `test`, `post-xcodebuild`, `upload-artifacts` and `cleanup`.
+
+#### Test outputs
+
+Once its result bundle is read, a test job's `outputs` hold, as strings: `test.passed`, `test.failed`, `test.skipped`, `test.total`, and `test.failures`, a JSON array of `{name, message}` (one per failing test, its first failure message; at most 50, secrets masked). A `Machine`'s report lists `simulatorRuntimes` (`["iOS 27.2", "visionOS 27.1"]`); the scheduler does not give a simulator test to a machine without a runtime for its platform.
 
 Numbers and deploys ask App Store Connect and Xcode Cloud for the highest known build number. They need the global variables `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` (the `.p8` contents), plus `HANGAR_ASC_ISSUER_ID` for a team key; without an issuer ID the key is used as an individual key (JWT `sub: "user"`, no `iss`). The server reads them on every request.
 

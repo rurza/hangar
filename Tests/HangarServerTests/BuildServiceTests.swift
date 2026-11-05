@@ -25,6 +25,12 @@ private let legilo = """
         xcode: "27.2"
         actions:
           - { scheme: Legilo, platform: macos, export: developer-id }
+      ci:
+        project: Legilo.xcodeproj
+        xcode: "27.2"
+        actions:
+          - test: { scheme: LegiloTests, platform: ios, destination: "iPhone 17 Pro" }
+          - archive: { scheme: Legilo, platform: macos, export: app-store-connect }
     """
 
 private struct FixedSource: KnownNumberSource {
@@ -146,6 +152,15 @@ final class FakeSourceHost: SourceHost {
         #expect(try builds.highestAssigned(appID: app.id) == 306)
     }
 
+    @Test func deployCreatesTestAndArchiveJobsWithTheirKind() async throws {
+        let build = try await service.deploy(request(workflow: "ci"))
+        #expect(build.jobs.map(\.action) == [
+            .test(scheme: "LegiloTests", platform: .iOS, destination: "iPhone 17 Pro"),
+            WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect),
+        ])
+        #expect(try builds.build(id: build.id)?.jobs.map(\.action.kind) == [.test, .archive])
+    }
+
     @Test func deployPublishesTheBuildOnce() async throws {
         var iterator = events.subscribe().makeAsyncIterator()
         let build = try await service.deploy(request())
@@ -210,7 +225,7 @@ final class FakeSourceHost: SourceHost {
     }
 
     @Test func unknownWorkflowListsAvailable() async throws {
-        await #expect(throws: DeployError.workflowNotFound(name: "nightly", available: ["beta", "testflight"])) {
+        await #expect(throws: DeployError.workflowNotFound(name: "nightly", available: ["beta", "ci", "testflight"])) {
             _ = try await service.deploy(request(workflow: "nightly"))
         }
         #expect(try builds.highestAssigned(appID: app.id) == nil)
@@ -270,7 +285,7 @@ final class FakeSourceHost: SourceHost {
     @Test func workflowsListsTheFileAtTheCommit() async throws {
         let result = try await service.workflows(app: app, ref: "main")
         #expect(result.commit == "0123456789abcdef0123456789abcdef01234567")
-        #expect(result.file.workflows.keys.sorted() == ["beta", "testflight"])
+        #expect(result.file.workflows.keys.sorted() == ["beta", "ci", "testflight"])
     }
 
     @Test func repositoryFileUsedWhenNoneStored() async throws {

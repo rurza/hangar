@@ -96,7 +96,7 @@ struct CLIHarness {
 
     static func job(status: JobStatus = .queued, steps: [StepRecord] = [], queueNote: String? = nil) -> Job {
         Job(
-            id: jobID, buildID: buildID, action: ArchiveAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
+            id: jobID, buildID: buildID, action: WorkflowAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
             status: status, machineID: status == .queued ? nil : machineID, steps: steps, queueNote: queueNote,
             createdAt: t0)
     }

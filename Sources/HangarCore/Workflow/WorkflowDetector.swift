@@ -190,7 +190,7 @@ extension WorkflowDetector {
         var wanted: [String] = []
         var notes: [String] = []
         var schemes: [DetectedScheme] = []
-        var actions: [ArchiveAction] = []
+        var actions: [WorkflowAction] = []
         var team: String?
         var tools: [String] = []
         var icon: DetectedIcon?
@@ -314,7 +314,7 @@ extension WorkflowDetector {
                 if scheme.platform == nil {
                     notes.append("Couldn't tell which platform \(scheme.name) builds for, so it is set to macOS.")
                 }
-                return ArchiveAction(scheme: scheme.name, platform: scheme.platform ?? .macOS, export: .appStoreConnect)
+                return WorkflowAction(scheme: scheme.name, platform: scheme.platform ?? .macOS, export: .appStoreConnect)
             }
 
             let primary = chosen.first.flatMap { scheme in found.first { $0.name == scheme.name }?.target }

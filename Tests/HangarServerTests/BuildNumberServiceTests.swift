@@ -45,7 +45,7 @@ private struct FakeASC: AppStoreConnectClient {
 
     static let workflow = Workflow(
         project: "App.xcodeproj", xcode: "27.2",
-        actions: [ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
+        actions: [WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
 
     static let standard: [any KnownNumberSource] = [
         FakeSource("app-store-connect", 300), FakeSource("xcode-cloud", 305), FakeSource("appcast", nil),
@@ -90,7 +90,7 @@ private struct FakeASC: AppStoreConnectClient {
                 jobs: [
                     Job(
                         id: jobID, buildID: buildID,
-                        action: ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect),
+                        action: WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect),
                         status: .queued, createdAt: now)
                 ]),
             workflow: Self.workflow)

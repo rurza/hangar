@@ -1383,7 +1383,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 
 .action-head, .action-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.4fr) 72px;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.4fr) 72px;
   gap: var(--space-1);
   align-items: center;
 }
@@ -1577,6 +1577,20 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
   animation: pulse 1.6s ease-in-out infinite;
 }
 .step-running svg { display: none; }
+
+.job-tests { display: grid; gap: var(--space-1); }
+.test-totals { font: var(--callout); letter-spacing: -0.32px; font-variant-numeric: tabular-nums; }
+.test-failures { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.test-failure {
+  display: grid;
+  gap: 2px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--failure) 8%, transparent);
+  overflow-wrap: anywhere;
+}
+.test-failure-name { font-weight: 600; }
+.test-failure-message { color: var(--secondary); font: var(--footnote); white-space: pre-wrap; }
 
 .job-outputs .fact-value { overflow-wrap: anywhere; text-align: right; min-width: 0; }
 

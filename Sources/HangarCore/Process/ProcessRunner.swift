@@ -7,14 +7,18 @@ public struct ProcessCommand: Sendable, Equatable {
     /// The complete environment of the child; nothing is inherited.
     public var environment: [String: String]
     public var currentDirectory: String?
+    /// Sends stderr to /dev/null, for tools whose stdout is parsed (JSON from `simctl` or `xcresulttool`).
+    public var discardsStandardError: Bool
 
     public init(
-        executable: String, arguments: [String], environment: [String: String] = [:], currentDirectory: String? = nil
+        executable: String, arguments: [String], environment: [String: String] = [:], currentDirectory: String? = nil,
+        discardsStandardError: Bool = false
     ) {
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
         self.currentDirectory = currentDirectory
+        self.discardsStandardError = discardsStandardError
     }
 }
 
@@ -30,7 +34,8 @@ public struct ProcessOutcome: Sendable, Equatable {
 }
 
 /// Every external tool (git, xcodebuild, hooks, codesign) runs through this seam.
-/// stdout and stderr are merged and delivered line by line, in order of arrival.
+/// stdout and stderr are merged and delivered line by line, in order of arrival (stderr is dropped instead when the
+/// command `discardsStandardError`).
 public protocol ProcessRunner: Sendable {
     func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome
 }
@@ -100,7 +105,7 @@ extension LiveProcessRunner {
             }
             let pipe = Pipe()
             process.standardOutput = pipe
-            process.standardError = pipe
+            process.standardError = command.discardsStandardError ? FileHandle.nullDevice : pipe
             process.standardInput = FileHandle.nullDevice
             let handle = pipe.fileHandleForReading
 

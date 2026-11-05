@@ -18,6 +18,7 @@ const STEP_LABELS = {
   'post-clone': 'Post-clone script',
   'pre-xcodebuild': 'Pre-xcodebuild script',
   archive: 'Archive',
+  test: 'Test',
   stamp: 'Stamp build number',
   export: 'Export',
   'post-xcodebuild': 'Post-xcodebuild script',
@@ -33,9 +34,38 @@ const OUTPUT_LABELS = {
 
 // MARK: Shared helpers
 
-/** "LegiloMobile · iOS" for an `ArchiveAction`. */
+/** "Archive – iOS · LegiloMobile" or "Test – iOS · LegiloTests" for a `WorkflowAction`. */
 export function actionLabel(action) {
-  return `${action?.scheme ?? '?'} · ${PLATFORM_NAMES[action?.platform] ?? action?.platform ?? '?'}`;
+  const kind = action?.kind === 'test' ? 'Test' : 'Archive';
+  return `${kind} – ${PLATFORM_NAMES[action?.platform] ?? action?.platform ?? '?'} · ${action?.scheme ?? '?'}`;
+}
+
+/** A test job's results from its `test.*` outputs, or null before they are in. */
+function testResults(job) {
+  const outputs = job.outputs ?? {};
+  if (job.action?.kind !== 'test' || outputs['test.total'] === undefined) return null;
+  let failures = [];
+  try {
+    const parsed = JSON.parse(outputs['test.failures'] ?? '[]');
+    if (Array.isArray(parsed)) failures = parsed.filter((failure) => failure && typeof failure.name === 'string');
+  } catch {
+    // A list that cannot be read leaves just the totals.
+  }
+  const count = (key) => outputs[key] ?? '0';
+  return { totals: `${count('test.passed')} passed · ${count('test.failed')} failed · ${count('test.skipped')} skipped`, failures };
+}
+
+function testsView(job) {
+  const results = testResults(job);
+  if (!results) return null;
+  return h('div', { class: 'job-tests' },
+    h('h3', { class: 'job-subtitle' }, 'Tests'),
+    h('p', { class: 'test-totals' }, results.totals),
+    results.failures.length
+      ? h('ul', { class: 'test-failures', 'aria-label': 'Failing tests' }, results.failures.map((failure) => h('li', { class: 'test-failure' },
+        h('span', { class: 'test-failure-name mono' }, failure.name),
+        failure.message ? h('span', { class: 'test-failure-message' }, String(failure.message)) : null)))
+      : null);
 }
 
 /** A machine is online when it was seen within the last 90 seconds. */
@@ -315,13 +345,17 @@ function jobCardView(initial, { machines, live, signal }) {
             : null)),
       statusBadge(job.status));
 
-    const outputs = Object.entries(job.outputs ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    // A test job's `test.*` outputs are shown as its Tests section instead.
+    const outputs = Object.entries(job.outputs ?? {})
+      .filter(([key]) => !key.startsWith('test.'))
+      .sort(([a], [b]) => a.localeCompare(b));
     replaceChildren(body,
       job.status === 'queued' && job.queueNote ? h('p', { class: 'queue-note' }, job.queueNote) : null,
       job.steps?.length
         ? h('ol', { class: 'steps', 'aria-label': 'Steps' }, job.steps.map((step) => stepRow(step, job, live)))
         : h('p', { class: 'card-detail' }, isTerminal(job.status) ? 'No steps ran.' : 'Steps appear once a machine starts the job.'),
       job.failureReason ? h('p', { class: 'failure-reason', role: 'note' }, job.failureReason) : null,
+      testsView(job),
       outputs.length
         ? h('dl', { class: 'facts job-outputs' }, outputs.map(([key, value]) => h('div', { class: 'fact' },
           h('dt', { class: 'fact-label' }, OUTPUT_LABELS[key] ?? key),

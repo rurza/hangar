@@ -1,6 +1,8 @@
 // Writes a workflow file as `.hangar.yml` text (docs/hangar-yml.md). The input has the API's JSON shape of
 // `WorkflowFile`: `{version, workflows: {name: {project | workspace, xcode, teamID, tools, actions, postActions}}}`,
-// with `postActions` as `[{name, settings, requiresApproval}]`.
+// with `postActions` as `[{name, settings, requiresApproval}]` and `actions` as archives
+// `{kind: 'archive', scheme, platform, export}` (no `kind` also means an archive) or tests
+// `{kind: 'test', scheme, platform, destination?, testPlan?}`.
 //
 // This file has no imports and ends with a single `export` line, so the round-trip test can load it in JXA
 // (`osascript -l JavaScript`) after stripping that line.
@@ -54,6 +56,13 @@ function string(text) {
   return needsQuotes(value) ? quoted(value) : value;
 }
 
+/** Like `string`, but quoted unless it is a run of ASCII letters, digits and `._/-` (as the Swift writer does):
+ * for simulator names and test plans, which often have spaces and parentheses. */
+function name(text) {
+  const value = String(text);
+  return /^[A-Za-z/][A-Za-z0-9._/-]*$/.test(value) && !RESERVED.test(value) ? value : quoted(value);
+}
+
 /** Any settings value: booleans and numbers stay bare, strings follow `string`, lists and maps are flow style. */
 function value(item) {
   if (item === null || item === undefined) return 'null';
@@ -92,6 +101,15 @@ function settingsEntries(spec) {
   return entries;
 }
 
+/** Archives in the flat form, tests as `test: { ... }` with only the fields they set. */
+function actionLine(action) {
+  const fields = [`scheme: ${string(action.scheme)}`, `platform: ${string(action.platform)}`];
+  if (action.kind !== 'test') return `{ ${[...fields, `export: ${string(action.export)}`].join(', ')} }`;
+  if (action.destination !== undefined && action.destination !== null) fields.push(`destination: ${name(action.destination)}`);
+  if (action.testPlan !== undefined && action.testPlan !== null) fields.push(`test-plan: ${name(action.testPlan)}`);
+  return `test: { ${fields.join(', ')} }`;
+}
+
 function workflowLines(name, workflow) {
   const lines = [`  ${string(name)}:`];
   if (workflow.workspace !== undefined && workflow.workspace !== null) {
@@ -104,9 +122,7 @@ function workflowLines(name, workflow) {
   const tools = workflow.tools ?? [];
   if (tools.length) lines.push(`    tools: [${tools.map(string).join(', ')}]`);
   lines.push('    actions:');
-  for (const action of workflow.actions ?? []) {
-    lines.push(`      - { scheme: ${string(action.scheme)}, platform: ${string(action.platform)}, export: ${string(action.export)} }`);
-  }
+  for (const action of workflow.actions ?? []) lines.push(`      - ${actionLine(action)}`);
   const postActions = workflow.postActions ?? [];
   if (postActions.length) {
     lines.push('    post-actions:');

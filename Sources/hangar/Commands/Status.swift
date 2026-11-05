@@ -53,11 +53,13 @@ struct Status: HangarCommand {
         ]
         for job in build.jobs {
             lines.append("")
-            var heading = "[\(Format.label(job.action))] \(job.status.rawValue)"
+            // The kind label says archive or test, so the bracket is the plain `scheme/platform`.
+            var heading = "[\(job.action.scheme)/\(job.action.platform.rawValue)] \(job.action.kindLabel) \(job.status.rawValue)"
             if job.machineID != nil { heading += " on \(machineName(job.machineID, machines))" }
             if let note = job.queueNote { heading += ": \(note)" }
             if let reason = job.failureReason { heading += ": \(reason)" }
             lines.append(heading + "  (job \(job.id.uuidString.lowercased()))")
+            lines += testSummary(job)
             guard !job.steps.isEmpty else { continue }
             let rows = job.steps.map { step in
                 [
@@ -69,6 +71,20 @@ struct Status: HangarCommand {
             lines.append(Table(headers: ["STEP", "STATUS", "STARTED", "DURATION"], rows: rows).render())
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// "Tests: 40 passed · 2 failed · 1 skipped" and a line per failing test (its message's first line), from the
+    /// job's `test.*` outputs; nothing before the results are in.
+    static func testSummary(_ job: Job) -> [String] {
+        let outputs = job.outputs
+        guard job.action.kind == .test, let passed = outputs["test.passed"] else { return [] }
+        var lines = ["Tests: \(passed) passed · \(outputs["test.failed"] ?? "0") failed · \(outputs["test.skipped"] ?? "0") skipped"]
+        struct Failure: Decodable { var name: String; var message: String }
+        let failures = outputs["test.failures"].flatMap { try? JSONDecoder().decode([Failure].self, from: Data($0.utf8)) } ?? []
+        for failure in failures {
+            lines.append("  ✗ \(failure.name): \(failure.message.split(separator: "\n").first.map(String.init) ?? "")")
+        }
+        return lines
     }
 
     /// The running step, else the last one that started.

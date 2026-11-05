@@ -6,7 +6,7 @@ import Testing
     let app = App(
         id: UUID(), slug: "legilomobile", name: "LegiloMobile", repoURL: "https://github.com/x/y",
         appStoreConnectAppID: "123", createdAt: Date(timeIntervalSince1970: 0))
-    let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+    let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
     let paths = CIEnvironment.Paths(
         repository: "/w/repo", projectFile: "/w/repo/Legilo.xcodeproj", derivedData: "/w/DD",
         archive: "/j/archive/App.xcarchive", resultBundle: "/j/result.xcresult", workspace: "/j")
@@ -52,6 +52,25 @@ import Testing
         #expect(env["PATH"] == "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin")
         #expect(env["HOME"] == "/Users/hangar")
         #expect(env["GIT_TERMINAL_PROMPT"] == "0")
+    }
+
+    @Test func testActionSetsTestVariablesAndNoArchivePath() {
+        let env = CIEnvironment.make(
+            app: app, workflow: "Tests", action: .test(scheme: "LegiloTests", platform: .iOS, testPlan: "Smoke"),
+            buildNumber: 311, jobID: jobID, buildID: buildID, commit: "abc", ref: "main", teamID: nil, paths: paths,
+            developerDir: "/X", basePATH: "/usr/bin",
+            testDestination: TestDestination(
+                xcodebuildDestination: "platform=iOS Simulator,id=ABC", deviceType: "iPhone 17", runtime: "iOS 27.2"),
+            processEnvironment: [:])
+        #expect(env["CI_XCODEBUILD_ACTION"] == "test")
+        #expect(env["CI_ARCHIVE_PATH"] == nil)
+        #expect(env["CI_RESULT_BUNDLE_PATH"] == "/j/result.xcresult")
+        #expect(env["CI_TEST_DESTINATION_DEVICE_TYPE"] == "iPhone 17")
+        #expect(env["CI_TEST_DESTINATION_RUNTIME"] == "iOS 27.2")
+        #expect(env["CI_TEST_PLAN"] == "Smoke")
+        #expect(env["CI_XCODE_SCHEME"] == "LegiloTests")
+        #expect(make()["CI_TEST_PLAN"] == nil)
+        #expect(make()["CI_TEST_DESTINATION_DEVICE_TYPE"] == nil)
     }
 
     @Test func passesIdentityAndLocaleThroughFromTheProcessEnvironment() {
@@ -122,7 +141,7 @@ import Testing
     }
 
     @Test func postXcodebuildAdditionsDeveloperID() {
-        let devID = ArchiveAction(scheme: "Mac", platform: .macOS, export: .developerID)
+        let devID = WorkflowAction(scheme: "Mac", platform: .macOS, export: .developerID)
         let additions = CIEnvironment.postXcodebuildAdditions(
             exitCode: 65, action: devID, exportedAppPath: "/j/export/Mac.app")
         #expect(additions == ["CI_XCODEBUILD_EXIT_CODE": "65", "CI_DEVELOPER_ID_SIGNED_APP_PATH": "/j/export/Mac.app"])

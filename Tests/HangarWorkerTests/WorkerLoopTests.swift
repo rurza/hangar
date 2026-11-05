@@ -160,7 +160,7 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 @Suite(.timeLimit(.minutes(1))) struct WorkerLoopTests {
     static func assignment() -> JobAssignment {
         let job = Job(
-            id: UUID(), buildID: UUID(), action: ArchiveAction(scheme: "Demo", platform: .iOS, export: .appStoreConnect),
+            id: UUID(), buildID: UUID(), action: WorkflowAction(scheme: "Demo", platform: .iOS, export: .appStoreConnect),
             status: .assigned, createdAt: Date(timeIntervalSince1970: 0))
         return JobAssignment(
             job: job,
