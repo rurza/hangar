@@ -10,7 +10,9 @@ extension HangarServerApp {
             let app = try app(context)
             let client = try configuredAppStoreConnectClient()
             let groups = try await Self.relayingRefusal { try await client.betaGroups(appID: app.appStoreConnectAppID) }
-            let sorted = groups.map { BetaGroup(id: $0.id, name: $0.name, isInternal: $0.isInternal) }
+            let sorted = groups.map {
+                BetaGroup(id: $0.id, name: $0.name, isInternal: $0.isInternal, receivesEveryBuild: $0.receivesEveryBuild)
+            }
                 .sorted { ($0.isInternal ? 0 : 1, $0.name.lowercased()) < ($1.isInternal ? 0 : 1, $1.name.lowercased()) }
             return try Response.json(sorted)
         }
@@ -24,7 +26,9 @@ extension HangarServerApp {
                 try await client.createBetaGroup(
                     appID: app.appStoreConnectAppID, name: name, internal: input.isInternal ?? true)
             }
-            return try Response.json(BetaGroup(id: group.id, name: group.name, isInternal: group.isInternal), status: .created)
+            return try Response.json(
+                BetaGroup(id: group.id, name: group.name, isInternal: group.isInternal, receivesEveryBuild: group.receivesEveryBuild),
+                status: .created)
         }
     }
 

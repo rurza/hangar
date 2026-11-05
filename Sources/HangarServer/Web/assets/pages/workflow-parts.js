@@ -3,6 +3,7 @@
 
 import { api, ApiError } from '../api.js';
 import { h, plusIcon, replaceChildren, spinner, svg } from '../ui.js';
+import { automaticGroupNames, groupRow } from '../workflow-model.js';
 
 // MARK: Glyphs
 
@@ -214,17 +215,18 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       const index = selected.indexOf(name);
       if (on && index < 0) selected.push(name);
       if (!on && index >= 0) selected.splice(index, 1);
-      hintElement.textContent = hint();
+      hintElement.textContent = hintWithAutomatic();
       onChange?.();
     };
-    const kind = (group) => group.isInternal ? 'Internal' : 'External';
     const rows = [
-      ...known.map((group) => checkRow({
-        // No "Internal" tag on a group named Internal.
-        title: group.name, tag: internalOnly || group.name.toLowerCase() === kind(group).toLowerCase() ? null : kind(group),
-        checked: selected.includes(group.name), disabled,
-        onChange: (on) => toggle(group.name, on),
-      })),
+      ...known.map((group) => {
+        const row = groupRow(group, selected, { internalOnly });
+        return checkRow({
+          title: group.name, detail: row.detail, tag: row.tag, checked: row.checked, disabled: disabled || row.disabled,
+          // An automatic group is only ever taken out of the workflow: it gets each build anyway.
+          onChange: (on) => { toggle(group.name, row.automatic ? false : on); if (row.automatic) draw(); },
+        });
+      }),
       // A name in the workflow that App Store Connect does not have: shown, so it can be unticked.
       ...missing.map((name) => checkRow({
         title: name, tag: 'Not in App Store Connect', tagWarning: true, checked: true, disabled,
@@ -244,7 +246,12 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       if (internalOnly || known.every((group) => group.isInternal)) return 'Internal groups contain people on your App Store Connect team.';
       return 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
     }
-    hintElement.textContent = hint();
+    function hintWithAutomatic() {
+      const automatic = automaticGroupNames(known);
+      if (!automatic.length) return hint();
+      return `${hint()} ${automatic.join(', ')} ${automatic.length === 1 ? 'gets' : 'get'} every build automatically (set in App Store Connect).`;
+    }
+    hintElement.textContent = hintWithAutomatic();
     replaceChildren(element, list, hintElement);
   }
 

@@ -121,6 +121,10 @@ enum Migrations {
                 );
                 """)
         }
+        // Who ran a job (machine name, worker build, Xcode), as JSON; NULL until a machine starts it.
+        migrator.registerMigration("v6") { db in
+            try db.execute(sql: "ALTER TABLE jobs ADD COLUMN run_info_json TEXT")
+        }
         return migrator
     }
 }

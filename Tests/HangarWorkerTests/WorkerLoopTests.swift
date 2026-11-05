@@ -74,6 +74,8 @@ private final class ScriptedConnection: ServerConnection {
         case job(JobAssignment)
         case nothing
         case failure
+        /// Waits like a long poll; when cancelled, returns the job anyway: its response was already on the way.
+        case jobWhenCancelled(JobAssignment)
     }
 
     struct Unavailable: Error {}
@@ -111,6 +113,9 @@ private final class ScriptedConnection: ServerConnection {
         case .job(let assignment): return assignment
         case .nothing: return nil
         case .failure: throw Unavailable()
+        case .jobWhenCancelled(let assignment):
+            try? await Task.sleep(for: .seconds(3600))
+            return assignment
         case nil:
             try await Task.sleep(for: .seconds(3600))
             return nil
@@ -119,6 +124,7 @@ private final class ScriptedConnection: ServerConnection {
 
     func start(jobID: UUID) async throws {}
     func step(jobID: UUID, _ update: StepUpdate) async throws {}
+    func info(jobID: UUID, _ info: JobRunInfo) async throws {}
     func log(jobID: UUID, _ batch: LogBatch) async throws {}
     func uploadArtifact(jobID: UUID, name: String, fileURL: URL) async throws {}
     func finish(jobID: UUID, _ result: JobResult) async throws {}
@@ -130,6 +136,7 @@ private final class BlockingJobRunner: JobRunning, Sendable {
         var started: [UUID] = []
         var released: Set<UUID> = []
         var sawCancel: Set<UUID> = []
+        var stopReasons: [UUID: String] = [:]
     }
 
     private let state = Mutex(State())
@@ -140,21 +147,37 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 
     var started: [UUID] { state.withLock { $0.started } }
     var sawCancel: Set<UUID> { state.withLock { $0.sawCancel } }
+    var stopReasons: [UUID: String] { state.withLock { $0.stopReasons } }
 
     func release(_ id: UUID) { state.withLock { _ = $0.released.insert(id) } }
 
-    func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
+    func run(
+        _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool,
+        stopReason: @escaping @Sendable () -> String?
+    ) async -> JobResult {
         let id = assignment.job.id
         state.withLock { $0.started.append(id) }
         while true {
             if cancelled() {
-                state.withLock { _ = $0.sawCancel.insert(id) }
+                state.withLock {
+                    $0.sawCancel.insert(id)
+                    if let reason = stopReason() { $0.stopReasons[id] = reason }
+                }
                 if endsOnCancel { return JobResult(status: .cancelled) }
             }
             if state.withLock({ $0.released.contains(id) }) { return JobResult(status: .succeeded) }
             try? await Task.sleep(for: .milliseconds(1))
         }
     }
+}
+
+/// Records what the loop asks of the updater; never downloads or re-executes.
+private final class FakeUpdater: WorkerUpdating {
+    private let installs = Mutex<[String]>([])
+    var installed: [String] { installs.withLock { $0 } }
+
+    func download(from server: URL) async throws -> Data { Data("new worker".utf8) }
+    func install(_ data: Data, sha256: String) throws { installs.withLock { $0.append(sha256) } }
 }
 
 @Suite(.timeLimit(.minutes(1))) struct WorkerLoopTests {
@@ -177,16 +200,19 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 
     fileprivate static func loop(
         connection: some ServerConnection, runner: some JobRunning, clock: ManualClock, dataDirectory: String,
-        maxConcurrentJobs: Int = 1
+        maxConcurrentJobs: Int = 1, temporaryRoot: String? = nil, updater: FakeUpdater = FakeUpdater(),
+        workDirectory: String? = nil
     ) -> WorkerLoop {
         let processes = DoctorTests.scriptedRunner()
         return WorkerLoop(
             configuration: WorkerConfiguration(
                 serverURL: URL(string: "http://hangar.test")!, token: "t", maxConcurrentJobs: maxConcurrentJobs,
-                dataDirectory: dataDirectory),
+                dataDirectory: dataDirectory, workDirectory: workDirectory),
             connection: connection,
             doctor: DoctorTests.doctor(processes),
-            jobRunner: runner, clock: clock)
+            jobRunner: runner, clock: clock,
+            // Never the real per-user hangar-jobs: a live worker on this Mac keeps its jobs' TMPDIRs there.
+            temporaryRoot: temporaryRoot ?? dataDirectory + "-tmp", updater: updater)
     }
 
     /// Polls (in real time, briefly) until `condition` holds; the suite's time limit bounds a condition that never does.
@@ -274,6 +300,79 @@ private final class BlockingJobRunner: JobRunning, Sendable {
         await task.value
     }
 
+    @Test func stopCancelsRunningJobsWithTheReasonAndReturns() async throws {
+        let job = Self.assignment()
+        let connection = ScriptedConnection(answers: [.job(job), .job(Self.assignment())])
+        let runner = BlockingJobRunner(endsOnCancel: true)
+        let clock = ManualClock()
+        let directory = Self.dataDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let loop = Self.loop(connection: connection, runner: runner, clock: clock, dataDirectory: directory)
+        let task = Task { await loop.run() }
+
+        await Self.eventually { runner.started == [job.job.id] }
+        await loop.stop(reason: "hangar-worker on mini was stopped (SIGTERM)")
+        // run() returns on its own once the job has ended; nothing else is asked for.
+        await task.value
+        #expect(runner.stopReasons == [job.job.id: "hangar-worker on mini was stopped (SIGTERM)"])
+        #expect(connection.nextJobCalls == 1)
+        #expect(runner.started == [job.job.id])
+    }
+
+    @Test func stopCancelsTheLongPollAndLeavesAJobItBringsToTheNextRun() async throws {
+        let job = Self.assignment()
+        let connection = ScriptedConnection(answers: [.jobWhenCancelled(job)])
+        let runner = BlockingJobRunner(endsOnCancel: true)
+        let directory = Self.dataDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let loop = Self.loop(connection: connection, runner: runner, clock: ManualClock(), dataDirectory: directory)
+        let task = Task { await loop.run() }
+
+        await Self.eventually { connection.nextJobCalls == 1 }
+        await loop.stop(reason: "stopped")
+        await task.value
+        #expect(runner.started.isEmpty)
+    }
+
+    @Test func updateDoesNotRestartWhileAPollBringsAJob() async throws {
+        let job = Self.assignment()
+        let update = HeartbeatResponse(workerUpdate: WorkerUpdate(sha256: String(repeating: "f", count: 64)))
+        let connection = ScriptedConnection(answers: [.jobWhenCancelled(job)], heartbeatResponses: [update])
+        let runner = BlockingJobRunner()
+        let updater = FakeUpdater()
+        let directory = Self.dataDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let loop = Self.loop(
+            connection: connection, runner: runner, clock: ManualClock(), dataDirectory: directory, updater: updater)
+        let task = Task { await loop.run() }
+
+        // The update cancels the poll in flight, which still brings the job: the job runs and the update is dropped.
+        await Self.eventually { runner.started == [job.job.id] }
+        await Self.settle()
+        #expect(updater.installed.isEmpty)
+        runner.release(job.job.id)
+        task.cancel()
+        await task.value
+    }
+
+    @Test func updateInstallsOnceTheIdlePollIsCancelled() async throws {
+        let sha = String(repeating: "e", count: 64)
+        let connection = ScriptedConnection(heartbeatResponses: [HeartbeatResponse(workerUpdate: WorkerUpdate(sha256: sha))])
+        let updater = FakeUpdater()
+        let directory = Self.dataDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let loop = Self.loop(
+            connection: connection, runner: BlockingJobRunner(), clock: ManualClock(), dataDirectory: directory,
+            updater: updater)
+        let task = Task { await loop.run() }
+
+        await Self.eventually { updater.installed == [sha] }
+        // The fake install returns (a real one re-executes); polling then resumes.
+        await Self.eventually { connection.nextJobCalls == 2 }
+        task.cancel()
+        await task.value
+    }
+
     @Test func sweepsJobDirectoriesLeftByACrashBeforeTheFirstHeartbeat() async throws {
         let directory = Self.dataDirectory()
         defer { try? FileManager.default.removeItem(atPath: directory) }
@@ -299,6 +398,60 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 
         #expect(try FileManager.default.contentsOfDirectory(atPath: jobs).isEmpty)
         #expect(FileManager.default.fileExists(atPath: directory + "/workspaces/demo"))
+    }
+
+    @Test func movesTheWorkspacesToTheWorkDirectoryAndSweepsBothJobFolders() async throws {
+        let directory = Self.dataDirectory()
+        let work = directory + "-work"
+        defer {
+            try? FileManager.default.removeItem(atPath: directory)
+            try? FileManager.default.removeItem(atPath: work)
+        }
+        try FileManager.default.createDirectory(atPath: directory + "/workspaces/demo/DerivedData", withIntermediateDirectories: true)
+        for jobs in [directory + "/jobs", work + "/jobs"] {
+            try FileManager.default.createDirectory(atPath: jobs + "/" + UUID().uuidString, withIntermediateDirectories: true)
+        }
+
+        let connection = ScriptedConnection()
+        let task = Task {
+            await Self.loop(
+                connection: connection, runner: BlockingJobRunner(), clock: ManualClock(), dataDirectory: directory,
+                temporaryRoot: work + "/tmp", workDirectory: work
+            ).run()
+        }
+        await Self.eventually { connection.heartbeats.count >= 1 }
+        task.cancel()
+        await task.value
+
+        #expect(FileManager.default.fileExists(atPath: work + "/workspaces/demo/DerivedData"))
+        #expect(!FileManager.default.fileExists(atPath: directory + "/workspaces"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory + "/jobs").isEmpty)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: work + "/jobs").isEmpty)
+    }
+
+    @Test func sweepsTemporaryDirectoriesLeftByACrash() async throws {
+        let directory = Self.dataDirectory()
+        let temporaryRoot = directory + "-tmp"
+        defer {
+            try? FileManager.default.removeItem(atPath: directory)
+            try? FileManager.default.removeItem(atPath: temporaryRoot)
+        }
+        let leftover = temporaryRoot + "/" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: leftover + "/nested", withIntermediateDirectories: true)
+        try "x".write(toFile: leftover + "/nested/f", atomically: true, encoding: .utf8)
+
+        let connection = ScriptedConnection()
+        let task = Task {
+            await Self.loop(
+                connection: connection, runner: BlockingJobRunner(), clock: ManualClock(), dataDirectory: directory,
+                temporaryRoot: temporaryRoot
+            ).run()
+        }
+        await Self.eventually { connection.heartbeats.count >= 1 }
+        task.cancel()
+        await task.value
+
+        #expect(try FileManager.default.contentsOfDirectory(atPath: temporaryRoot).isEmpty)
     }
 
     @Test func createsAMissingDataDirectory() async throws {

@@ -42,42 +42,62 @@ enum PreparationError: Error, Equatable, CustomStringConvertible {
 /// runs, every second on the clock; a cancelled step is stopped by cancelling its task, which ends its process.
 struct JobPipeline {
     private static let pollInterval = Duration.seconds(1)
+    /// Steps that run a repository's own script: their last line explains a failure when nothing else does.
+    private static let scriptSteps: Set<String> = [StepName.postClone, StepName.preXcodebuild, StepName.postXcodebuild]
+
+    /// How a step that ran to the end is reported, from its value.
+    struct Ending {
+        var status: StepStatus = .succeeded
+        var detail: String?
+        var stages: [StepStage]?
+    }
 
     let jobID: UUID
     let connection: any ServerConnection
     let log: JobLog
     let clock: any Clock<Duration>
     let cancelled: @Sendable () -> Bool
+    /// Why the worker itself stopped the job (it is shutting down); nil for a cancel the server asked for.
+    let stopReason: @Sendable () -> String?
     private let logger = Logger(label: "app.hangar.worker.pipeline")
 
     private(set) var failureReason: String?
     private(set) var wasCancelled = false
+    /// Set when the job was cancelled because the worker is stopping: the reason and the step it stopped.
+    private(set) var stopNote: String?
     /// Set when an `xcodebuild` step failed: its exit code, or 1 when it failed without one.
     private(set) var xcodebuildExitCode: Int32?
 
     init(
         jobID: UUID, connection: any ServerConnection, log: JobLog, clock: any Clock<Duration>,
-        cancelled: @escaping @Sendable () -> Bool
+        cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String? = { nil }
     ) {
         self.jobID = jobID
         self.connection = connection
         self.log = log
         self.clock = clock
         self.cancelled = cancelled
+        self.stopReason = stopReason
     }
 
     /// Failure wins over a later cancellation: it is what explains the job.
     var status: JobStatus { failureReason != nil ? .failed : wasCancelled ? .cancelled : .succeeded }
 
+    /// What the job reports as its reason: the failure, else why the worker stopped it.
+    var reason: String? { failureReason ?? stopNote }
+
     /// Runs `body` as step `name` unless its policy says otherwise, and returns its value when it succeeded.
-    /// A value for which `skippedIf` holds (a hook that is absent) is reported as `skipped`.
+    /// A value for which `skippedIf` holds (a hook that is absent) is reported as `skipped`; otherwise `ending` says
+    /// how the step is reported (a post-action with warnings ends as `warning`).
     @discardableResult
     mutating func step<Value: Sendable>(
         _ name: String, _ policy: StepPolicy = .normal, skippedIf: (Value) -> Bool = { _ in false },
+        ending: (Value) -> Ending = { _ in Ending() },
         _ body: @escaping @Sendable () async throws -> Value
     ) async -> Value? {
         if policy != .always, !wasCancelled, failureReason == nil, cancelled() {
             wasCancelled = true
+            noteStop(before: name)
             log.line(step: name, "job cancelled")
         }
         guard shouldRun(policy) else {
@@ -87,19 +107,34 @@ struct JobPipeline {
         await report(name, .running)
         do {
             let value = policy == .always ? try await body() : try await watched(body)
-            await report(name, skippedIf(value) ? .skipped : .succeeded)
+            if skippedIf(value) {
+                await report(name, .skipped)
+            } else {
+                let end = ending(value)
+                await report(name, end.status, detail: end.detail, stages: end.stages)
+            }
             return value
         } catch is JobCancelled {
             wasCancelled = true
-            log.line(step: name, "job cancelled; stopped \(name)")
+            let stop = stopReason()
+            if let stop, stopNote == nil { stopNote = "\(stop) during \(name)" }
+            log.line(step: name, stop.map { "job stopped: \($0); stopped \(name)" } ?? "job cancelled; stopped \(name)")
+            await report(name, .cancelled, detail: stop.map { "Stopped: \($0)" } ?? "Cancelled")
+            return nil
         } catch {
             let cause = Self.cause(error)
+            // The log's own explanation, when it has one, says more than an exit status.
+            // Only an error that is just an exit status needs the log to explain it; failing tests name themselves.
+            let explained = Self.isBareExitStatus(error)
+                ? log.cause(step: name, fallbackToLastLine: Self.scriptSteps.contains(name)).flatMap { $0 == cause ? nil : $0 }
+                : nil
+            let detail = error is PreparationError ? cause : explained.map { "\($0) (\(cause))" } ?? cause
             log.line(step: name, error is PreparationError ? cause : "error: \(cause)")
-            if failureReason == nil { failureReason = error is PreparationError ? cause : "\(name): \(cause)" }
+            if failureReason == nil { failureReason = error is PreparationError ? cause : "\(name): \(detail)" }
             if policy == .xcodebuild, xcodebuildExitCode == nil { xcodebuildExitCode = Self.exitCode(error) ?? 1 }
+            await report(name, .failed, detail: detail)
+            return nil
         }
-        await report(name, .failed)
-        return nil
     }
 
     mutating func skip(_ name: String) async {
@@ -107,12 +142,22 @@ struct JobPipeline {
     }
 
     /// Best effort: a step update the server did not take is logged here and does not change the job.
-    func report(_ name: String, _ status: StepStatus) async {
+    func report(_ name: String, _ status: StepStatus, detail: String? = nil, stages: [StepStage]? = nil) async {
         do {
-            try await connection.step(jobID: jobID, StepUpdate(name: name, status: status, at: Date()))
+            try await connection.step(
+                jobID: jobID, StepUpdate(name: name, status: status, at: Date(), detail: detail, stages: stages))
         } catch {
             logger.warning("could not report step \(name) as \(status.rawValue): \(error)", metadata: ["job": "\(jobID)"])
         }
+    }
+
+    /// Reports `name`'s stages while it runs (a post-action's progress).
+    func stageReporter(_ name: String) -> @Sendable ([StepStage]) async -> Void {
+        { [self] stages in await report(name, .running, stages: stages) }
+    }
+
+    private mutating func noteStop(before name: String) {
+        if let stop = stopReason(), stopNote == nil { stopNote = "\(stop) before \(name)" }
     }
 
     private func shouldRun(_ policy: StepPolicy) -> Bool {
@@ -151,6 +196,12 @@ struct JobPipeline {
             TestError.testsFailed(_, let code): code
         default: nil
         }
+    }
+
+    /// xcodebuild, a hook script or git exited non-zero, and the error says no more than that.
+    private static func isBareExitStatus(_ error: any Error) -> Bool {
+        if case TestError.testsFailed = error { return false }
+        return exitCode(error) != nil || error is HookError || error is CheckoutError
     }
 
     private static func cause(_ error: any Error) -> String {

@@ -17,15 +17,24 @@ public protocol AppStoreConnectClient: Sendable {
     /// Creates a TestFlight group of the app (`POST /v1/betaGroups`); `internal` makes it an internal group, whose
     /// testers are App Store Connect users of the team.
     func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup
-    /// Grants the group access to the build. App Store Connect rejects the other direction — adding the build to
-    /// the group — for an internal group ("Builds cannot be assigned to this internal group").
+    /// Grants the group access to the build: `POST /v1/builds/{id}/relationships/betaGroups` ("Add access for beta
+    /// groups to a build"). Not for a group that `receivesEveryBuild`: App Store Connect refuses any manual assignment
+    /// to one with 422 "Builds cannot be assigned to this internal group", in this direction and the other
+    /// (`POST /v1/betaGroups/{id}/relationships/builds`).
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws
     /// Creates the localization, or updates the existing one for `locale`.
     func setWhatToTest(buildID: String, locale: String, text: String) async throws
     func submitForBetaReview(buildID: String) async throws
+    /// The app's TestFlight test information per locale (`GET /v1/apps/{id}/betaAppLocalizations`, read-only).
+    func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization]
 }
 
 extension AppStoreConnectClient {
+    /// Clients that cannot read it say so; the deploy check then says nothing about it.
+    public func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization] {
+        throw ASCError.decoding("beta app localizations are not available from this client")
+    }
+
     /// Filters `apps()`; the live client asks App Store Connect for just these.
     public func apps(bundleIDs: [String]) async throws -> [ASCApp] {
         guard !bundleIDs.isEmpty else { return [] }

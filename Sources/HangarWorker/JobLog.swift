@@ -29,6 +29,8 @@ public final class JobLog: Sendable {
         /// The most recently queued send; each send waits for the one before it.
         var lastSend: Task<Void, Never>?
         var timer: Task<Void, Never>?
+        /// Per step, the line that best explains a failure; see `FailureCause`.
+        var causes: [String: FailureCause] = [:]
     }
 
     private let jobID: UUID
@@ -62,6 +64,7 @@ public final class JobLog: Sendable {
         logger.debug("\(masked)", metadata: ["job": "\(jobID.uuidString)", "step": "\(step)"])
         let (full, firstOverflow) = state.withLock { state in
             state.pending.append(LogEntry(t: Date(), step: step, line: masked))
+            state.causes[step, default: FailureCause()].consume(masked)
             let before = state.overflowed
             Self.dropOverflow(&state)
             return (state.pending.count >= Self.batchSize, before == 0 && state.overflowed > 0)
@@ -72,6 +75,12 @@ public final class JobLog: Sendable {
                 metadata: ["job": "\(jobID.uuidString)"])
         }
         if full { _ = queueSend() }
+    }
+
+    /// The line of `step`'s log that best explains its failure (masked like every line); nil when none stands out.
+    /// `fallbackToLastLine` settles for the step's last line, for scripts whose errors follow no convention.
+    public func cause(step: String, fallbackToLastLine: Bool = false) -> String? {
+        state.withLock { $0.causes[step]?.line(fallbackToLastLine: fallbackToLastLine) }
     }
 
     /// `line` cut to `maxLineBytes` of UTF-8 (on a scalar boundary) with a note of how much was cut.

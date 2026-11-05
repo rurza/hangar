@@ -271,11 +271,25 @@ public struct BetaGroup: Codable, Equatable, Sendable {
     public var name: String
     /// Internal groups hold App Store Connect users of the team; external ones need beta review.
     public var isInternal: Bool
+    /// The group gets every build automatically (App Store Connect's `hasAccessToAllBuilds`); a workflow cannot add a
+    /// build to it, and does not need to.
+    public var receivesEveryBuild: Bool
 
-    public init(id: String, name: String, isInternal: Bool) {
+    public init(id: String, name: String, isInternal: Bool, receivesEveryBuild: Bool = false) {
         self.id = id
         self.name = name
         self.isInternal = isInternal
+        self.receivesEveryBuild = receivesEveryBuild
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, isInternal, receivesEveryBuild }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        isInternal = try container.decode(Bool.self, forKey: .isInternal)
+        receivesEveryBuild = try container.decodeIfPresent(Bool.self, forKey: .receivesEveryBuild) ?? false
     }
 }
 

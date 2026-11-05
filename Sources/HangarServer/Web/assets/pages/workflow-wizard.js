@@ -5,7 +5,7 @@
 
 import { confirm, field, h, replaceChildren, sheet, spinner, svg } from '../ui.js';
 import {
-  detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, uniqueName, wizardModel,
+  defaultGroup, detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, uniqueName, wizardModel,
 } from '../workflow-model.js';
 import { workflowSteps } from '../workflow-summary.js';
 import { choiceCards, groupPicker, guessNotes, tile } from './workflow-parts.js';
@@ -211,9 +211,9 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       .map((choice) => `${choice.scheme} (${platformName(choice.platform)})`);
     if (state.distribution === null && groupState) {
       state.distribution = groupState.notConfigured ? 'keep' : 'testflight';
-      // One internal group: it is the obvious recipient.
-      const internal = groupState.groups?.filter((group) => group.isInternal) ?? [];
-      if (!state.groupsTouched && internal.length === 1) state.groups = [internal[0].name];
+      // One internal group that does not already get every build: it is the obvious recipient.
+      const pick = defaultGroup(groupState.groups);
+      if (!state.groupsTouched && pick) state.groups = [pick];
     }
     if (state.distribution === 'developer-id' && !macOnly) state.distribution = groupState?.notConfigured ? 'keep' : 'testflight';
     const ascMissing = Boolean(groupState?.notConfigured);

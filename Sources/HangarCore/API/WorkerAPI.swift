@@ -54,11 +54,17 @@ public struct StepUpdate: Codable, Equatable, Sendable {
     public var name: String
     public var status: StepStatus
     public var at: Date
+    /// Replaces the step's detail when set; see `StepRecord.detail`.
+    public var detail: String?
+    /// Replaces the step's stages when set.
+    public var stages: [StepStage]?
 
-    public init(name: String, status: StepStatus, at: Date) {
+    public init(name: String, status: StepStatus, at: Date, detail: String? = nil, stages: [StepStage]? = nil) {
         self.name = name
         self.status = status
         self.at = at
+        self.detail = detail
+        self.stages = stages
     }
 }
 

@@ -73,6 +73,8 @@ export function openDeploySheet(app) {
     workflowHint);
 
   const workflowDetails = h('div', { class: 'deploy-plan', 'aria-live': 'polite' });
+  // What the build is likely to trip over (the repository's scripts, App Store Connect), from the deploy check.
+  const preflight = h('div', { class: 'deploy-preflight-slot', 'aria-live': 'polite' });
 
   const whereOptions = h('div', { class: 'where-options' });
   const whereNotice = h('div', { class: 'deploy-notice-slot' });
@@ -93,7 +95,7 @@ export function openDeploySheet(app) {
   const handle = sheet({
     title: `Deploy ${app.name}`,
     submitOnEnter: true,
-    body: h('div', { class: 'form deploy-form' }, refField, workflowField, workflowDetails, whereField, numberPreview, reason),
+    body: h('div', { class: 'form deploy-form' }, refField, workflowField, workflowDetails, preflight, whereField, numberPreview, reason),
     actions: [{ label: 'Cancel', kind: 'cancel' }, deployAction],
     onClose: () => {
       clearTimeout(debounce);
@@ -384,7 +386,18 @@ export function openDeploySheet(app) {
     renderNotice();
   }
 
+  /** The deploy check's notices: they never block the deploy, but say what to fix first. */
+  function renderPreflight() {
+    const notices = Array.isArray(check?.notices) ? check.notices.filter((notice) => notice?.message) : [];
+    replaceChildren(preflight, notices.length
+      ? h('div', { class: 'deploy-preflight', role: 'note' },
+        h('p', { class: 'deploy-preflight-title' }, notices.length === 1 ? 'Before you deploy' : `Before you deploy (${notices.length})`),
+        h('ul', { class: 'deploy-preflight-list' }, notices.map((notice) => h('li', null, notice.message))))
+      : null);
+  }
+
   function renderNotice() {
+    renderPreflight();
     const blocker = machineBlocker();
     const wait = waitText();
     replaceChildren(whereNotice, blocker
