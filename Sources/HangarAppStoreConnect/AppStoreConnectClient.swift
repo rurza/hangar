@@ -25,9 +25,16 @@ public protocol AppStoreConnectClient: Sendable {
     /// Creates the localization, or updates the existing one for `locale`.
     func setWhatToTest(buildID: String, locale: String, text: String) async throws
     func submitForBetaReview(buildID: String) async throws
+    /// The app's TestFlight test information per locale (`GET /v1/apps/{id}/betaAppLocalizations`, read-only).
+    func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization]
 }
 
 extension AppStoreConnectClient {
+    /// Clients that cannot read it say so; the deploy check then says nothing about it.
+    public func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization] {
+        throw ASCError.decoding("beta app localizations are not available from this client")
+    }
+
     /// Filters `apps()`; the live client asks App Store Connect for just these.
     public func apps(bundleIDs: [String]) async throws -> [ASCApp] {
         guard !bundleIDs.isEmpty else { return [] }

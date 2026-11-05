@@ -21,18 +21,29 @@ extension HangarServerApp {
             // With `commit` (the one `/workflows` resolved for the sheet), GitHub is not asked to resolve the ref, and the
             // repository's file comes from the per-commit cache: a sheet checking every 15 s costs no GitHub calls.
             let file: WorkflowFile
+            let resolved: String
             if let commit = query.get("commit"), !commit.isEmpty {
                 guard (7...40).contains(commit.count), commit.allSatisfy(\.isHexDigit) else {
                     throw APIError(code: "invalid_request", message: "'commit' must be a commit SHA.")
                 }
-                file = try await withAppToken(app) { _ in try await buildService.workflowFile(app: app, commit: String(commit), cached: true).file }
+                resolved = String(commit)
+                file = try await withAppToken(app) { _ in try await buildService.workflowFile(app: app, commit: resolved, cached: true).file }
             } else {
-                file = try await withAppToken(app) { _ in try await buildService.workflows(app: app, ref: ref).file }
+                (resolved, file) = try await withAppToken(app) { _ in
+                    let found = try await buildService.workflows(app: app, ref: ref)
+                    return (found.commit, found.file)
+                }
             }
             guard let workflow = file.workflows[name] else {
                 throw DeployError.workflowNotFound(name: name, available: file.workflows.keys.sorted())
             }
-            return try Response.json(try deployCheck(workflow: workflow, pinned: pinned))
+            var check = try deployCheck(workflow: workflow, pinned: pinned)
+            let entries = try variables.resolvedEntries(appID: app.id)
+            check.notices = await preflight.notices(
+                app: app, workflow: workflow, commit: resolved,
+                token: entries.first { $0.name == BuildService.tokenVariable }?.value,
+                definedNames: Set(entries.map(\.name)), appStoreConnect: { try appStoreConnectClient() })
+            return try Response.json(check)
         }
     }
 

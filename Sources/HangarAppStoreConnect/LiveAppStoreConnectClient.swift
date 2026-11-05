@@ -163,6 +163,15 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         _ = try await request("POST", url: try url(path: "/v1/betaAppReviewSubmissions"), body: body)
     }
 
+    public func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization] {
+        guard appID.allSatisfy(\.isNumber), !appID.isEmpty else { return [] }
+        let query = [URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "fields[betaAppLocalizations]", value: "locale,description")]
+        return try await pages(Wire.BetaAppLocalizations.self, path: "/v1/apps/\(appID)/betaAppLocalizations", query: query)
+            .flatMap { page in
+                page.data.map { ASCBetaAppLocalization(locale: $0.attributes.locale ?? "", description: $0.attributes.description) }
+            }
+    }
+
     // MARK: - Plumbing
 
     /// Minimal JSON tree for request bodies.
@@ -347,6 +356,19 @@ private enum Wire {
                 var hasAccessToAllBuilds: Bool?
             }
             var id: String
+            var attributes: Attributes
+        }
+        var data: [Item]
+        var links: Links?
+        var nextURL: String? { links?.next }
+    }
+
+    struct BetaAppLocalizations: Decodable, Paged {
+        struct Item: Decodable {
+            struct Attributes: Decodable {
+                var locale: String?
+                var description: String?
+            }
             var attributes: Attributes
         }
         var data: [Item]

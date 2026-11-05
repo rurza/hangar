@@ -1226,7 +1226,16 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .page-notice p, .deploy-notice p { flex: 1 1 240px; }
 .page-notice { margin-bottom: var(--space-2); }
 .deploy-notice { padding-inline: 12px; }
-.page-notice-slot:empty, .deploy-notice-slot:empty { display: none; }
+.page-notice-slot:empty, .deploy-notice-slot:empty, .deploy-preflight-slot:empty { display: none; }
+.deploy-preflight {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  font: var(--subhead);
+  letter-spacing: -0.24px;
+}
+.deploy-preflight-title { margin: 0 0 4px; font-weight: 600; }
+.deploy-preflight-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .facts { display: grid; gap: var(--space-1); margin: 0; }
 .fact { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); font: var(--subhead); letter-spacing: -0.24px; }
 /* Mono values share the label's baseline at a size that reads as the same weight of text. */

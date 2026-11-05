@@ -1,0 +1,4 @@
+{"data":[
+ {"type":"betaAppLocalizations","id":"l1","attributes":{"locale":"en-US","description":"  "}},
+ {"type":"betaAppLocalizations","id":"l2","attributes":{"locale":"pl","description":"Opis"}}
+],"links":{"self":"https://api.appstoreconnect.apple.com/v1/apps/123/betaAppLocalizations"}}

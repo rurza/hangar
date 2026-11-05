@@ -145,11 +145,14 @@ public struct RepositoryTree: Equatable, Sendable {
     public var truncated: Bool
     /// Byte sizes of the files (blobs) the host reported; directories have none.
     public var sizes: [String: Int]
+    /// Files with the executable bit (git mode 100755).
+    public var executables: Set<String>
 
-    public init(paths: [String], truncated: Bool = false, sizes: [String: Int] = [:]) {
+    public init(paths: [String], truncated: Bool = false, sizes: [String: Int] = [:], executables: Set<String> = []) {
         self.paths = paths
         self.truncated = truncated
         self.sizes = sizes
+        self.executables = executables
     }
 
     /// The repository has a `.hangar.yml` at its root.
