@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "hangar": {
+      "command": "hangar",
+      "args": ["mcp"],
+      "env": {
+        "HANGAR_SERVER": "${HANGAR_SERVER:-http://localhost:8787}",
+        "HANGAR_API_TOKEN": "${HANGAR_API_TOKEN}"
+      }
+    }
+  }
+}

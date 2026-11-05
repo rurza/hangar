@@ -1,7 +1,7 @@
 # MCP access for AI agents
 
 Date: 2026-11-05
-Status: draft
+Status: implemented on the mcp-access branch
 
 ## Intent
 
