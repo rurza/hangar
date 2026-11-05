@@ -17,6 +17,8 @@ public struct Doctor: Sendable {
     private let userName: String
     /// Set for a headless worker (`CIKeychain.installed`): signing is checked against it instead of the login keychain.
     private let keychain: CIKeychain?
+    /// Set when VM builds are on: the report's `vm` section.
+    private let vm: VMDoctor?
     /// The last simulator runtimes listed and when the list was last attempted, shared by the copies of this Doctor.
     private let simulators = SimulatorListCache()
 
@@ -28,8 +30,9 @@ public struct Doctor: Sendable {
         dataDirectory: String = NSHomeDirectory(), clock: any Clock<Duration> = ContinuousClock(),
         signTimeout: Duration = .seconds(10), simulatorTimeout: Duration = .seconds(10),
         simulatorRefresh: TimeInterval = 600, now: @escaping @Sendable () -> Date = Date.init,
-        userName: String = NSUserName(), keychain: CIKeychain? = nil
+        userName: String = NSUserName(), keychain: CIKeychain? = nil, vm: VMDoctor? = nil
     ) {
+        self.vm = vm
         self.userName = userName
         self.keychain = keychain
         self.simulatorTimeout = simulatorTimeout
@@ -68,7 +71,8 @@ public struct Doctor: Sendable {
             capabilities: WorkerCapability.all,
             runningUser: userName,
             headless: keychain == nil ? nil : true,
-            keychainProblem: problem)
+            keychainProblem: problem,
+            vm: vm?.report(runningJobs: runningJobIDs.count))
     }
 
     // MARK: Probes

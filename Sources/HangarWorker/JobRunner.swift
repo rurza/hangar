@@ -37,6 +37,8 @@ public struct JobRunner: Sendable {
     private let appStoreConnectFactory: AppStoreConnectFactory
     /// Set when the worker runs headless; nil in a login session, where the login keychain signs.
     private let keychain: CIKeychain?
+    /// The first line of the `checkout` step's log, before anything else is prepared: how a job's VM came up.
+    private let preparationNote: String?
     private let logger = Logger(label: "app.hangar.worker.job")
 
     public init(
@@ -47,9 +49,11 @@ public struct JobRunner: Sendable {
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
         },
-        keychain: CIKeychain? = nil
+        keychain: CIKeychain? = nil,
+        preparationNote: String? = nil
     ) {
         self.keychain = keychain
+        self.preparationNote = preparationNote
         self.connection = connection
         self.runner = runner
         self.locator = locator
@@ -231,6 +235,7 @@ public struct JobRunner: Sendable {
     ) async throws -> Prepared {
         let workflow = assignment.workflow
         let action = assignment.job.action
+        if let preparationNote { log(preparationNote) }
         if let keychain {
             do { try await keychain.prepare(runner: runner) } catch {
                 throw PreparationError.keychainNotReady(reason: String(describing: error), machine: machineName)

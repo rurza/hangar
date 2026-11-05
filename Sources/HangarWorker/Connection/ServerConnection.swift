@@ -15,6 +15,13 @@ public protocol ServerConnection: Sendable {
     func finish(jobID: UUID, _ result: JobResult) async throws
 }
 
+/// One-job tokens (`POST`/`DELETE jobs/{id}/token`), which a job's VM uses instead of the machine token. Only the
+/// machine token may issue or revoke them.
+public protocol JobTokenIssuing: Sendable {
+    func issueJobToken(jobID: UUID) async throws -> String
+    func revokeJobToken(jobID: UUID) async throws
+}
+
 public enum ServerConnectionError: Error, Equatable, CustomStringConvertible {
     /// The response body is never kept: the server's errors may echo what the worker sent.
     case status(Int, method: String, path: String)
@@ -29,7 +36,7 @@ public enum ServerConnectionError: Error, Equatable, CustomStringConvertible {
 }
 
 /// `ServerConnection` over HTTP with the machine's bearer token on every request.
-public struct HTTPServerConnection: ServerConnection {
+public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
     private let baseURL: URL
     private let token: String
     private let session: URLSession
@@ -82,6 +89,15 @@ public struct HTTPServerConnection: ServerConnection {
 
     public func finish(jobID: UUID, _ result: JobResult) async throws {
         _ = try await send("POST", "jobs/\(jobID.uuidString)/finish", body: result)
+    }
+
+    public func issueJobToken(jobID: UUID) async throws -> String {
+        let (data, _) = try await send("POST", "jobs/\(jobID.uuidString)/token")
+        return try JSONCoding.decoder.decode(JobTokenResponse.self, from: data).token
+    }
+
+    public func revokeJobToken(jobID: UUID) async throws {
+        _ = try await send("DELETE", "jobs/\(jobID.uuidString)/token")
     }
 
     // MARK: - Plumbing
