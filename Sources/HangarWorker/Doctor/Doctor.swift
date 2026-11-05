@@ -91,11 +91,16 @@ public struct Doctor: Sendable {
         await output("/usr/sbin/sysctl", ["-n", key]) ?? ""
     }
 
+    /// "Important usage" counts purgeable space but reads 0 outside a login session (the headless LaunchDaemon), so
+    /// the plain available capacity stands in for it there.
     private func freeDiskGB() -> Double {
         let url = URL(fileURLWithPath: dataDirectory)
-        let bytes = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-            .volumeAvailableCapacityForImportantUsage
-        return Double(bytes ?? 0) / 1_000_000_000
+        let values = try? url.resourceValues(forKeys: [
+            .volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey,
+        ])
+        let important = values?.volumeAvailableCapacityForImportantUsage ?? 0
+        let bytes = important > 0 ? important : Int64(values?.volumeAvailableCapacity ?? 0)
+        return Double(bytes) / 1_000_000_000
     }
 
     /// Battery power is the only "not AC" signal; a desktop prints no battery source and counts as AC.
