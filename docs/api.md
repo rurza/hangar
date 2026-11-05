@@ -2,7 +2,7 @@
 
 The `hangar` CLI and the web UI talk to the server only through this API. Every route lives under `/api/v1` on the server's address (port 8787 by default). Bodies are JSON with camelCase keys; dates are ISO 8601 with milliseconds (`2026-11-04T09:30:00.123Z`). The types named below are the `HangarCore` models.
 
-**No public endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine (`POST /machines` or `POST /enroll`); afterwards only its hash is stored. Error messages name variables but never contain their values.
+**No public endpoint returns a secret value.** Variables are write-only: you can set and delete them, and list their names and flags (`VariableSummary`), never their values. A machine's token is returned once, in the response that creates the machine (`POST /machines` or `POST /enroll`); afterwards only its hash is stored. The same holds for a job token (`POST /worker/jobs/{id}/token`). Error messages name variables but never contain their values.
 
 ## Request rules
 
@@ -114,7 +114,7 @@ These live outside `/api/v1`. They are `GET`s, so the cross-site rules do not ap
 
 ## Worker routes
 
-Worker machines call these routes under `/api/v1/worker`. Each needs `Authorization: Bearer <machine token>`; a missing or unknown token gets `401` `unauthorized`. A `{id}` job must be assigned to the calling machine, else `409` `job_not_assigned_to_machine`.
+Worker machines call these routes under `/api/v1/worker`. Each needs `Authorization: Bearer <machine token>`; a missing or unknown token gets `401` `unauthorized`. A `{id}` job must be assigned to the calling machine, else `409` `job_not_assigned_to_machine`. A job's VM calls its job's routes with a job token instead (see [Job tokens](#job-tokens)).
 
 | Method and path | Request | Response |
 | --- | --- | --- |
@@ -126,9 +126,37 @@ Worker machines call these routes under `/api/v1/worker`. Each needs `Authorizat
 | `POST /worker/jobs/{id}/info` | `JobRunInfo` `{workerVersion?, xcodeVersion?, xcodeBuild?}` | `200` `Job`; merged into the job's `runInfo` (whose `machineName` the server sets at start); the job must be `running` |
 | `POST /worker/jobs/{id}/log` | `LogBatch` | `204`; the job must be `running` |
 | `POST /worker/jobs/{id}/artifacts/{name}` | the raw file, streamed | `201` `ArtifactInfo`; the job must be `running` |
-| `POST /worker/jobs/{id}/finish` | `JobResult` with `succeeded`, `failed` or `cancelled` | `200` `Job`; the job must be `assigned` or `running` |
+| `POST /worker/jobs/{id}/finish` | `JobResult` with `succeeded`, `failed` or `cancelled` | `200` `Job`; the job must be `assigned` or `running`. Deletes the job's job tokens |
+| `POST /worker/jobs/{id}/token` | | `201` `JobTokenResponse` `{token}`: a new job token for the job; the job must be `assigned` or `running` (else `409` `job_state_conflict`). Machine token only |
+| `DELETE /worker/jobs/{id}/token` | | `204`: deletes the job tokens this machine was given for the job (another machine's stay). Idempotent, and allowed after the job ended or moved. Machine token only |
 
 A `JobAssignment` carries the job's environment: the global and app variables with their values, an app variable replacing a global one of the same name. It is the only response that holds secret values, and it goes only to the machine the job is assigned to.
+
+### Job tokens
+
+A machine that runs its jobs in VMs gives each job's VM a job token in place of its machine token (`POST /worker/jobs/{id}/token`). It is `hgj_` and 43 base64url characters, returned once; only its SHA-256 is stored. Sent as `Authorization: Bearer hgj_…`, it acts as the machine it was issued to, for that one job:
+
+- **Allowed**, only with the token's own job as `{id}`: `POST /worker/jobs/{id}/start`, `/info`, `/steps`, `/log`, `/artifacts/{name}` and `/finish`, with the same rules as for the machine token.
+- **Refused with `403` `job_token_scope`**: every other worker route (`me`, `heartbeat`, `jobs/next`, issuing or revoking job tokens) and any route of another job.
+- **Refused with `401` `invalid_job_token`** (before the scope is looked at): a token that is unknown or revoked, or whose job has ended (`succeeded`, `failed`, `cancelled`, however it got there) or is no longer assigned to the token's machine (requeued or reassigned). So a cancel, a lost-worker failure or a requeue ends it without a revoke.
+
+`finish` deletes the job's tokens; `DELETE /worker/jobs/{id}/token` deletes them sooner (e.g. once the VM is gone). Removing the machine deletes its tokens too. Machine tokens behave as before.
+
+### The `vm` object of a machine report
+
+A `MachineReport` (the heartbeat's `report`, and a `Machine`'s `report`) has a `vm` object when the worker is configured for VM builds; such a machine runs every job in a VM and none on the host. It is absent for a machine that builds on the host, and from an older worker.
+
+| Field | Meaning |
+| --- | --- |
+| `slots` | VM slots ready to take a job: `0` while something is missing (the network filter, an image). With `0` the machine takes no jobs |
+| `configuredSlots` | Slots the worker is configured for (`vm.slots`), ready or not; defaults to `slots` |
+| `freeSlots` | Ready slots without a job; defaults to `slots` |
+| `storageFreeGB` | Free space on the VM storage volume |
+| `networkFilter` | The pf anchor that keeps guests off the host and the LAN is loaded |
+| `problem` | Why no slot is ready, in plain English ("the network filter is not installed: run …"); absent when `slots` > 0 |
+| `images` | The prepared images: `[{name, macOS, xcode?, xcodeBuild?, simulatorRuntimes}]`. `name` is the image's directory name (`xcode-27.2`), `macOS` the guest's (`26.6.2 (25G83)`), `xcode` the Xcode version in it (absent for an image without Xcode), `simulatorRuntimes` its runtimes (`["iOS 27.2"]`) |
+
+The scheduler judges such a machine by its VMs: it takes a job per ready slot (not `maxConcurrentJobs`), `xcode:` must match an image's `xcode`, a simulator test needs a runtime in one of the images, `storageFreeGB` counts as its free disk, a workflow's `tools:` are not required (a `ci_post_clone.sh` installs them), and it has no Xcode account, so an archive needs a team App Store Connect key. Its queue notes add `VM builds not ready: <problem>` (instead of `busy`) and `no VM image with Xcode <version>`; both block a deploy.
 
 ## Errors
 
@@ -137,8 +165,8 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | Status | Codes |
 | --- | --- |
 | `400` | `invalid_request` (malformed body or query), `asc_key_not_found`, `asc_key_rejected`, `asc_key_forbidden`, `invalid_asc_key`, `invalid_key_id`, `github_token_rejected`, `invalid_token`, `gh_not_signed_in`, `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
-| `401` | `unauthorized` (worker routes), `invalid_api_token` |
-| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only`, `token_scope` |
+| `401` | `unauthorized` (worker routes), `invalid_api_token`, `invalid_job_token` |
+| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only`, `token_scope`, `job_token_scope` |
 | `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found`, `icon_not_found`, `token_not_found`, `repository_not_found` (no such repository, or the token cannot read it) |
 | `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed`, `token_exists` |
 | `415` | `unsupported_media_type` |
