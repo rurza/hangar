@@ -127,16 +127,16 @@ extension HangarTools {
                 warnings.append("Could not check the TestFlight groups: \(Self.describe(error, server: server))")
             }
         }
-        if let suggestion = try? await api.workflowSuggestion(app: app) {
-            let schemes = Set(suggestion.schemes.map(\.name))
+        do {
+            let schemes = Set(try await api.workflowSuggestion(app: app).schemes.map(\.name))
             for (name, workflow) in workflows {
                 for action in workflow.actions where !schemes.contains(action.scheme) {
                     warnings.append(
                         "Workflow '\(name)': the repository's default branch has no scheme '\(action.scheme)' (found: \(schemes.sorted().joined(separator: ", "))).")
                 }
             }
-        } else {
-            warnings.append("Could not read the repository's schemes to check the actions against.")
+        } catch {
+            warnings.append("Could not check the schemes against the repository: \(Self.describe(error, server: server))")
         }
         for (name, workflow) in workflows {
             for spec in workflow.postActions where spec.requiresApproval {
@@ -178,9 +178,11 @@ extension HangarTools {
         let check = try await api.deployCheck(app: app, workflow: workflowName, ref: ref, machine: machine)
         if !check.canDeploy && !allowBlocked {
             let reasons = check.blocking.map { action in
-                action.action + ": "
-                    + action.reasons.sorted { $0.key < $1.key }.map { "\($0.key) (\($0.value.joined(separator: ", ")))" }
-                    .joined(separator: "; ")
+                action.reasons.isEmpty
+                    ? "\(action.action): no build Mac is enrolled" + (machine.map { " named \($0)" } ?? "")
+                    : action.action + ": "
+                        + action.reasons.sorted { $0.key < $1.key }.map { "\($0.key) (\($0.value.joined(separator: ", ")))" }
+                        .joined(separator: "; ")
             }
             throw ToolError(
                 "No Mac can run every action now, so the build was not started:\n- " + reasons.joined(separator: "\n- ")
