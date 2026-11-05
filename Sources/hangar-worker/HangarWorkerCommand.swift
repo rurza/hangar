@@ -22,6 +22,17 @@ struct HangarWorkerCommand: AsyncParsableCommand {
         func run() async throws {
             LoggingSystem.bootstrap { StreamLogHandler.standardError(label: $0) }
             let logger = Logger(label: "app.hangar.worker")
+            // Everything the worker and its jobs create is private to this user (worker isolation design).
+            WorkerPrivacy.restrictUmask()
+            let user = NSUserName()
+            let home = NSHomeDirectory()
+            if WorkerPrivacy.isDedicatedAccount(user: user, home: home) {
+                do { try WorkerPrivacy.lockDown(home: home) } catch {
+                    logger.warning("could not set \(home) to mode 0700: \(error)")
+                }
+            } else if let warning = WorkerPrivacy.startupWarning(user: user, home: home) {
+                logger.warning("\(warning)")
+            }
             let configuration: WorkerConfiguration
             do {
                 configuration = try WorkerConfiguration.load(from: config)

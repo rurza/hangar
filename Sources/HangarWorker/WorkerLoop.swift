@@ -55,16 +55,12 @@ public actor WorkerLoop {
 
     // MARK: Start-up
 
-    /// Creates the data directory and removes what a crashed run left in `jobs/`: each job's secrets are wiped first.
+    /// Creates the data directory at mode 0700 and removes what a crashed run left in `jobs/`: each job's secrets are
+    /// wiped first.
     private func prepareDataDirectory() {
+        guard Self.createPrivateDataDirectory(configuration.dataDirectory, logger: logger) else { return }
         let root = URL(fileURLWithPath: configuration.dataDirectory).standardizedFileURL.path
         let jobsDirectory = root + "/jobs"
-        do {
-            try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
-        } catch {
-            logger.error("could not create the data directory \(root): \(error)")
-            return
-        }
         guard let leftovers = try? FileManager.default.contentsOfDirectory(atPath: jobsDirectory) else { return }
         for name in leftovers.sorted() {
             let path = jobsDirectory + "/" + name
@@ -76,6 +72,26 @@ public actor WorkerLoop {
                 logger.error("could not sweep leftover job directory \(name): \(error)")
             }
         }
+    }
+
+    /// Creates `path` if needed and sets it to mode 0700 with a real `chmod`: the create attribute is subject to umask
+    /// and does not change a directory that already exists. Does not walk the cache inside it. False when the
+    /// directory cannot be created; a failed chmod is only logged.
+    @discardableResult
+    static func createPrivateDataDirectory(_ path: String, logger: Logger) -> Bool {
+        let root = URL(fileURLWithPath: path).standardizedFileURL.path
+        do {
+            try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        } catch {
+            logger.error("could not create the data directory \(root): \(error)")
+            return false
+        }
+        do {
+            try WorkerPrivacy.setMode(0o700, at: root)
+        } catch {
+            logger.warning("could not set the data directory \(root) to mode 0700: \(error)")
+        }
+        return true
     }
 
     // MARK: Loops
