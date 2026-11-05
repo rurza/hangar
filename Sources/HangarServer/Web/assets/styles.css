@@ -1538,6 +1538,19 @@ li + li > .artifact-link::before {
 }
 .artifact-name { flex: 1; min-width: 0; font: var(--callout); overflow-wrap: anywhere; }
 .artifact-size { color: var(--secondary); font: var(--footnote); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.artifact-product .artifact-name { font-weight: 600; }
+.artifact-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.artifact-others { margin: var(--space-2) 0 var(--space-1); color: var(--secondary); font: var(--footnote); font-weight: 600; }
 
 /* MARK: Log */
 

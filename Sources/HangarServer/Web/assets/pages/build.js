@@ -320,16 +320,23 @@ function jobCardView(initial, { machines, live, signal }) {
         : null);
       return;
     }
+    // What was built (the .ipa, .pkg, app or disk image) first and marked; dSYMs, results and plists after it.
+    const products = list.filter((artifact) => isProduct(artifact.name));
+    const others = list.filter((artifact) => !isProduct(artifact.name));
+    const row = (artifact, product) => h('li', null,
+      h('a', {
+        class: ['artifact-link', product && 'artifact-product'],
+        href: `/api/v1/jobs/${seg(job.id)}/artifacts/${seg(artifact.name)}`,
+        download: artifact.name,
+      },
+      product ? downloadGlyph() : null,
+      h('span', { class: 'artifact-name' }, artifact.name),
+      h('span', { class: 'artifact-size' }, formatBytes(artifact.sizeBytes))));
     replaceChildren(artifacts,
       h('h3', { class: 'job-subtitle' }, 'Artifacts'),
-      h('ul', { class: 'artifact-list' }, list.map((artifact) => h('li', null,
-        h('a', {
-          class: 'artifact-link',
-          href: `/api/v1/jobs/${seg(job.id)}/artifacts/${seg(artifact.name)}`,
-          download: artifact.name,
-        },
-        h('span', { class: 'artifact-name' }, artifact.name),
-        h('span', { class: 'artifact-size' }, formatBytes(artifact.sizeBytes)))))));
+      products.length ? h('ul', { class: 'artifact-list' }, products.map((artifact) => row(artifact, true))) : null,
+      others.length && products.length ? h('h4', { class: 'artifact-others' }, 'Other Files') : null,
+      others.length ? h('ul', { class: 'artifact-list' }, others.map((artifact) => row(artifact, false))) : null);
   }
 
   function update(next) {
@@ -526,4 +533,15 @@ function logPanel(initialJobs, context) {
       if (names !== stepOptions) renderSteps();
     },
   };
+}
+
+/** An artifact that is the build's product rather than a by-product: an installable or shareable app. */
+function isProduct(name) {
+  return /\.(ipa|pkg|dmg)$/i.test(name) || /\.app(\.zip)?$/i.test(name);
+}
+
+/** An arrow into a tray, before a product's name. */
+function downloadGlyph() {
+  return svg('svg', { class: 'artifact-icon', viewBox: '0 0 24 24', 'aria-hidden': 'true', focusable: 'false' },
+    svg('path', { d: 'M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14' }));
 }
