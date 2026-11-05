@@ -64,7 +64,7 @@ public struct ArchiveStep: Sendable {
 
     /// `environment` is the xcodebuild environment (no secrets); the token's credential settings are added to it.
     public static func resolveCommand(
-        workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
+        workflow: Workflow, action: WorkflowAction, repository: String, layout: WorkspaceLayout, developerDir: String,
         environment: [String: String], gitHubToken: String?
     ) -> ProcessCommand {
         let arguments =
@@ -79,7 +79,7 @@ public struct ArchiveStep: Sendable {
     }
 
     public static func command(
-        workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
+        workflow: Workflow, action: WorkflowAction, repository: String, layout: WorkspaceLayout, developerDir: String,
         key: ASCKeyArguments?, environment: [String: String]
     ) -> ProcessCommand {
         let arguments =
@@ -100,7 +100,7 @@ public struct ArchiveStep: Sendable {
 
     /// xcodebuild refuses to overwrite an existing result bundle and archive, so both are removed first.
     public func run(
-        workflow: Workflow, action: ArchiveAction, repository: String, layout: WorkspaceLayout, developerDir: String,
+        workflow: Workflow, action: WorkflowAction, repository: String, layout: WorkspaceLayout, developerDir: String,
         key: ASCKeyArguments?, environment: [String: String], gitHubToken: String?,
         log: @escaping @Sendable (String) -> Void
     ) async throws {

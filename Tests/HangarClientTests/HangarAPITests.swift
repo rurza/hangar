@@ -12,7 +12,7 @@ import Testing
     static func build(status: BuildStatus = .queued) -> Build {
         let buildID = UUID()
         let job = Job(
-            id: UUID(), buildID: buildID, action: ArchiveAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
+            id: UUID(), buildID: buildID, action: WorkflowAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
             status: .queued, createdAt: t0)
         return Build(
             id: buildID, appID: UUID(), workflow: "testflight", ref: "main", commit: "abc1234", buildNumber: 42,

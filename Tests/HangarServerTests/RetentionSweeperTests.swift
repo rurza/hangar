@@ -34,7 +34,7 @@ import Testing
             case .cancelled: .cancelled
             }
         let job = Job(
-            id: UUID(), buildID: buildID, action: ArchiveAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
+            id: UUID(), buildID: buildID, action: WorkflowAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect),
             status: jobStatus, createdAt: created, finishedAt: finished)
         let build = Build(
             id: buildID, appID: app.id, workflow: "testflight", ref: "main", commit: "abc", buildNumber: Int.random(in: 1...999_999),

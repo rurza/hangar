@@ -65,6 +65,14 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /apps/{id}/repo-icon?ref=` | `ref` optional | `200` the image of the `appiconset` icon `workflow-suggestion` finds, cached in memory for an hour; `404` `icon_not_found` when there is none (or only an Icon Composer icon) |
 | `GET /events` | | SSE stream, see below |
 
+### Jobs
+
+A `Job`'s `action` is the workflow action it runs: `{kind: "archive", scheme, platform, export}` or `{kind: "test", scheme, platform, destination?, testPlan?}` (an action without `kind`, stored before test actions existed, is an archive). A deploy creates one job per action of either kind; they share the build's number. A test job's `steps` are `checkout`, `post-clone`, `pre-xcodebuild`, `test`, `post-xcodebuild`, `upload-artifacts` and `cleanup`.
+
+#### Test outputs
+
+Once its result bundle is read, a test job's `outputs` hold, as strings: `test.passed`, `test.failed`, `test.skipped`, `test.total`, and `test.failures`, a JSON array of `{name, message}` (one per failing test, its first failure message; at most 50, secrets masked). A `Machine`'s report lists `simulatorRuntimes` (`["iOS 27.2", "visionOS 27.1"]`); the scheduler does not give a simulator test to a machine without a runtime for its platform.
+
 Numbers and deploys ask App Store Connect and Xcode Cloud for the highest known build number. They need the global variables `HANGAR_ASC_KEY_ID` and `HANGAR_ASC_KEY_PATH` (the `.p8` contents), plus `HANGAR_ASC_ISSUER_ID` for a team key; without an issuer ID the key is used as an individual key (JWT `sub: "user"`, no `iss`). The server reads them on every request.
 
 **Local only:** the routes marked so act on the server's own Mac (its key files, its GitHub CLI login, installing a worker there), so they answer only requests whose socket peer is this Mac: loopback, the bound address or one of its interface addresses (a browser on this Mac that opens the tailnet name counts). Headers are never trusted for this. Any other peer gets `403` `local_only`.

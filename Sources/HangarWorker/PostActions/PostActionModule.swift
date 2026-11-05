@@ -7,7 +7,7 @@ import HangarCore
 /// team key (xcodebuild then signs and uploads with the Xcode account on the Mac).
 public struct PostActionContext: Sendable {
     public var app: App
-    public var action: ArchiveAction
+    public var action: WorkflowAction
     public var buildNumber: Int
     public var archivePath: String
     /// Set when the export step wrote an artifact to disk (not for destination `upload`).
@@ -31,7 +31,7 @@ public struct PostActionContext: Sendable {
     public var log: @Sendable (String) -> Void
 
     public init(
-        app: App, action: ArchiveAction, buildNumber: Int, archivePath: String, exportedArtifactPath: String?,
+        app: App, action: WorkflowAction, buildNumber: Int, archivePath: String, exportedArtifactPath: String?,
         repository: String, projectDirectory: String, environment: [String: String],
         xcodebuildEnvironment: [String: String]? = nil, layout: WorkspaceLayout,
         developerDir: String, teamID: String?, key: ASCKeyArguments?, appStoreConnect: (any AppStoreConnectClient)?,

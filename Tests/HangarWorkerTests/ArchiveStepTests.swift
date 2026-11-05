@@ -20,7 +20,7 @@ import Testing
     ]
 
     private func command(
-        _ workflow: Workflow, _ action: ArchiveAction, key: ASCKeyArguments? = ArchiveStepTests.key
+        _ workflow: Workflow, _ action: WorkflowAction, key: ASCKeyArguments? = ArchiveStepTests.key
     ) -> ProcessCommand {
         ArchiveStep.command(
             workflow: workflow, action: action, repository: Self.layout.repository, layout: Self.layout,
@@ -29,7 +29,7 @@ import Testing
     }
 
     @Test func legiloMobileCommand() {
-        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         let command = command(workflow, action)
         #expect(command.executable == "/usr/bin/xcodebuild")
@@ -47,7 +47,7 @@ import Testing
     }
 
     @Test func commandWithoutKeyArgumentsWhenNoTeamKey() {
-        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         let command = command(workflow, action, key: nil)
         #expect(Array(command.arguments.suffix(Self.tail.count)) == Self.tail)
@@ -55,7 +55,7 @@ import Testing
     }
 
     @Test func resolveCommandUsesSystemGitWithTheTokenOnly() {
-        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         let command = ArchiveStep.resolveCommand(
             workflow: workflow, action: action, repository: Self.layout.repository, layout: Self.layout,
@@ -86,7 +86,7 @@ import Testing
         let root = NSTemporaryDirectory() + "hangar-archive-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         let layout = WorkspaceLayout(dataDirectory: root, appSlug: "legilo", jobID: Self.jobID)
-        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         let runner = RecordingProcessRunner()
         runner.script({ $0.arguments.first == "-resolvePackageDependencies" }, lines: ["error: auth"], exitCode: 74)
@@ -101,7 +101,7 @@ import Testing
     }
 
     @Test func workspaceInSubdirectory() {
-        let action = ArchiveAction(scheme: "Legilo", platform: .macOS, export: .developerID)
+        let action = WorkflowAction(scheme: "Legilo", platform: .macOS, export: .developerID)
         let workflow = Workflow(workspace: "apps/mac/Legilo.xcworkspace", xcode: "27.2", actions: [action])
         let command = command(workflow, action)
         #expect(command.arguments.prefix(5) == [
@@ -130,7 +130,7 @@ import Testing
         let root = NSTemporaryDirectory() + "hangar-archive-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         let layout = WorkspaceLayout(dataDirectory: root, appSlug: "legilo", jobID: Self.jobID)
-        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         try FileManager.default.createDirectory(
             atPath: layout.resultBundle, withIntermediateDirectories: true)
@@ -158,7 +158,7 @@ import Testing
         let root = NSTemporaryDirectory() + "hangar-archive-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: root) }
         let layout = WorkspaceLayout(dataDirectory: root, appSlug: "legilo", jobID: Self.jobID)
-        let action = ArchiveAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
+        let action = WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect)
         let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
         let runner = RecordingProcessRunner()
         runner.script({ $0.arguments.first == "archive" }, lines: ["error: boom"], exitCode: 65)
@@ -176,7 +176,7 @@ import Testing
         // With scheme `../../x` the archive path would resolve to `<root>/x.xcarchive`, outside the job directory.
         try FileManager.default.createDirectory(atPath: root + "/x.xcarchive", withIntermediateDirectories: true)
         for scheme in ["../../x", "a/b", "..", "a..b", ""] {
-            let action = ArchiveAction(scheme: scheme, platform: .iOS, export: .appStoreConnect)
+            let action = WorkflowAction(scheme: scheme, platform: .iOS, export: .appStoreConnect)
             let workflow = Workflow(project: "Legilo.xcodeproj", xcode: "27.2", actions: [action])
             let runner = RecordingProcessRunner()
             await #expect(throws: ArchiveError.invalidScheme(scheme)) {

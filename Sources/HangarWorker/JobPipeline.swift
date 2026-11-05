@@ -6,7 +6,7 @@ import Logging
 enum StepPolicy {
     /// Only while nothing has failed and the job was not cancelled.
     case normal
-    /// Like `normal`; when it fails, `post-xcodebuild` still runs (`xcodebuild archive` and `-exportArchive`).
+    /// Like `normal`; when it fails, `post-xcodebuild` still runs (`xcodebuild archive`, `test` and `-exportArchive`).
     case xcodebuild
     /// Like `normal`, but also after an `xcodebuild` step failed.
     case postXcodebuild
@@ -21,11 +21,17 @@ struct JobCancelled: Error {}
 enum PreparationError: Error, Equatable, CustomStringConvertible {
     case xcodeNotInstalled(String)
     case appStoreConnectKeyMissing
+    case noSimulator(platform: String, machine: String)
+    case simulatorNotFound(name: String, platform: String, machine: String, available: [String])
 
     var description: String {
         switch self {
         case .xcodeNotInstalled(let version): "Xcode \(version) not installed"
         case .appStoreConnectKeyMissing: "App Store Connect key not configured; set it in Settings"
+        case .noSimulator(let platform, let machine):
+            "No \(platform) simulator available on \(machine); install one in Xcode › Settings › Components"
+        case .simulatorNotFound(let name, let platform, let machine, let available):
+            "No \(platform) simulator named “\(name)” on \(machine); available: \(available.joined(separator: ", "))"
         }
     }
 }
@@ -141,13 +147,15 @@ struct JobPipeline {
     private static func exitCode(_ error: any Error) -> Int32? {
         switch error {
         case ArchiveError.xcodebuildFailed(let code), ArchiveError.packageResolutionFailed(let code),
-            ExportError.xcodebuildFailed(let code): code
+            ExportError.xcodebuildFailed(let code), TestError.xcodebuildFailed(let code),
+            TestError.testsFailed(_, let code): code
         default: nil
         }
     }
 
     private static func cause(_ error: any Error) -> String {
         if case ArchiveError.packageResolutionFailed = error { return String(describing: error) }
+        if case TestError.testsFailed = error { return String(describing: error) }
         if let code = exitCode(error) { return "xcodebuild exited with \(code)" }
         return String(describing: error)
     }

@@ -25,11 +25,25 @@ import Testing
     }
 
     static func doctor(
-        _ runner: RecordingProcessRunner, tools: [String] = [], clock: any Clock<Duration> = ContinuousClock()
+        _ runner: any ProcessRunner, tools: [String] = [], clock: any Clock<Duration> = ContinuousClock(),
+        now: @escaping @Sendable () -> Date = Date.init
     ) -> Doctor {
         Doctor(
-            runner: runner, locator: XcodeLocator(runner: runner, applicationsDirectory: "/nonexistent"),
-            knownTools: tools, dataDirectory: NSTemporaryDirectory(), clock: clock)
+            runner: runner, locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: "/nonexistent"),
+            knownTools: tools, dataDirectory: NSTemporaryDirectory(), clock: clock, now: now)
+    }
+
+    static func isSimctl(_ command: ProcessCommand) -> Bool { command.arguments.starts(with: ["simctl"]) }
+
+    /// Answers from `good` until `failing` is set, then from `bad`.
+    final class SwitchingRunner: ProcessRunner {
+        let good = DoctorTests.scriptedRunner()
+        let bad = DoctorTests.scriptedRunner()
+        let failing = Mutex(false)
+        func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
+            try await (failing.withLock { $0 } ? bad : good).run(command, onLine: onLine)
+        }
+        var simctlRuns: Int { (good.commands + bad.commands).filter(DoctorTests.isSimctl).count }
     }
 
     @Test func parsesSysctlAndPower() async {
@@ -52,6 +66,58 @@ import Testing
     @Test func desktopWithoutBatteryCountsAsAC() async {
         let runner = Self.scriptedRunner(battery: [])
         #expect(await Self.doctor(runner).report(runningJobIDs: []).onACPower)
+    }
+
+    @Test func reportsSimulatorRuntimes() async throws {
+        let runner = Self.scriptedRunner()
+        let devices = String(decoding: SimulatorCatalogTests.several, as: UTF8.self)
+        runner.script({ $0.arguments == ["simctl", "list", "devices", "available", "--json"] }, lines: [devices])
+        let report = await Self.doctor(runner).report(runningJobIDs: [])
+        #expect(report.simulatorRuntimes == ["iOS 26.4", "iOS 27.2", "visionOS 27.1"])
+        #expect(report.capabilities == [WorkerCapability.testActions])
+        #expect(runner.commands.first(where: Self.isSimctl)?.discardsStandardError == true)
+        #expect(await Self.doctor(Self.scriptedRunner()).report(runningJobIDs: []).simulatorRuntimes == [])
+    }
+
+    @Test func simulatorRuntimesAreCachedAndTheLastGoodListSurvivesAFailure() async {
+        let runner = SwitchingRunner()
+        let devices = String(decoding: SimulatorCatalogTests.several, as: UTF8.self)
+        runner.good.script(Self.isSimctl, lines: [devices])
+        runner.bad.script(Self.isSimctl, lines: ["CoreSimulatorService connection became invalid"], exitCode: 1)
+        let time = Mutex(Date(timeIntervalSince1970: 0))
+        let doctor = Self.doctor(runner, now: { time.withLock { $0 } })
+        let expected = ["iOS 26.4", "iOS 27.2", "visionOS 27.1"]
+
+        #expect(await doctor.report(runningJobIDs: []).simulatorRuntimes == expected)
+        time.withLock { $0 += 9 * 60 }
+        #expect(await doctor.report(runningJobIDs: []).simulatorRuntimes == expected)
+        #expect(runner.simctlRuns == 1)
+
+        runner.failing.withLock { $0 = true }
+        time.withLock { $0 += 2 * 60 }
+        #expect(await doctor.report(runningJobIDs: []).simulatorRuntimes == expected)
+        #expect(runner.simctlRuns == 2)
+        // A failed probe is not retried on every heartbeat either.
+        _ = await doctor.report(runningJobIDs: [])
+        #expect(runner.simctlRuns == 2)
+    }
+
+    @Test func aHangingSimctlIsCutOff() async {
+        let runner = Self.scriptedRunner()
+        runner.scriptHang(Self.isSimctl)
+        let clock = TestClock()
+        let doctor = Self.doctor(runner, clock: clock)
+        let finished = Mutex(false)
+        let task = Task {
+            let report = await doctor.report(runningJobIDs: [])
+            finished.withLock { $0 = true }
+            return report
+        }
+        while !finished.withLock({ $0 }) {
+            await Task.yield()
+            await clock.advance(by: .seconds(10))
+        }
+        #expect(await task.value.simulatorRuntimes == [])
     }
 
     @Test func runningJobsAreEchoed() async {

@@ -44,7 +44,15 @@ struct Workflows: HangarCommand {
         for (name, workflow) in response.workflows.workflows.sorted(by: { $0.key < $1.key }) {
             lines.append("")
             lines.append("\(name)  Xcode \(workflow.xcode)" + (workflow.teamID.map { "  team \($0)" } ?? ""))
-            for action in workflow.actions { lines.append("  \(Format.label(action))  \(action.export.rawValue)") }
+            for action in workflow.actions {
+                let detail =
+                    switch action.kind {
+                    case .archive: action.export?.rawValue ?? ""
+                    case .test:
+                        "on \(action.destination ?? "recommended")" + (action.testPlan.map { ", plan \($0)" } ?? "")
+                    }
+                lines.append("  \(Format.label(action))  \(detail)")
+            }
             if !workflow.postActions.isEmpty {
                 lines.append("  post-actions: " + workflow.postActions.map(\.name).joined(separator: ", "))
             }

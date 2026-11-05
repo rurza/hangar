@@ -1,0 +1,42 @@
+{
+  "devices" : {
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4" : [
+      {
+        "dataPath" : "\/Users\/adam\/Library\/Developer\/CoreSimulator\/Devices\/87FE85F7-69BE-4420-B49B-E9DFEE93EF94\/data",
+        "dataPathSize" : 18337792,
+        "logPath" : "\/Users\/adam\/Library\/Logs\/CoreSimulator\/87FE85F7-69BE-4420-B49B-E9DFEE93EF94",
+        "udid" : "87FE85F7-69BE-4420-B49B-E9DFEE93EF94",
+        "lastUsedAt" : "2026-11-04T11:17:24Z",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+        "state" : "Shutdown",
+        "name" : "iPhone Duo 27.2 (workstream)"
+      }
+    ],
+    "com.apple.CoreSimulator.SimRuntime.iOS-27-2" : [
+      {
+        "dataPath" : "\/Users\/adam\/Library\/Developer\/CoreSimulator\/Devices\/31AE04F1-1E19-448C-A984-1A9978C02CA8\/data",
+        "dataPathSize" : 18337792,
+        "logPath" : "\/Users\/adam\/Library\/Logs\/CoreSimulator\/31AE04F1-1E19-448C-A984-1A9978C02CA8",
+        "udid" : "31AE04F1-1E19-448C-A984-1A9978C02CA8",
+        "lastUsedAt" : "2026-10-30T14:47:38Z",
+        "isAvailable" : true,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M5-12GB",
+        "state" : "Shutdown",
+        "name" : "iPad Pro 11 Tests"
+      },
+      {
+        "dataPath" : "\/Users\/adam\/Library\/Developer\/CoreSimulator\/Devices\/98DAE3C9-6916-4BC4-89CD-DB0A8BC793CD\/data",
+        "dataPathSize" : 3819528192,
+        "logPath" : "\/Users\/adam\/Library\/Logs\/CoreSimulator\/98DAE3C9-6916-4BC4-89CD-DB0A8BC793CD",
+        "udid" : "98DAE3C9-6916-4BC4-89CD-DB0A8BC793CD",
+        "lastUsedAt" : "2026-11-04T07:49:26Z",
+        "isAvailable" : true,
+        "logPathSize" : 540672,
+        "deviceTypeIdentifier" : "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+        "state" : "Booted",
+        "name" : "iPhone 17"
+      }
+    ]
+  }
+}

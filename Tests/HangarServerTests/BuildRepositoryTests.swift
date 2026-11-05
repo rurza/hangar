@@ -20,14 +20,14 @@ import Testing
 
     let workflow = Workflow(
         project: "App.xcodeproj", xcode: "27.2", tools: ["xcodegen"],
-        actions: [ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
+        actions: [WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect)])
 
     func makeBuild(number: Int = 1, jobCount: Int = 1) -> Build {
         let id = UUID()
         let now = Date(timeIntervalSince1970: 1_800_000_000.5)
         let jobs = (0..<jobCount).map { _ in
             Job(
-                id: UUID(), buildID: id, action: ArchiveAction(scheme: "App", platform: .iOS, export: .appStoreConnect),
+                id: UUID(), buildID: id, action: WorkflowAction(scheme: "App", platform: .iOS, export: .appStoreConnect),
                 status: .queued, createdAt: now)
         }
         return Build(

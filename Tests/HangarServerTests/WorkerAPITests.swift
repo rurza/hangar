@@ -38,12 +38,12 @@ final class ManualNow: Sendable {
 
         init(
             clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = { WorkerAPITests.t0 },
-            assign: Bool = true
+            assign: Bool = true, workflow: String = "testflight"
         ) async throws {
             fixture = try APIFixture(clock: clock, now: now)
             try fixture.createApp()
             (machine, token) = try fixture.server.machines.create(name: "studio")
-            build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: "testflight", ref: "main"))
+            build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: workflow, ref: "main"))
             if assign {
                 for job in build.jobs { #expect(try fixture.server.builds.assign(jobID: job.id, to: machine.id, at: WorkerAPITests.t0)) }
             }
@@ -74,6 +74,29 @@ final class ManualNow: Sendable {
             try await client.execute(uri: "/api/v1/builds/\(setup.build.id.uuidString)", method: .get) { response in
                 #expect(response.status == .ok)
             }
+        }
+    }
+
+    /// An archive job's assignment leaves out the workflow's test actions, so a worker from before test actions can
+    /// still decode it; a test job's carries the whole workflow.
+    @Test func archiveAssignmentsOfAMixedWorkflowCarryOnlyArchiveActions() async throws {
+        let setup = try await Setup(workflow: "ci")
+        let archive = try #require(setup.build.jobs.first { $0.action.kind == .archive })
+        let test = try #require(setup.build.jobs.first { $0.action.kind == .test })
+        let server = setup.fixture.server
+        try await setup.fixture.test { client in
+            var seen: [ActionKind: JobAssignment] = [:]
+            for _ in 0..<2 {
+                let assignment = try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) {
+                    try decode(JobAssignment.self, $0)
+                }
+                seen[assignment.job.action.kind] = assignment
+                try server.builds.setJobStatus(id: assignment.job.id, status: .cancelled, at: WorkerAPITests.t0)
+            }
+            #expect(seen[.archive]?.job.id == archive.id)
+            #expect(seen[.archive]?.workflow.actions == [archive.action])
+            #expect(seen[.test]?.job.id == test.id)
+            #expect(seen[.test]?.workflow.actions.count == 2)
         }
     }
 

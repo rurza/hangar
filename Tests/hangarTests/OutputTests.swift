@@ -13,11 +13,29 @@ import Testing
         #expect(table.render() == "NAME    STATUS\nlegilo  ok\na       running")
     }
 
+    @Test func statusDetailShowsTheKindAndTestSummary() {
+        var job = H.job(status: .failed)
+        job.action = .test(scheme: "LegiloTests", platform: .iOS)
+        job.failureReason = "test: 2 tests failed"
+        job.outputs = [
+            "test.passed": "40", "test.failed": "2", "test.skipped": "1", "test.total": "43",
+            "test.failures": #"[{"message":"XCTAssertEqual failed","name":"A/testOne()"},{"message":"line 1\nline 2","name":"A/testTwo()"}]"#,
+        ]
+        let text = Status.renderDetail(H.build(job), apps: [H.app], machines: [], now: H.t0, timeZone: H.utc)
+        #expect(text.contains("[LegiloTests/ios] Test – iOS failed on 22222222: test: 2 tests failed"))
+        #expect(text.contains("Tests: 40 passed · 2 failed · 1 skipped\n  ✗ A/testOne(): XCTAssertEqual failed\n  ✗ A/testTwo(): line 1"))
+        #expect(!text.contains("line 2"))
+
+        let archive = Status.renderDetail(H.build(H.job(status: .running)), apps: [H.app], machines: [], now: H.t0, timeZone: H.utc)
+        #expect(archive.contains("[Legilo/ios] Archive – iOS running"))
+        #expect(!archive.contains("Tests:"))
+    }
+
     @Test func statusTableShowsQueueNote() {
         let machine = Machine(id: H.machineID, name: "mini", createdAt: H.t0)
         let queued = H.build(H.job(queueNote: "waiting for a machine with Xcode 26.1"))
         let runningJob = Job(
-            id: UUID(), buildID: UUID(), action: ArchiveAction(scheme: "LegiloMac", platform: .macOS, export: .developerID),
+            id: UUID(), buildID: UUID(), action: WorkflowAction(scheme: "LegiloMac", platform: .macOS, export: .developerID),
             status: .running, machineID: H.machineID,
             steps: [
                 StepRecord(name: "checkout", status: .succeeded, startedAt: H.t0, finishedAt: H.t0),

@@ -10,7 +10,7 @@ import {
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
 import {
-  blankAction, fileFromModels, modelsFromFile, problems, scratchWorkflow,
+  ACTION_KINDS, blankAction, fileFromModels, modelsFromFile, problems, scratchWorkflow, setActionKind,
 } from '../workflow-model.js';
 
 const PLATFORMS = [
@@ -432,10 +432,33 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
         control.value = action[key];
         return control;
       };
+      const kind = select('kind', ACTION_KINDS, 'Kind');
+      kind.dataset.kind = String(index);
+      kind.addEventListener('change', () => {
+        setActionKind(action, kind.value);
+        rerender(`[data-kind="${index}"]`);
+      });
+      const destination = h('input', {
+        class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
+        value: action.destination ?? '', placeholder: action.platform === 'macos' ? 'This Mac' : 'Recommended',
+        disabled: action.platform === 'macos',
+        'aria-label': `Simulator of action ${n}`,
+        onInput: (event) => {
+          action.destination = event.target.value;
+          changed();
+        },
+      });
+      const platform = select('platform', PLATFORMS, 'Platform');
+      platform.dataset.platform = String(index);
+      // A macOS test runs on the Mac, so its simulator field turns off.
+      platform.addEventListener('change', () => {
+        if (action.kind === 'test') rerender(`[data-platform="${index}"]`);
+      });
       return h('li', { class: 'action-row' },
+        kind,
         scheme,
-        select('platform', PLATFORMS, 'Platform'),
-        select('export', EXPORTS, 'Export'),
+        platform,
+        action.kind === 'test' ? destination : select('export', EXPORTS, 'Export'),
         button('Remove', {
           kind: 'plain-destructive', 'aria-label': `Remove action ${n}`,
           onClick: () => {
@@ -446,9 +469,10 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     });
     return h('div', { class: 'workflow-group' },
       h('h3', { class: 'workflow-group-title' }, 'Actions'),
-      h('p', { class: 'field-hint' }, 'Each action archives one scheme and exports it.'),
+      h('p', { class: 'field-hint' },
+        'An archive action archives one scheme and exports it; a test action runs its tests on a simulator (or this Mac for macOS). Post-actions follow archives only.'),
       h('div', { class: 'action-head', 'aria-hidden': 'true' },
-        h('span', null, 'Scheme'), h('span', null, 'Platform'), h('span', null, 'Export'), h('span')),
+        h('span', null, 'Kind'), h('span', null, 'Scheme'), h('span', null, 'Platform'), h('span', null, 'Export or simulator'), h('span')),
       h('ul', { class: 'action-list' }, rows),
       h('button', {
         type: 'button', class: 'add-row-button add-action',
