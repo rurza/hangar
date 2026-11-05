@@ -31,9 +31,15 @@ export function openAddAppSheet({ onAdded } = {}) {
     picking: null, // the detected app whose App Store Connect picker is open
     manualFor: undefined, // the detected app the typed-ID form is for; null: none in particular; undefined: closed
     autoMatched: false, // step 2 was decided by Hangar: one app in the repository, found in App Store Connect
+    showUnmatched: false, // the targets without an App Store Connect app are listed, next to matched ones
   };
   let repos = null; // GitHubRepo[], loaded once
   let reposError = null;
+  let hangarApps = []; // the apps already in Hangar, to mark their repositories and App Store Connect apps
+  api.get('/apps').then((list) => {
+    hangarApps = list ?? [];
+    if (state.step === 'repo' && repos !== null && sheetElement.isConnected) render();
+  }, () => {});
   let ascConfigured = null;
   let inspecting = null; // the AbortController of the running inspection
   let ascApps = null; // the team's App Store Connect apps, loaded when a picker first opens
@@ -156,7 +162,8 @@ export function openAddAppSheet({ onAdded } = {}) {
 
     function repoItem(repo) {
       const [owner, name] = repo.fullName.split('/');
-      return h('button', {
+      const added = appsInRepo(repo.fullName);
+      const item = h('button', {
         type: 'button',
         class: ['pick-item', repo.archived && 'archived'],
         'aria-pressed': String(state.repo?.fullName === repo.fullName),
@@ -167,9 +174,14 @@ export function openAddAppSheet({ onAdded } = {}) {
           // Owner and name are one run of text; the flex gap only separates the badges.
           h('span', { class: 'pick-item-title' }, h('span', { class: 'secondary' }, `${owner}/`), name),
           repo.isPrivate ? lockBadge() : null,
-          repo.archived ? h('span', { class: 'pick-badge' }, 'Archived') : null),
+          repo.archived ? h('span', { class: 'pick-badge' }, 'Archived') : null,
+          added.length ? h('span', { class: 'pick-badge' }, 'In Hangar') : null),
         repo.description ? h('span', { class: 'pick-item-detail' }, repo.description) : null),
-      repo.pushedAt ? h('span', { class: 'pick-item-time' }, `updated ${relativeTime(repo.pushedAt)}`) : null);
+      repo.pushedAt && !added.length ? h('span', { class: 'pick-item-time' }, `updated ${relativeTime(repo.pushedAt)}`) : null);
+      // Already added: a way to its app instead of a dead end. Picking the repository still works, for another
+      // app in it.
+      if (!added.length) return item;
+      return h('div', { class: 'pick-row' }, item, openAppLink(added[0]));
     }
 
     search.addEventListener('input', renderList);
@@ -180,6 +192,19 @@ export function openAddAppSheet({ onAdded } = {}) {
     search.focus();
   }
 
+  /** The Hangar apps built from the repository `fullName` ("owner/repo", any case). */
+  function appsInRepo(fullName) {
+    const key = fullName.toLowerCase();
+    return hangarApps.filter((app) => parseRepositoryURL(app.repoURL)?.fullName.toLowerCase() === key);
+  }
+
+  /** "Open Legilo": the existing app's page (the router closes the sheet). */
+  function openAppLink(app) {
+    return h('a', {
+      href: `/apps/${seg(app.slug)}`, 'data-link': true, class: 'button button-plain button-small pick-row-link',
+    }, `Open ${app.name}`);
+  }
+
   function pickRepo(repo) {
     state.autoMatched = false;
     if (state.repo?.fullName !== repo.fullName) {
@@ -188,6 +213,7 @@ export function openAddAppSheet({ onAdded } = {}) {
       state.manual = null;
       state.picking = null;
       state.manualFor = undefined;
+      state.showUnmatched = false;
     }
     state.repo = repo;
     go('app');
@@ -208,6 +234,13 @@ export function openAddAppSheet({ onAdded } = {}) {
     }
     const inspection = state.inspection;
     const { apps } = inspection;
+    // Next to an app found in App Store Connect, the targets without one (a helper, a widget host...) are folded
+    // away: each would otherwise ask for App Store Connect as loudly as the app.
+    const unmatched = apps.filter((app) => !app.appStoreConnect);
+    const fold = unmatched.length > 0 && unmatched.length < apps.length && !state.showUnmatched
+      && !unmatched.includes(state.picking) && !unmatched.includes(state.manualFor);
+    const folded = fold ? unmatched : [];
+    const shown = apps.filter((app) => !folded.includes(app));
     // The form for typing the ID: under the picker of the app it is for, else at the bottom.
     const manual = state.manualFor !== undefined ? manualForm(state.manualFor) : null;
     const next = { label: 'Next', kind: 'primary', onClick: () => { manual?.submit(); return false; } };
@@ -233,10 +266,16 @@ export function openAddAppSheet({ onAdded } = {}) {
       apps.length === 0
         ? h('div', { class: 'add-app-callout' }, `Hangar found no app target in ${state.repo.fullName}. Enter the app by hand.`)
         : h('ul', { class: 'detected-list', 'aria-label': 'Apps in the repository' },
-          apps.map((app) => h('li', null,
+          shown.map((app) => h('li', null,
             detectedCard(app),
             state.picking === app ? ascPicker(app) : null,
-            state.manualFor === app ? manual.element : null))),
+            state.manualFor === app ? manual.element : null)),
+          folded.length
+            ? h('li', null, h('button', {
+              type: 'button', class: 'link-button detected-more',
+              onClick: () => { state.showUnmatched = true; renderAppStep(); content.querySelector('.detected-item.unmatched .detected-pick')?.focus(); },
+            }, `${folded.length === 1 ? '1 more target' : `${folded.length} more targets`} without an App Store Connect app`))
+            : null),
       ascConfigured === false
         ? h('div', { class: 'add-app-callout' }, 'Add your App Store Connect key in ', settingsLink(),
           ' to find these apps in App Store Connect.')
@@ -323,7 +362,7 @@ export function openAddAppSheet({ onAdded } = {}) {
       h('span', { class: 'detected-detail' }, [app.bundleIDs.join(', '), platforms].filter(Boolean).join(' — ')),
       status);
     if (asc) {
-      return h('button', {
+      const card = h('button', {
         type: 'button',
         class: 'detected-item',
         disabled: asc.registered,
@@ -339,6 +378,8 @@ export function openAddAppSheet({ onAdded } = {}) {
       text(asc.name, asc.registered
         ? h('span', { class: 'detected-status' }, 'Already in Hangar')
         : h('span', { class: 'detected-status found' }, checkBadge('found-check'), 'In App Store Connect')));
+      const existing = asc.registered ? hangarApps.find((added) => added.appStoreConnectAppID === asc.id) : null;
+      return existing ? h('div', { class: 'pick-row' }, card, openAppLink(existing)) : card;
     }
     const small = 'button button-secondary button-small';
     let status;
@@ -356,7 +397,8 @@ export function openAddAppSheet({ onAdded } = {}) {
       status = 'No App Store Connect app has its bundle ID. Hangar needs the App Store Connect app to number builds.';
       open = () => { state.picking = app; state.manualFor = undefined; renderAppStep(); };
       actions = [
-        button('Pick from App Store Connect', { class: 'button button-primary button-small', onClick: open }),
+        // Filled only when it is the step's one way on; beside other apps it is one choice among several.
+        button('Pick from App Store Connect', { class: `button ${state.inspection.apps.length === 1 ? 'button-primary' : 'button-secondary'} button-small`, onClick: open }),
         h('a', { href: ASC_APPS_URL, target: '_blank', rel: 'noopener noreferrer', class: small }, 'Create in App Store Connect'),
         button('Check Again', { class: small, onClick: checkAgain }),
       ];

@@ -1130,6 +1130,11 @@ a.row:hover { text-decoration: none; background: var(--fill); }
 .pick-item-detail { color: var(--secondary); font: var(--footnote); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-item-time { flex-shrink: 0; color: var(--secondary); font: var(--footnote); }
 .pick-badge { padding: 0 6px; border-radius: var(--radius-pill); background: var(--fill-strong); color: var(--secondary); font: var(--caption); }
+/* A repository or app already in Hangar: the row, then "Open <app>" at its end. */
+.pick-row { display: flex; align-items: center; gap: var(--space-1); }
+.pick-row > :first-child { flex: 1; min-width: 0; }
+.pick-row-link { flex-shrink: 0; }
+.detected-list .pick-row { padding-right: 10px; border-radius: 10px; background: var(--card); }
 .pick-lock { display: inline-flex; color: var(--secondary); }
 .pick-lock svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
@@ -1156,6 +1161,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .detected-status.found { display: flex; align-items: center; gap: 6px; color: var(--success); font-weight: 600; }
 .found-check { width: 16px; height: 16px; }
 .detected-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); padding-top: var(--space-half); }
+.detected-more { padding: 10px; font: var(--subhead); }
 .detected-item.unmatched { flex-direction: column; align-items: stretch; gap: var(--space-1); }
 .detected-item.unmatched .detected-actions { padding-left: 68px; }
 .detected-pick {
