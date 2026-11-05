@@ -22,6 +22,7 @@
   --neutral: #8e8e93;
   --header-bg: rgba(242, 242, 247, 0.78);
   --tab-bar-bg: rgba(249, 249, 249, 0.86);
+  --bar-solid: #f9f9f9;
   --backdrop: rgba(0, 0, 0, 0.32);
   --toast-bg: rgba(30, 30, 32, 0.92);
   --toast-text: #ffffff;
@@ -94,6 +95,7 @@
     --neutral: #98989d;
     --header-bg: rgba(0, 0, 0, 0.72);
     --tab-bar-bg: rgba(22, 22, 24, 0.86);
+    --bar-solid: #161618;
     --backdrop: rgba(0, 0, 0, 0.56);
     --toast-bg: rgba(58, 58, 60, 0.95);
     /* Dark surfaces are raised by lightness and a hairline, not by shadow. */
@@ -346,8 +348,16 @@ img, svg { display: block; }
   margin: var(--space-2) 0 var(--space-3);
 }
 .page-heading { flex: 1; min-width: 0; }
-/* The actions sit in the title's row: 32 px controls centred on the first 41 px line (4.5 px down). */
-.page-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+/* The actions sit in the title's row: 32 px controls centred on the first 41 px line (4.5 px down). When the
+   title and the actions do not fit side by side (a phone), the actions wrap onto a line of their own instead of
+   squeezing the title to a letter per line. */
+.page-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+}
 .page-title-row .large-title { min-width: 0; }
 
 .large-title {
@@ -860,6 +870,9 @@ a.row:hover { text-decoration: none; background: var(--fill); }
 .switch:disabled { opacity: 0.4; cursor: default; }
 
 .button-small { min-height: 30px; padding: 4px 14px; font-size: 14px; }
+/* A 44 pt tall hit area around the 30 px button. */
+.button-small { position: relative; }
+.button-small::after { content: ""; position: absolute; inset: -7px 0; }
 .button-plain-destructive { background: transparent; color: var(--failure); padding-inline: var(--space-1); }
 .button-plain.button-small, .button-plain-destructive.button-small { padding-inline: var(--space-1); }
 .card-title-row > .button-plain:last-child, .field-label-row > .button-plain:last-child,
@@ -1295,12 +1308,21 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 
 /* MARK: Back link, segmented control and pop-up */
 
+/* A 44 pt hit area around the 21 px line; the negative margins keep the text where it was. */
 .back-link {
-  display: inline-block;
-  margin-bottom: var(--space-1);
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -11.5px calc(-1 * var(--space-1)) calc(var(--space-1) - 11.5px);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
   font: var(--callout);
   letter-spacing: -0.32px;
 }
+.back-link:hover { text-decoration: none; background: var(--fill); }
+/* A flex item drops its trailing space; keep the one after the chevron. */
+.back-link > span { white-space: pre; }
 
 .segmented {
   display: inline-flex;
