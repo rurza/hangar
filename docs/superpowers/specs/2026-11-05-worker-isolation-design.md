@@ -1,8 +1,10 @@
 # Worker isolation
 
 Date: 2026-11-05
-Status: design, not yet implemented
-Tree: branch `workflow-editor`, HEAD `9615a07761637280fb0c64e9efa7a4a7e8fadb3d`
+Status: implemented on branch `worker-isolation` (from `workflow-editor` at `9615a07`); not yet verified on a
+real Mac. Revised the same day: setup is automated (a generated password kept in the administrator's keychain,
+`hangar-worker isolate` instead of a shell migration script). Where this text and the first draft differ, this
+text is the decision.
 
 ## Intent
 
@@ -44,10 +46,13 @@ console user moves over. Those are the decisions below.
    server still hands out one `hangar-worker` binary, the file beside
    `hangar-server`. The update still replaces the worker's own copy and
    re-execs when the worker is idle.
-7. **A worker already enrolled as the console user can move** without a new
-   pairing and without throwing away its DerivedData. One terminal command
-   during worker setup asks for the new account's password and does the
-   rest. It waits if the graphical session is not logged in yet.
+7. **Setup is as automated as macOS allows.** The curl install, run by an
+   administrator, creates the `hangar` account, generates its password (the
+   operator never invents one), shows it once, keeps it in the administrator's
+   login keychain, installs the worker there and guides the one step a script
+   cannot do: a graphical login as `hangar`. It detects that login and
+   finishes. A worker already enrolled as the console user moves the same way,
+   without a new pairing and without throwing away its DerivedData.
 
 ## Non-goals
 
@@ -221,16 +226,44 @@ server. Xcode and the simulator runtimes are the Mac's, used in place.
 Short name `hangar`, full name `Hangar`, shell `/bin/zsh`, home `/Users/hangar`.
 Not a member of `admin`. No `sudoers` entry.
 
-The worker setup command creates the account. It runs in the administrator's
-terminal. `sudo` asks for the administrator's password, because creating a
-user needs it. The command then asks for a separate password for `hangar`.
-An empty password is not acceptable. Do not pass `-admin`. Hangar does not
-write either password to disk, to the worker config, to argv, or to a log.
-The `hangar` password is fed to the tool on stdin:
+`hangar-worker isolate` creates the account. It runs in the administrator's
+terminal, without sudo; it runs `sudo` for each privileged step, and `sudo`
+asks for the administrator's password, because creating a user needs it. The
+curl install runs it for an administrator.
+
+*(revised: automated)* The operator does not choose the `hangar` password.
+`isolate` generates one from the system's cryptographic generator: five groups
+of four lowercase letters and digits without look-alikes (about 100 bits, easy
+to type once at the login window). It saves it first in the administrator's
+own login keychain, as a generic password with service
+`app.hangar.worker-account` and account `hangar`, written with
+Security.framework (no `security -w` on argv), then shows it once in the
+terminal with the command that prints it again:
 
 ```sh
-sudo sysadminctl -addUser hangar -fullName "Hangar" -shell /bin/zsh -password -
+security find-generic-password -s app.hangar.worker-account -a hangar -w
 ```
+
+Neither the server nor the worker stores, reads or needs it. It is not in the
+worker configuration, not on a command line, not in a log. Do not pass
+`-admin`. The account is created and the password set without putting it on
+argv:
+
+```sh
+sudo sysadminctl -addUser hangar -fullName Hangar -shell /bin/zsh -home /Users/hangar -password <throwaway>
+printf 'passwd /Users/hangar <password>\nquit\n' | sudo dscl .     # the real one, on stdin
+sudo createhomedir -c -u hangar
+```
+
+`sysadminctl` only sees a random throwaway, replaced at once. Whether
+`sysadminctl -password -` reads stdin or the terminal is not documented, and
+`sysadminctl` often exits 0 on failure, so `isolate` checks `id -u hangar`
+after it and verifies the real password in process through Open Directory
+(`ODRecord.verifyPassword`). A password that did not take stops the run, with
+`--reset-password` as the way out. Keeping it in the administrator's keychain
+is the trade-off the author chose: anything running as the administrator can
+ask for that item, and Keychain Access asks before it gives it to a different
+program. That account is the operator, not a build.
 
 A password typed at the terminal does not open this user's graphical session.
 loginwindow creates the `gui/<uid>` domain, the login keychain, and the unlock
@@ -241,24 +274,33 @@ every boot would store the signing key's password next to the builds. Automatic
 login as `hangar` is not a substitute: it takes the console, and on a FileVault
 Mac the preboot password still comes first.
 
-The same command therefore waits until `launchctl print gui/<hangar uid>`
-succeeds. While it waits it tells the operator to switch to `hangar` once,
-through fast user switching, and switch back. The `hangar` session stays
-logged in. The console session stays the interactive user. The Mac still must
-not sleep (`pmset`, already in the worker setup): sleep suspends both sessions.
+The same command therefore installs everything first (the worker, its
+configuration and its launch agent are in the `hangar` home before the login,
+so the login itself starts the agent through `RunAtLoad`), then shows the
+password and tells the operator to switch to `hangar` once, through fast user
+switching, and switch back. It detects the session without sudo: a session
+exists when `hangar` owns a `loginwindow` or `Dock` process (`ps -axo
+uid=,comm=`), which every Aqua session has. The `hangar` session stays logged
+in. The console session stays the interactive user. The Mac still must not
+sleep (`pmset`, already in the worker setup): sleep suspends both sessions.
 
-If FileVault would stop that first login, the same command grants a secure
-token before it waits, with the password it already read:
+After the login it waits for `launchctl print gui/<uid>/app.hangar.worker` to
+say `state = running`, and bootstraps the agent itself if the login did not
+load it. When the session already existed (a rerun), it restarts a loaded
+agent onto the new binary (`launchctl kickstart -k`) or bootstraps an unloaded
+one. It reports whether `~/Library/Keychains/login.keychain-db` exists: the
+login creates and unlocks it.
 
-```sh
-sudo sysadminctl -secureTokenOn hangar -password -
-```
+*(revised)* No FileVault secure token is granted. A user without one cannot
+unlock the disk at boot, but logs in normally through fast user switching once
+the administrator has unlocked it, which is the only way `hangar` is ever
+logged in. Granting one would need both passwords on `sysadminctl`'s command
+line. This is a claim to verify on a FileVault Mac before merge.
 
-That grant is part of this command, not a second task.
-
-`xcodebuild -runFirstLaunch` and `sudo xcodebuild -license accept` stay as in
-`docs/worker-setup.md`. First launch runs once per Mac, as `hangar`. It is not
-a copy of Xcode. The license is the system license.
+`sudo xcodebuild -license accept` stays as in `docs/worker-setup.md`. First
+launch is system-wide: `isolate` runs `sudo xcodebuild -runFirstLaunch` when
+`xcodebuild -checkFirstLaunchStatus` says it is still needed. It is not a copy
+of Xcode. The license is the system license.
 
 The agent does not move to a LaunchDaemon, and the plist does not gain a
 `UserName` key in the system domain. A daemon has no Aqua session. The login
@@ -334,8 +376,8 @@ every start is slow and races a build):
    must not call this against the real home: the check is the path and the
    name, and the function that applies it takes the home path so a test can
    pass a temporary directory. If the chmod fails, log it and keep running.
-   Refusing to start would brick a machine over a mode bit; the migration
-   script is the strict check.
+   Refusing to start would brick a machine over a mode bit; `hangar-worker
+   isolate` is the strict check.
 
 On start, if the user is not `hangar`, log one warning: the worker is running
 as that user, so a build can read that user's files. Do not exit.
@@ -376,17 +418,29 @@ directory. Heartbeats compare hashes against that file. Workers download it
 from `GET /install/hangar-worker`. There is still no per-user binary on the
 server.
 
-On the build Mac the `hangar` user runs the same curl install, from a Terminal
-window in the `hangar` session:
+*(revised)* On the build Mac the administrator runs the curl install in
+Terminal:
 
 ```sh
 curl -fsSL http://<tailnet-host>:8787/install | sh
 ```
 
-The default `HANGAR_BIN_DIR` is `~/.local/bin`, which is
-`/Users/hangar/.local/bin`. The script already refuses a directory it cannot
-write, enrolls with the pairing code, writes the configuration as mode 0600,
-and bootstraps `gui/<hangar uid>`. The plist's program is that binary. Idle
+For an administrator (not `hangar`, no `HANGAR_AS_CURRENT_USER=1`) the script
+downloads the worker into a private temporary directory, enrolls into a
+configuration there when this Mac is not enrolled yet (the token never leaves
+that directory except through `isolate`, which installs it mode 0600 into the
+`hangar` home), and runs `hangar-worker isolate --binary <download> [--config
+<enrolled>]` on the terminal. When the administrator's own worker is enrolled
+with this server, `isolate` moves it instead (no pairing). When `hangar`
+already has a configuration for this server (`sudo test -f`, `sudo plutil
+-extract serverURL`), it is an update. The temporary directory is removed on
+exit. `HANGAR_AS_CURRENT_USER=1` keeps the old behaviour: install for the user
+running the script. The `hangar` user itself, and any standard account, also
+install for themselves, with no sudo; a standard account is already not the
+administrator.
+
+The `hangar` agent's binary is `/Users/hangar/.local/bin/hangar-worker`
+(`HANGAR_BIN_DIR` applies only to current-user installs). The plist's program is that binary. Idle
 self-update can replace it, because `hangar` owns the directory, and then
 re-execs. The running process keeps the old inode until the exec, as it does
 today. Jobs are not interrupted: the update waits until `runningIDs` is empty.
@@ -434,15 +488,18 @@ a repo can read the server's data.
 process itself is already user `hangar` (the server and the worker are then the
 same dedicated account, which is isolated from any other interactive user, and
 there is no second home to protect). Otherwise it returns `409` with code
-`dedicated_user_required` and a message that says to run the worker setup
-command in a Terminal. That command asks for the password and, if needed,
-waits for one switch to the `hangar` user. The setup
+`dedicated_user_required` and a message that says to run the install command
+in Terminal as an administrator. That command creates the user with a
+generated password and waits for one switch to the `hangar` user. The setup
 page (`Sources/HangarServer/Web/assets/pages/setup.js`) stops offering the
-button in that case and shows the same instruction. An old page that still
+button in that case and shows the install command (`curl -fsSL
+<origin>/install | sh`), which creates the user. An old page that still
 posts is refused by the endpoint. No `sudo` from `hangar-server`: the server
 is not root and must not write another user's home.
 
-The curl install run by hand as the console user still enrolls. This design
+*(revised)* The curl install run by hand as the console user now sets up
+`hangar` when that user is an administrator; with `HANGAR_AS_CURRENT_USER=1`,
+or as a standard account, it still enrolls as that user. This design
 does not make the worker refuse to start in that case. The warning in *Permissions*
 and `runningUser` on the machine report are how the operator sees it. A hard
 refusal would stop the fleet on the day this ships, before the migration.
@@ -453,87 +510,82 @@ For a worker that is already enrolled and running as the console user. The
 machine token stays. Hangar does not gain a second machine, and the operator
 does not pair again. DerivedData moves, so the next build is not cold.
 
-**One command.** `scripts/worker/migrate-to-hangar-user.sh` is what runs
-during worker setup. It asks for the `hangar` password, creates the account
-when it is missing, moves the token and the cache, and installs the agent.
-If the graphical session is not up, it waits, as in *The user*, instead of
-making the operator do those steps by hand. When the session is up and Xcode
-has never been launched as that user, it runs `xcodebuild -runFirstLaunch`
-there. A Mac with no checkout of this repo gets the same command from
-`docs/worker-setup.md`.
+**One command.** *(revised: `hangar-worker isolate`, not a shell script)* The
+curl install runs it for an administrator; it can also be run by hand. It is
+Swift so the command sequence is testable: every account, file and launchd
+change goes through one injectable runner, tests assert the exact sequence, and
+`--dry-run` runs only the read-only probes and prints every change (nothing
+with sudo runs). The same command creates a fresh Mac's account, moves an
+enrolled worker, updates an isolated one and resumes an interrupted run.
 
-`scripts/worker/migrate-to-hangar-user.sh` takes:
+`hangar-worker isolate` takes:
 
-- `--from-home DIR`, default the invoking user's home, or `SUDO_USER`'s home
-  when run under sudo. This is the account the worker runs as today.
-- `--hangar-home DIR`, default `/Users/hangar`.
-- `--server-data DIR`, default `<from-home>/Library/Application Support/Hangar/server`.
-  Passed empty, the server check is skipped (this Mac is not the server).
-- `--apply`. Without it, the script prints the plan and exits 0. With it, it
-  does the work. When `id hangar` fails, it creates the user from the password
-  read at the terminal. When `launchctl print gui/<hangar uid>` fails, it
-  waits for that login. It does not log in by itself, and it does not enable
-  automatic login.
+- `--config FILE`: the configuration to move. Default: the `--config` in the
+  invoker's `~/Library/LaunchAgents/app.hangar.worker.plist`, else the
+  invoker's default configuration. The install script passes the one it just
+  enrolled.
+- `--binary FILE`: the `hangar-worker` to copy. Default: the running
+  executable, else the old agent's program.
+- `--server-data DIR`: default `<home>/Library/Application Support/Hangar/server`,
+  checked only when it exists. Empty skips the check.
+- `--dry-run`, `--reset-password` (a new generated password for an existing
+  `hangar`), `--no-wait` (stop before the login; run again to finish).
 
-With `--apply`, in order:
+It refuses to run as root, as `hangar`, or as a standard account (creating a
+user needs an administrator; the message names `HANGAR_AS_CURRENT_USER=1`).
+In order:
 
-1. Read the old plist's program (`~/Library/LaunchAgents/app.hangar.worker.plist`
-   under `--from-home`) and the old configuration. The configuration is the
-   `--config` argument in that plist, or else
-   `<from-home>/Library/Application Support/Hangar/worker/config.json`.
-   Refuse if a `hangar-worker` process is still running for the old uid after
-   a `launchctl bootout gui/<old uid>/app.hangar.worker`. An in-flight build
-   dies with that bootout. The operator runs this when nothing important is
-   building. The script says so in its plan.
-2. Copy the old binary to `<hangar-home>/.local/bin/hangar-worker` with
-   `install -o hangar -g staff -m 755`. If the old program path is the server's
-   binary (the same path as `hangar-server`, or the file `--server-data`'s
-   sibling install), copy it. Never move or delete it. Never write the new
-   plist so that its program is that server path.
-3. Copy the configuration to
-   `<hangar-home>/Library/Application Support/Hangar/worker/config.json`,
-   owner `hangar`, mode 0600, parent directories 0700. Then set the
-   `dataDirectory` key to `<hangar-home>/Library/Application Support/Hangar/worker`.
-   Keep `serverURL`, `token` and `maxConcurrentJobs`. Do this with `plutil` on
-   the file. Do not pass the token on a command line and do not print the file.
-   A custom `dataDirectory` outside the home is not preserved. That path is how
-   the old files stayed readable.
-4. Move `<old dataDirectory>/workspaces` to `<new dataDirectory>/workspaces`
-   and `chown -R hangar:staff` it. Same-volume `mv` keeps the cache without a
-   second copy. If the two homes are on different devices, copy and then
-   remove, and print that DerivedData will temporarily use twice its size.
-   Do not copy Xcode. Do not copy `jobs/`: after bootout those directories are
-   leftovers, and the new process's startup sweep only sees the new data
-   directory. Remove the old `jobs/` directory as root. Do not copy
-   `~/Library/Keychains`, `~/Library/Developer`, `~/Library/Caches` or
-   `~/.gitconfig` from the console user. The development identity is recreated
-   by the first archive as `hangar`. Copying the login keychain would bring
-   the interactive user's other keys into the build account.
-5. `chmod -N` and `chmod 700` the `hangar` home. Confirm the console user
-   cannot traverse it (`sudo -u <from-user> test -x <hangar-home>` must fail).
-6. Write `app.hangar.worker.plist` into the `hangar` user's `LaunchAgents`
-   with the same keys as `scripts/worker/app.hangar.worker.plist`: program is
-   the new binary, logs are under the `hangar` home, `LimitLoadToSessionType`
-   is `Aqua`. Owner `hangar`. `launchctl bootstrap gui/<hangar uid>` that plist.
-7. As `hangar`, run `hangar-worker check` against the new configuration. Exit 0
-   is the same machine, accepted. The token was not rotated. On any other
-   exit, stop and leave the old plist in place so the operator can boot the
-   old agent again. On exit 0, remove the old plist (so the console user's next
-   login does not start a second worker with the same token) and remove the
-   old configuration file (it holds the token). Do not remove
-   `/usr/local/bin/hangar-worker`.
-8. If `--server-data` is set, `sudo -u hangar test -r <server-data>/master.key`
-   must fail. If it does not, print the `chmod 700` the operator should run on
-   the server data directory and exit non-zero. Do not chmod it inside the
-   script.
-9. Print the follow-ups the script cannot do: run `hangar-worker doctor` as
-   `hangar`; if `canSignWithoutPrompt` is false, the next archive creates the
-   identity and Keychain Access may need the existing `codesign` click; if the
-   App Store Connect key is an individual key, sign in to Xcode as `hangar`
-   once; if `command -v xcodegen` (and the other tools the workflows need)
-   fails as `hangar`, the Homebrew prefix is not executable by that user, and
-   the operator fixes the prefix's permissions rather than installing a second
-   copy.
+1. Read the old plist and configuration, as the invoker. Ask the server, in
+   process, whether it accepts that token (`GET /api/v1/worker/me`). A refusal
+   stops the run before anything changes.
+2. `sudo -v`, after saying why.
+3. Create the account and its password as in *The user* when `id -u hangar`
+   fails; `createhomedir -c -u hangar` either way.
+4. If the server data directory exists, `sudo -u hangar test -r
+   <server-data>/master.key` must fail. If it does not, stop before anything
+   moves and print the `chmod 700` for the server data directory. The script
+   does not chmod it.
+5. `sudo xcodebuild -runFirstLaunch` when still needed.
+6. `launchctl bootout gui/<old uid>/app.hangar.worker`, then wait until no
+   `hangar-worker run` is left for the old uid; stop if one is. An in-flight
+   build dies with that bootout. The operator runs this when nothing important
+   is building; the command says so.
+7. `install -d -o hangar -g staff` the directories (0700 for Application
+   Support, the data directory and the logs; 0755 for `.local/bin` and
+   `LaunchAgents`). `install -m 755` the binary into
+   `/Users/hangar/.local/bin`. A copy: the server's `hangar-worker` is never
+   moved, deleted, or used as the new plist's program.
+8. The configuration: the same `serverURL`, `token` and `maxConcurrentJobs`,
+   `dataDirectory` rewritten to the `hangar` data directory, staged mode 0600
+   in the invoker's private temp directory and installed with `install -o
+   hangar -m 600`. The token is never on a command line or printed. A custom
+   `dataDirectory` outside the home is not preserved. With no configuration
+   to move, `hangar` must already have one (update), or the run stops.
+9. Move `<old dataDirectory>/workspaces` with `mv` on one volume, or `ditto`
+   then `rm -rf` across volumes (it says DerivedData temporarily takes twice
+   its size); `chown -R hangar:staff`. An existing destination is left alone.
+   Remove the old `jobs/`. Never copy Xcode, `~/Library/Keychains`,
+   `~/Library/Developer`, `~/Library/Caches` or `~/.gitconfig`.
+10. `chmod -N` and `chmod 700` the `hangar` home, then confirm the invoker can
+    no longer traverse it (`access(X_OK)` must fail).
+11. Install the launch agent (the keys of `scripts/worker/app.hangar.worker.plist`,
+    program the new binary, logs under the `hangar` home, `Aqua`), owner
+    `hangar`, mode 0644.
+12. The login and the agent, as in *The user*.
+13. Poll the server, in process with the token, until it reports the machine
+    with `runningUser == "hangar"` (or, from a server that does not keep that
+    field, a heartbeat after the old agent stopped). In update mode, where
+    `isolate` has no token, `sudo -u hangar hangar-worker check` must exit 0.
+    On success remove the old plist (so the console user's next login does not
+    start a second worker with the same token) and the old configuration (it
+    holds the token); a configuration passed with `--config` is the install
+    script's to remove. On failure both stay, and the message says how to
+    start the old agent again. Do not remove `/usr/local/bin/hangar-worker`.
+14. Print the follow-ups it cannot do: the first archive creates the identity
+    and Keychain Access may need the existing `codesign` click; with an
+    individual App Store Connect key, sign in to Xcode as `hangar` once; a
+    missing Homebrew tool means fixing the prefix's permissions, not a second
+    Homebrew.
 
 After this, idle self-update targets `/Users/hangar/.local/bin/hangar-worker`.
 The server's binary is untouched. The first build uses the moved DerivedData.
@@ -624,19 +676,24 @@ not a hole in this design.
    Copying the old keychain would import the interactive user's keys.
 8. **Use This Mac for Builds no longer installs as the server user**, unless
    the server already runs as `hangar`. The server process must not `sudo`.
-   Hand install as the console user still works; the doctor warns. The
+   Hand install as the console user still works with `HANGAR_AS_CURRENT_USER=1`;
+   the doctor reports `runningUser` and the Machines page warns. The
    scheduler does not grow a new ineligibility, so the fleet keeps building
    through the move.
 9. **The account is not an administrator.** A compromised build must not have
    admin or a sudoers entry. Homebrew is the machine's prefix, used in place,
    not a second install under the home.
-10. **Setup is one terminal command. It takes the new account's password and
-    does not store it.** The command creates the user, grants a FileVault
-    secure token when the first login would otherwise stop, moves an enrolled
-    worker, and installs the agent. The graphical login stays a real login:
-    that is what keeps the keychain unlocked after a reboot. The command waits
-    for it. A keychain unlocked only for this run, a password saved on disk,
-    and automatic login are rejected.
+10. **Setup is one terminal command, and the operator never invents a
+    password.** *(revised)* The curl install, for an administrator, runs
+    `hangar-worker isolate`: it creates the user with a generated password,
+    keeps that password in the administrator's login keychain and shows it
+    once, moves or installs the worker, installs the agent, then waits for the
+    one graphical login and confirms the result. Hangar's server and worker
+    never store or need the password. The graphical login stays a real login:
+    that is what keeps the keychain unlocked after a reboot. A keychain
+    unlocked only for this run, the password on the build account's disk, and
+    automatic login are rejected. No FileVault secure token is granted.
+    `HANGAR_AS_CURRENT_USER=1` keeps installing as the current user.
 
 ## Open Questions
 
@@ -648,42 +705,21 @@ other home through `sudo`.
 
 ## PR Plan
 
-Each of these can be reviewed on its own. None of them is this document.
+*(revised)* As built on `worker-isolation`, one commit each:
 
-1. **`worker: keep the hangar user's files private`**
-   - What: in `hangar-worker run`, set umask `0077` before the loop. `chmod 0700`
-     the data directory in `prepareDataDirectory` (a real `chmod`, not only
-     create attributes). When the process user is `hangar` and the home is
-     `/Users/hangar`, set that home to 0700 and strip its ACLs. Log a warning
-     when the process user is anyone else. Tests cover the chmod helper with a
-     temporary directory and cover that a non-`hangar` user is not a candidate.
-   - Depends on: nothing.
-   - Does not change the install script, the plist, the API or self-update.
+1. **Keep the worker's files private.** `run` sets umask 077, `prepareDataDirectory`
+   chmods the data directory to 0700, the `hangar` user's own home is locked to
+   0700 with its ACL stripped, and any other user gets a warning at start.
+2. **Report which macOS user runs the worker.** Optional `runningUser` in
+   `MachineReport`, set by the doctor; the Machines page shows it and warns when
+   it is not `hangar`.
+3. **`hangar-worker isolate`**, as in *Migration*, replacing the planned
+   `scripts/worker/migrate-to-hangar-user.sh`.
+4. **The curl install hands an administrator's run to `isolate`**, with
+   `HANGAR_AS_CURRENT_USER=1` as the opt-out.
+5. **Refuse Use This Mac for Builds unless the server runs as `hangar`**
+   (`409` `dedicated_user_required`; the setup page shows the command).
+6. **`docs/worker-setup.md`** describes the automated setup and the move.
 
-2. **`worker: report which macOS user is running the agent`**
-   - What: add optional `runningUser` to `MachineReport` (`decodeIfPresent`, so
-     an older worker still decodes). The doctor sets it from `NSUserName()`.
-     The Machines page shows it, and shows when it is not `hangar`. An older
-     server ignores the extra field (Codable's default).
-   - Depends on: nothing. Lands beside PR 1, not on top of it.
-
-3. **`worker: migrate an enrolled worker onto the hangar user`**
-   - What: `scripts/worker/migrate-to-hangar-user.sh` as specified under
-     *Migration*, including a no-`--apply` plan, and a "Move an existing
-     worker" section in `docs/worker-setup.md` that gives the same steps for a
-     Mac with no checkout. The script's `--from-home` and `--hangar-home` flags
-     are what a reviewer runs against temporary directories.
-   - Depends on: nothing. It performs its own `chmod`. PR 1 keeps the modes
-     after the new process starts; the script is correct without it.
-   - Does not delete or replace the `hangar-worker` that sits beside
-     `hangar-server`.
-
-4. **`setup: refuse to install the local worker as the server user`**
-   - What: `POST /setup/local-worker` returns `409` `dedicated_user_required`
-     unless the server process's user is `hangar`. The setup page does not
-     offer "Use This Mac for Builds" in that case and tells the operator to
-     run the worker setup command. Tests in `SetupAPITests`. Update the
-     `POST /setup/local-worker` row in `docs/api.md` and the sentence in
-     `docs/server-setup.md`.
-   - Depends on: PR 3, so the message can point at the migration section. The
-     endpoint change is otherwise independent of the worker's chmod.
+None of it is verified on a real Mac yet; see the branch's verification list
+before merging.
