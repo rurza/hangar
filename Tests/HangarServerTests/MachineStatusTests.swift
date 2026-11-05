@@ -52,6 +52,16 @@ import Testing
         #expect(try line(#"{"online": true, "problems": [], "waits": []}"#) == "online | Online · can build it")
     }
 
+    @Test func onlyAMacThatBuildsAsItsOwnersUserWarnsAboutIt() throws {
+        func warning(_ json: String) throws -> String {
+            try Self.run(json, "(() => { const w = buildUserWarning(input); return w ? w.title : 'none'; })()")
+        }
+        #expect(try warning(#"{"runningUser": "adam"}"#) == "Builds run as adam")
+        #expect(try warning(#"{"runningUser": "adam", "vm": {"slots": 1}}"#) == "none")
+        #expect(try warning(#"{"runningUser": "hangar"}"#) == "none")
+        #expect(try warning("{}") == "none")
+    }
+
     @Test func aVMMacSaysItsSlotsImagesAndFilterOnOneShortLine() throws {
         func line(_ json: String) throws -> String {
             try Self.run(json, "(() => { const l = vmLine(input); return `${l.text} | ${l.problem}`; })()")

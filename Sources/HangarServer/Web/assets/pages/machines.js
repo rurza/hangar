@@ -9,7 +9,7 @@ import {
   plusIcon, selectContents, sheet, spinner, toast,
 } from '../ui.js';
 import { isOnline } from './build.js';
-import { isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine } from '../machine-status.js';
+import { buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
@@ -273,13 +273,16 @@ function reportView(machine, jobInfo) {
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
       fact('macOS', report.macOSVersion || '–'),
       fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn, report.headless)),
-      fact('Runs as', report.runningUser || '–')),
-    runningUserWarning(report.runningUser),
+      report.vm
+        ? fact('Builds run as', 'builder, in a fresh VM')
+        : fact('Runs as', report.runningUser || '–')),
+    buildUserWarningView(buildUserWarning(report)),
     chipGroup('Xcode', xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
     // The name only; where it lives is a tooltip.
     chipGroup('Tools', tools.map(([name, detail]) => ({ text: name, title: detail || null })), 'None reported'),
-    chipGroup('Signing identities', identities, 'None in the keychain yet'),
-    report.canSignWithoutPrompt
+    // A VM Mac signs in its VMs with Hangar's certificate (Settings › Signing), not with its own keychain.
+    report.vm ? null : chipGroup('Signing identities', identities, 'None in the keychain yet'),
+    report.vm ? null : report.canSignWithoutPrompt
       ? h('p', { class: 'signing signing-ok' },
         checkBadge('signing-icon'),
         report.headless ? 'Can sign with its CI keychain' : 'Can sign without a prompt')
@@ -288,7 +291,7 @@ function reportView(machine, jobInfo) {
         h('div', null,
           h('p', { class: 'signing-title' }, 'Cannot sign without a prompt'),
           h('p', { class: 'card-note' }, cannotSignAdvice(report)))),
-    report.headless
+    !report.vm && report.headless
       ? h('p', { class: 'card-note' },
         'Runs without a login, so it has no Xcode account: archives here need a team App Store Connect key '
         + '(with an issuer ID).')
@@ -321,19 +324,14 @@ function vmView(vm) {
   ];
 }
 
-/**
- * A warning when the worker runs as someone other than the dedicated hangar user: a build can then read that user's
- * files. Nothing for hangar, or for an older worker that does not say.
- */
-function runningUserWarning(user) {
-  if (!user || user === 'hangar') return null;
+/** `buildUserWarning`'s warning as the card's warning box, or nothing. */
+function buildUserWarningView(warning) {
+  if (!warning) return null;
   return h('div', { class: 'signing signing-warning' },
     h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
     h('div', null,
-      h('p', { class: 'signing-title' }, `Builds run as ${user}`),
-      h('p', { class: 'card-note' },
-        `A build on this Mac can read ${user}'s files. In Terminal on this Mac, as an administrator, run `
-        + 'hangar-worker isolate to move the worker to its own hangar user.')));
+      h('p', { class: 'signing-title' }, warning.title),
+      h('p', { class: 'card-note' }, warning.note)));
 }
 
 /** "Signed in", "Not signed in", "None (no login)" for a headless worker, or "–" (an older worker does not say). */
