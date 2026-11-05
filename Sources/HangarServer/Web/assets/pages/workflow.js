@@ -50,7 +50,7 @@ export async function workflowPage(params, context) {
 
   const view = page({
     title: 'Workflow',
-    subtitle: 'Builds use this workflow instead of the repository’s .hangar.yml.',
+    subtitle: `How ${app.name} builds when you deploy.`,
     actions: editor.saveButton,
   }, editor.element, suggestions.lists);
   view.prepend(h('a', { href: `/apps/${seg(app.slug)}`, 'data-link': true, class: 'back-link' },
@@ -88,15 +88,19 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   let busy = false;
   let detectedNotes = []; // what workflow detection guessed, shown above the form until the workflow is saved
   // Whether the repository has a .hangar.yml at its default branch: undefined until asked, null when unknown.
-  let repoFile = stored ? null : undefined;
+  let repoFile;
   let autoDetect = context.query?.get('suggest') === '1';
-  if (!stored) {
-    // The server remembers the answer for a while, so this is not a GitHub call on every visit.
-    api.get(`${base}/workflow-source`, { signal: context.signal }).then(
+  {
+    // The server remembers the answer for a while, so this is not a GitHub call on every visit. Asked with a
+    // stored workflow too: Remove says whether builds would still have a workflow.
+    api.get(`${base}/workflow-source?repository=1`, { signal: context.signal }).then(
       (status) => { repoFile = status?.repositoryHasWorkflowFile ?? null; },
       (error) => { if (error.code !== 'aborted') repoFile = null; },
     ).then(() => {
-      if (models === null && element.isConnected) render();
+      if (!element.isConnected) return;
+      // While editing only the Remove card depends on it; a full render would take the focus from a field.
+      if (models === null) render();
+      else element.querySelector('.danger-card')?.replaceWith(removeCard());
     });
   }
 
@@ -226,6 +230,8 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     const scratchButton = button('Start from Scratch', {
       onClick: () => begin([scratchWorkflow('testflight')]),
     });
+    // Offered only when the repository has a .hangar.yml to start from.
+    importButton.hidden = repoFile !== true;
     const all = [detectButton, importButton, scratchButton];
     async function attempt(work) {
       message.hidden = true;
@@ -552,8 +558,11 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
 
   function removeCard() {
     return card({ class: 'danger-card' },
-      h('p', { class: 'card-detail' },
-        'Deploys use the .hangar.yml in the repository again. Copy the YAML first if you want to commit it.'),
+      h('p', { class: 'card-detail' }, repoFile === true
+        ? 'Deploys use the .hangar.yml in the repository again. Copy the YAML first if you want to commit it.'
+        : repoFile === false
+          ? `Without this workflow ${app.name} can’t build: the repository has no .hangar.yml.`
+          : 'Deploys then need a .hangar.yml in the repository. Copy the YAML first if you want to commit it.'),
       h('div', { class: 'card-actions' },
         button('Remove Hangar Workflow…', { kind: 'destructive', onClick: remove })));
   }
@@ -561,8 +570,12 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   async function remove() {
     const confirmed = await confirm({
       title: 'Remove the Hangar Workflow?',
-      message: `${app.name} builds with the .hangar.yml in its repository again. Builds fail if it has none.`,
-      confirmLabel: 'Remove',
+      message: repoFile === true
+        ? `${app.name} builds with the .hangar.yml in its repository again.`
+        : repoFile === false
+          ? `${app.name}’s repository has no .hangar.yml, so deploys fail until you set up a workflow again.`
+          : `${app.name} builds with the .hangar.yml in its repository again. Builds fail if it has none.`,
+      confirmLabel: repoFile === false ? 'Remove and Disable Builds' : 'Remove',
       destructive: true,
     });
     if (!confirmed) return;
