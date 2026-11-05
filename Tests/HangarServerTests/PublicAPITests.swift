@@ -419,7 +419,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         try await APIFixture().test { client in
             try await client.execute(uri: "/api/v1/health", method: .get) { response throws in
                 struct Health: Decodable, Equatable { var ok: Bool; var version: String }
-                #expect(try decode(Health.self, response) == Health(ok: true, version: "0.1.0"))
+                #expect(try decode(Health.self, response) == Health(ok: true, version: HangarVersion.current))
             }
         }
     }
