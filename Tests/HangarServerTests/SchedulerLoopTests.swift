@@ -56,13 +56,13 @@ private struct FixedSource: KnownNumberSource {
         await clock.advance(by: .seconds(seconds))
     }
 
-    func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil) throws {
+    func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil) throws {
         try machines.updateReport(
             id: machine.id,
             report: MachineReport(
                 macOSVersion: "26.0", xcodes: [InstalledXcode(version: "27.2", build: "A1", path: "/Applications/Xcode.app")],
                 chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: freeDiskGB, onACPower: true, tools: ["git": "2.45"],
-                canSignWithoutPrompt: true, runningJobIDs: [], headless: headless),
+                canSignWithoutPrompt: true, runningJobIDs: [], headless: headless, vm: vm),
             seenAt: now)
     }
 
@@ -280,5 +280,26 @@ private struct FixedSource: KnownNumberSource {
         try await loop.tick()
         let assigned = try #require(try builds.job(id: secondID))
         #expect(assigned.status == .assigned && assigned.machineID == macBook.id && assigned.queueNote == nil)
+    }
+
+    @Test func aVMMacTakesAJobPerReadySlotAndExplainsWhenItHasNone() async throws {
+        let image = VMImageInfo(name: "xcode-27.2", macOS: "26.6.2", xcode: "27.2")
+        try report(macBook, vm: VMReport(
+            slots: 0, configuredSlots: 2, freeSlots: 0, storageFreeGB: 150, networkFilter: false,
+            problem: "the network filter is not installed", images: [image]))
+        let (_, firstID) = try await deploy()
+        let (_, secondID) = try await deploy()
+        try await loop.tick()
+        #expect(try builds.job(id: firstID)?.status == .queued)
+        #expect(try builds.job(id: firstID)?.queueNote == "MacBook Pro: VM builds not ready: the network filter is not installed")
+
+        // Two ready slots take two jobs, though the machine's own limit is one.
+        try report(macBook, vm: VMReport(
+            slots: 2, configuredSlots: 2, freeSlots: 2, storageFreeGB: 150, networkFilter: true, images: [image]))
+        try await loop.tick()
+        for id in [firstID, secondID] {
+            let job = try #require(try builds.job(id: id))
+            #expect(job.status == .assigned && job.machineID == macBook.id && job.queueNote == nil)
+        }
     }
 }

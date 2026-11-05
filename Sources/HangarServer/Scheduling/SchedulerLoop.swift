@@ -187,7 +187,9 @@ public actor SchedulerLoop {
         return Dictionary(grouping: active, by: { $0 }).mapValues(\.count)
     }
 
-    /// Machines without a report are offline for scheduling.
+    /// Machines without a report are offline for scheduling. A machine that reports `vm` runs every job in a VM and is
+    /// judged by it: its ready slots, its images' Xcode versions and simulator runtimes, its VM storage, and no Xcode
+    /// account (the guest has none), whatever the host has.
     static func snapshot(_ machine: Machine, runningJobs: Int, now: Date) -> MachineSnapshot {
         let freeSlots = max(0, machine.maxConcurrentJobs - runningJobs)
         guard let report = machine.report else {
@@ -195,6 +197,16 @@ public actor SchedulerLoop {
                 id: machine.id, name: machine.name, isOnline: false, freeSlots: freeSlots, runningJobs: runningJobs,
                 xcodeVersions: [], tools: [], freeDiskGB: 0, performanceCores: 0, onACPower: false, canSign: false,
                 paused: machine.paused)
+        }
+        if let vm = report.vm {
+            return MachineSnapshot(
+                id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now),
+                freeSlots: max(0, vm.slots - runningJobs), runningJobs: runningJobs, xcodeVersions: vm.xcodeVersions,
+                tools: [], freeDiskGB: vm.storageFreeGB, performanceCores: report.performanceCores,
+                onACPower: report.onACPower, canSign: report.canSignWithoutPrompt,
+                simulatorRuntimes: Array(Set(vm.images.flatMap(\.simulatorRuntimes))).sorted(),
+                capabilities: Set(report.capabilities), headless: true, paused: machine.paused, vm: true,
+                vmNotReady: vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready"))
         }
         return MachineSnapshot(
             id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now), freeSlots: freeSlots,

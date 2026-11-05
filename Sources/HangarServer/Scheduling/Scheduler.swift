@@ -53,12 +53,21 @@ public struct MachineSnapshot: Sendable {
     public var headless: Bool
     /// Builds are turned off on this Mac (`Machine.paused`).
     public var paused: Bool
+    /// Every job on this Mac runs in a VM (`MachineReport.vm`): `freeSlots` counts its ready VM slots,
+    /// `xcodeVersions` and `simulatorRuntimes` are its images', `freeDiskGB` is its VM storage's, and `tools` are not
+    /// required (a `ci_post_clone.sh` installs what it needs).
+    public var vm: Bool
+    /// Why none of the Mac's VM slots is ready; set only for a VM machine that reports no ready slot.
+    public var vmNotReady: String?
 
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
         tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
-        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false, paused: Bool = false
+        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false, paused: Bool = false,
+        vm: Bool = false, vmNotReady: String? = nil
     ) {
+        self.vm = vm
+        self.vmNotReady = vmNotReady
         self.paused = paused
         self.simulatorRuntimes = simulatorRuntimes
         self.capabilities = capabilities
@@ -94,12 +103,18 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case needsTeamKey
     /// Its owner turned builds off on this Mac. Like busy, it passes: the job waits until the machine is resumed.
     case paused
+    /// A VM machine with no VM slot ready, and why (the network filter is missing, no image yet…).
+    case vmNotReady(String)
+    /// A VM machine without an image of this Xcode version.
+    case noVMImage(String)
 
     public var description: String {
         switch self {
         case .offline: "offline"
         case .busy: "busy"
         case .paused: "builds paused"
+        case .vmNotReady(let problem): "VM builds not ready: \(problem)"
+        case .noVMImage(let version): "no VM image with Xcode \(version)"
         case .xcodeMissing(let version): "Xcode \(version) not installed"
         case .lowDisk(let free, let minimum): "only \(Self.gigabytes(free)) GB free (needs \(Self.gigabytes(minimum)) GB)"
         case .toolMissing(let tool): "\(tool) not installed"
@@ -181,14 +196,17 @@ public enum Scheduler {
         var reasons: [Ineligibility] = []
         // First, so a queue note reads "mini: builds paused, Xcode 27.2 not installed".
         if machine.paused { reasons.append(.paused) }
-        if machine.freeSlots <= 0 { reasons.append(.busy) }
+        // A VM machine with no ready slot says why, not that it is busy.
+        if let problem = machine.vmNotReady { reasons.append(.vmNotReady(problem)) }
+        else if machine.freeSlots <= 0 { reasons.append(.busy) }
         if !machine.xcodeVersions.contains(where: { XcodeVersion.matches(requested: job.xcode, installed: $0) }) {
-            reasons.append(.xcodeMissing(job.xcode))
+            reasons.append(machine.vm ? .noVMImage(job.xcode) : .xcodeMissing(job.xcode))
         }
         if machine.freeDiskGB < minFreeDiskGB {
             reasons.append(.lowDisk(freeGB: machine.freeDiskGB, minimumGB: minFreeDiskGB))
         }
-        reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing)
+        // In a VM, the job installs its own tools, as on Xcode Cloud.
+        if !machine.vm { reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing) }
         if !machine.canSign { reasons.append(.cannotSign) }
         if job.needsXcodeAccount, machine.headless { reasons.append(.needsTeamKey) }
         if let platform = job.simulatorPlatform,

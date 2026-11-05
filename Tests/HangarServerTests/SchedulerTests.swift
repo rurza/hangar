@@ -21,13 +21,130 @@ import Testing
         _ name: String, isOnline: Bool = true, freeSlots: Int = 1, runningJobs: Int = 0,
         xcodeVersions: [String] = ["27.2.1"], tools: Set<String> = ["git"], freeDiskGB: Double = 100,
         performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = [],
-        capabilities: Set<String> = [WorkerCapability.testActions], headless: Bool = false, paused: Bool = false
+        capabilities: Set<String> = [WorkerCapability.testActions], headless: Bool = false, paused: Bool = false,
+        vm: Bool = false, vmNotReady: String? = nil
     ) -> MachineSnapshot {
         MachineSnapshot(
             id: UUID(), name: name, isOnline: isOnline, freeSlots: freeSlots, runningJobs: runningJobs,
             xcodeVersions: xcodeVersions, tools: tools, freeDiskGB: freeDiskGB, performanceCores: performanceCores,
             onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes,
-            capabilities: capabilities, headless: headless, paused: paused)
+            capabilities: capabilities, headless: headless, paused: paused, vm: vm, vmNotReady: vmNotReady)
+    }
+
+    /// A machine whose worker reports VM builds, as `SchedulerLoop.snapshot` sees it.
+    func vmMachine(
+        _ vm: VMReport, maxConcurrentJobs: Int = 1, runningJobs: Int = 0, freeDiskGB: Double = 400,
+        headless: Bool? = nil
+    ) -> MachineSnapshot {
+        let report = MachineReport(
+            macOSVersion: "26.6", xcodes: [InstalledXcode(version: "26.1", build: "A", path: "/Applications/Xcode.app")],
+            chip: "M4", performanceCores: 10, memoryGB: 32, freeDiskGB: freeDiskGB, onACPower: true,
+            tools: ["swiftlint": "0.57"], canSignWithoutPrompt: true, runningJobIDs: [],
+            simulatorRuntimes: ["visionOS 26.1"], capabilities: [WorkerCapability.testActions], headless: headless, vm: vm)
+        let machine = Machine(
+            id: UUID(), name: "Mini", maxConcurrentJobs: maxConcurrentJobs, lastSeenAt: Self.start, report: report,
+            createdAt: Self.start)
+        return SchedulerLoop.snapshot(machine, runningJobs: runningJobs, now: Self.start)
+    }
+
+    static let image = VMImageInfo(
+        name: "xcode-27.2", macOS: "26.6.2 (25G83)", xcode: "27.2", xcodeBuild: "27C5", simulatorRuntimes: ["iOS 27.2"])
+
+    @Test func aVMMacIsJudgedByItsVMsNotItsHost() {
+        let vm = VMReport(slots: 2, configuredSlots: 2, freeSlots: 1, storageFreeGB: 150, networkFilter: true, images: [
+            Self.image,
+            VMImageInfo(name: "xcode-26.4", macOS: "26.6.2", xcode: "26.4", simulatorRuntimes: ["iOS 26.4", "iOS 27.2"]),
+            VMImageInfo(name: "vanilla", macOS: "26.6.2"),
+        ])
+        let snapshot = vmMachine(vm, maxConcurrentJobs: 1, runningJobs: 1, freeDiskGB: 900, headless: false)
+        #expect(snapshot.vm)
+        #expect(snapshot.vmNotReady == nil)
+        // Its slots, not the machine's job limit.
+        #expect(snapshot.freeSlots == 1)
+        #expect(snapshot.xcodeVersions == ["27.2", "26.4"])
+        #expect(snapshot.simulatorRuntimes == ["iOS 26.4", "iOS 27.2"])
+        #expect(snapshot.freeDiskGB == 150)
+        // The guest has no Xcode account, whatever the host has.
+        #expect(snapshot.headless)
+        #expect(snapshot.canSign)
+        #expect(vmMachine(vm, runningJobs: 3).freeSlots == 0)
+    }
+
+    @Test func aMacWithoutVMBuildsIsSnapshottedAsBefore() {
+        let report = MachineReport(
+            macOSVersion: "26.6", xcodes: [InstalledXcode(version: "27.2", build: "A", path: "/Applications/Xcode.app")],
+            chip: "M4", performanceCores: 10, memoryGB: 32, freeDiskGB: 300, onACPower: true, tools: ["git": "2"],
+            canSignWithoutPrompt: true, runningJobIDs: [], simulatorRuntimes: ["iOS 27.2"])
+        let machine = Machine(
+            id: UUID(), name: "Mini", maxConcurrentJobs: 2, lastSeenAt: Self.start, report: report, createdAt: Self.start)
+        let snapshot = SchedulerLoop.snapshot(machine, runningJobs: 1, now: Self.start)
+        #expect(!snapshot.vm)
+        #expect(snapshot.vmNotReady == nil)
+        #expect(snapshot.freeSlots == 1)
+        #expect(snapshot.xcodeVersions == ["27.2"])
+        #expect(snapshot.tools == ["git"])
+        #expect(snapshot.freeDiskGB == 300)
+        #expect(!snapshot.headless)
+    }
+
+    @Test func aVMMacWithTwoReadySlotsTakesTwoJobs() {
+        let vm = VMReport(slots: 2, configuredSlots: 2, freeSlots: 2, storageFreeGB: 150, networkFilter: true, images: [Self.image])
+        let mini = vmMachine(vm, maxConcurrentJobs: 1)
+        let (first, second, third) = (job(0), job(1), job(2))
+        let plan = Scheduler.plan(jobs: [first, second, third], machines: [mini], minFreeDiskGB: 20)
+        #expect(plan.assignments == [
+            Assignment(jobID: first.id, machineID: mini.id), Assignment(jobID: second.id, machineID: mini.id),
+        ])
+        #expect(plan.waiting[third.id] == ["Mini": [.busy]])
+    }
+
+    @Test func aVMMacWithNoReadySlotSaysWhyInsteadOfBusy() {
+        let filter = "the network filter is not installed: run hangar-worker isolate"
+        let vm = VMReport(slots: 0, configuredSlots: 1, freeSlots: 0, storageFreeGB: 150, networkFilter: false,
+            problem: filter, images: [Self.image])
+        #expect(Scheduler.ineligibility(of: job(), on: vmMachine(vm), minFreeDiskGB: 20) == [.vmNotReady(filter)])
+        #expect(Ineligibility.vmNotReady(filter).description == "VM builds not ready: \(filter)")
+        var unexplained = vm
+        unexplained.problem = nil
+        #expect(Scheduler.ineligibility(of: job(), on: vmMachine(unexplained), minFreeDiskGB: 20)
+            == [.vmNotReady("no VM slot is ready")])
+        // Paused still comes first; and it is a problem to fix, not a wait.
+        let paused = machine("Mini", freeSlots: 0, paused: true, vm: true, vmNotReady: filter)
+        #expect(Scheduler.ineligibility(of: job(), on: paused, minFreeDiskGB: 20) == [.paused, .vmNotReady(filter)])
+        #expect(!HangarServerApp.passingReasons(.vmNotReady(filter)))
+    }
+
+    @Test func aVMMacMatchesXcodeAgainstItsImages() {
+        let vm = VMReport(slots: 1, configuredSlots: 1, freeSlots: 1, storageFreeGB: 150, networkFilter: true, images: [Self.image])
+        let mini = vmMachine(vm)
+        #expect(Scheduler.ineligibility(of: job(xcode: "27.2"), on: mini, minFreeDiskGB: 20).isEmpty)
+        #expect(Scheduler.ineligibility(of: job(xcode: "27"), on: mini, minFreeDiskGB: 20).isEmpty)
+        // The host's Xcode 26.1 does not count.
+        #expect(Scheduler.ineligibility(of: job(xcode: "26.1"), on: mini, minFreeDiskGB: 20) == [.noVMImage("26.1")])
+        #expect(Ineligibility.noVMImage("26.1").description == "no VM image with Xcode 26.1")
+        #expect(!HangarServerApp.passingReasons(.noVMImage("26.1")))
+    }
+
+    @Test func aVMMacNeedsNoToolsButItsImagesSimulators() {
+        let vm = VMReport(slots: 1, configuredSlots: 1, freeSlots: 1, storageFreeGB: 150, networkFilter: true, images: [Self.image])
+        let mini = vmMachine(vm)
+        #expect(Scheduler.ineligibility(of: job(tools: ["xcodegen", "swiftlint"]), on: mini, minFreeDiskGB: 20).isEmpty)
+        #expect(Scheduler.ineligibility(of: job(tools: ["xcodegen"]), on: machine("Host", tools: []), minFreeDiskGB: 20)
+            == [.toolMissing("xcodegen")])
+        #expect(Scheduler.ineligibility(of: job(simulator: .iOS), on: mini, minFreeDiskGB: 20).isEmpty)
+        // The host has a visionOS runtime; the images do not.
+        #expect(Scheduler.ineligibility(of: job(simulator: .visionOS), on: mini, minFreeDiskGB: 20)
+            == [.simulatorMissing("visionOS")])
+    }
+
+    @Test func aVMMacChecksItsVMStorageAndNeedsATeamKey() {
+        let low = VMReport(slots: 1, configuredSlots: 1, freeSlots: 1, storageFreeGB: 12.5, networkFilter: true, images: [Self.image])
+        #expect(Scheduler.ineligibility(of: job(), on: vmMachine(low, freeDiskGB: 900), minFreeDiskGB: 20)
+            == [.lowDisk(freeGB: 12.5, minimumGB: 20)])
+        let roomy = VMReport(slots: 1, configuredSlots: 1, freeSlots: 1, storageFreeGB: 150, networkFilter: true, images: [Self.image])
+        #expect(Scheduler.ineligibility(of: job(), on: vmMachine(roomy, freeDiskGB: 5), minFreeDiskGB: 20).isEmpty)
+        #expect(Scheduler.ineligibility(of: job(needsXcodeAccount: true), on: vmMachine(roomy, headless: false), minFreeDiskGB: 20)
+            == [.needsTeamKey])
     }
 
     @Test func aPausedMacGetsNoJobAndTheJobWaits() throws {
