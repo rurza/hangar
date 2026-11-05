@@ -5,10 +5,10 @@
 
 import { confirm, field, h, replaceChildren, sheet, spinner, svg } from '../ui.js';
 import {
-  platformName, testDestinationText, toWorkflow, uniqueName, wizardModel,
+  detectionNotes, platformName, testDestinationText, toWorkflow, uniqueName, wizardModel,
 } from '../workflow-model.js';
 import { workflowSteps } from '../workflow-summary.js';
-import { choiceCards, groupPicker, tile } from './workflow-parts.js';
+import { choiceCards, groupPicker, guessNotes, tile } from './workflow-parts.js';
 
 const OTHER_ANY = '\u0000any';
 const STEPS = [['build', 'What to Build'], ['distribute', 'Where Builds Go'], ['review', 'Review']];
@@ -80,6 +80,8 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
   }
 
   const archived = () => state.choices.filter((choice) => choice.archive);
+  // What detection guessed, shown by the scheme, platform or fact it concerns.
+  const notes = () => detectionNotes(state.suggestion?.notes);
   const chosen = () => state.choices.filter((choice) => choice.archive || choice.test);
 
   function go(step) {
@@ -136,6 +138,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
     replaceChildren(content,
       h('p', { class: 'wf-wizard-intro' }, `What should each deploy do? Hangar found these in ${repositoryName(app)}.`),
       h('ul', { class: 'wf-targets' }, shown.map(targetRow)),
+      guessNotes(notes().schemes),
       warning ? h('p', { class: 'wf-note wf-note-warning', role: 'status' }, warning) : null,
       mine.length && others.length && !state.showAll
         ? h('button', {
@@ -173,7 +176,8 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       tile(platform, 'platform'),
       h('span', { class: 'wf-target-text' },
         h('span', { class: 'wf-target-title' }, `${choice.scheme} · ${platformName(platform)}`),
-        what ? h('span', { class: 'wf-target-detail' }, what) : null),
+        what ? h('span', { class: 'wf-target-detail' }, what) : null,
+        notes().platforms[choice.scheme] ? h('span', { class: 'wf-target-detail' }, notes().platforms[choice.scheme]) : null),
       h('div', { class: 'wf-target-options', role: 'group', 'aria-label': `What to do with ${choice.scheme}` },
         pill('test', 'Run Tests', false),
         pill('archive', 'Archive', choice.group === 'not-app')),
@@ -297,12 +301,13 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
         ? h('button', { type: 'button', class: 'link-button wf-change', onClick: () => { state.changingBranch = true; render(); } }, 'Change')
         : null);
     }
+    const guessed = notes();
     const facts = [
       ['Source branch', branchControl],
-      [draft.kind === 'workspace' ? 'Workspace' : 'Project', draft.path || '—'],
-      ['Xcode', draft.xcode || '—'],
+      [draft.kind === 'workspace' ? 'Workspace' : 'Project', draft.path || '—', guessed.project],
+      ['Xcode', draft.xcode || '—', guessed.xcode],
       ['Team', draft.team || 'From the project'],
-      ...(draft.tools.length ? [['Tools', draft.tools.join(', ')]] : []),
+      ...(draft.tools.length || guessed.tools.length ? [['Tools', draft.tools.join(', ') || 'None', guessed.tools]] : []),
     ];
     const deployFrom = Array.isArray(state.sourceBranches) ? state.sourceBranches[0] : known?.defaultBranch;
     replaceChildren(content,
@@ -311,7 +316,9 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
         workflowSteps(toWorkflow(draft)).map((step) => h('li', null, step))),
       field({ label: 'Name', control: nameInput }),
       h('div', { class: 'wf-field' },
-        h('dl', { class: 'wf-facts' }, facts.map(([label, value]) => h('div', { class: 'wf-fact' }, h('dt', null, label), h('dd', null, value)))),
+        h('dl', { class: 'wf-facts' }, facts.map(([label, value, guesses]) => h('div', { class: 'wf-fact' },
+          h('dt', null, label), h('dd', null, value),
+          guesses?.length ? h('dd', { class: 'wf-fact-guesses' }, guessNotes(guesses)) : null))),
         h('p', { class: 'wf-field-hint' }, `${deployFrom ? `Deploy starts from ${deployFrom}. ` : ''}Found in the repository; change these and more in the editor once the workflow exists.`)));
     const back = archived().length ? 'distribute' : 'build';
     handle.setActions([

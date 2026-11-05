@@ -300,6 +300,9 @@
 .wf-field-label { font: var(--subhead); font-weight: 600; letter-spacing: -0.24px; }
 .wf-field-hint { color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
 .wf-field-error { color: var(--failure); font: var(--footnote); letter-spacing: -0.08px; }
+/* What detection guessed about a field, under it. */
+.wf-guesses { display: grid; gap: 2px; }
+.wf-guess { margin: 0; color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
 .wf-field .select[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--failure); }
 .wf-input-row { display: flex; align-items: center; gap: var(--space-1); }
 .wf-input-row .input { flex: 1; min-width: 0; }
@@ -482,6 +485,9 @@
 .wf-fact + .wf-fact::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; border-top: 0.5px solid var(--separator); }
 .wf-fact dt { color: var(--secondary); font: var(--subhead); letter-spacing: -0.24px; }
 .wf-fact dd { margin: 0; font: var(--subhead); letter-spacing: -0.24px; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.wf-fact:has(.wf-fact-guesses) { flex-wrap: wrap; }
+.wf-fact-guesses { flex-basis: 100%; }
+.wf-fact-guesses .wf-guess { text-align: left; }
 
 /* Start conditions: one live row, the rest to come. */
 .wf-conditions .wf-check:has(input:disabled) .wf-check-title { color: var(--tertiary); }

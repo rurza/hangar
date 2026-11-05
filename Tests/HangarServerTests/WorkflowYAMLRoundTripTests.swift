@@ -320,6 +320,55 @@ import Testing
             + #""testflight":["The timeout is a whole number of minutes.","App Store Connect has no group named “Typo”."],"workflow":[]}"#)
     }
 
+    /// A scheme whose platform detection couldn't tell is offered under every platform, marked unverified, so the
+    /// add menu and the platform pop-up stay usable; one of a known platform is offered only under its own.
+    @Test func schemesOfUnknownPlatformAreOfferedEverywhere() throws {
+        let schemes = #"[{"name": "Tool", "platform": null, "isApplication": true, "hasTests": false}]"#
+        let output = try Self.runJXA(
+            json: schemes,
+            """
+            (() => {
+              const mixed = [...input, { name: 'Mobile', platform: 'ios', isApplication: true, hasTests: true }];
+              return [
+                PLATFORMS.map(([platform]) => platformHasSchemes(input, platform)).join(','),
+                JSON.stringify(schemesFor(input, 'ios', 'archive')),
+                PLATFORMS.map(([platform]) => platformHasSchemes([mixed[1]], platform)).join(','),
+                schemesFor(mixed, 'ios', 'test').map((s) => s.name + (s.unverified ? '?' : '')).join(','),
+                [firstScheme(mixed, 'ios', 'archive'), firstScheme(mixed, 'macos', 'archive'), firstScheme(undefined, 'ios', 'archive')].join(','),
+                PLATFORMS.map(([platform]) => platformHasSchemes(null, platform)).join(','),
+              ].join('\\n');
+            })()
+            """)
+        #expect(output == """
+            true,true,true,true,true
+            [{"name":"Tool","platform":null,"isApplication":true,"hasTests":false,"unverified":true}]
+            true,false,false,false,false
+            Mobile,Tool?
+            Mobile,Tool,
+            true,true,true,true,true
+            """)
+    }
+
+    /// The detector's notes are filed under the field each concerns; advice the editor gives another way is dropped.
+    @Test func detectionNotesAreFiledByField() throws {
+        let notes = """
+            ["No Mac has reported its Xcode versions yet: Xcode 27 is a placeholder, so set the version your Macs have.",
+             "No schemes found: Legilo is a guess, so check the scheme name.",
+             "Couldn't tell which platform Tool builds for, so it is set to macOS.",
+             "The repository is too large for GitHub to list in full, so some files may have been missed.",
+             "Legilo/project.yml could not be read as YAML, so targets and schemes are guesses.",
+             "Add ci_scripts/ci_post_clone.sh that runs `xcodegen generate`: Legilo.xcodeproj is generated from project.yml and is not in the repository.",
+             "Exports for App Store Connect; switch the export to Developer ID for apps distributed outside the Mac App Store.",
+             "Turn on TestFlight upload in the editor when you're ready."]
+            """
+        let output = try Self.runJXA(json: notes, "JSON.stringify(detectionNotes(input))")
+        #expect(output == #"{"project":["The repository is too large for GitHub to list in full, so some files may have been missed."],"#
+            + #""xcode":["No Mac has reported its Xcode versions yet: Xcode 27 is a placeholder, so set the version your Macs have."],"#
+            + #""tools":["Add ci_scripts/ci_post_clone.sh that runs `xcodegen generate`: Legilo.xcodeproj is generated from project.yml and is not in the repository."],"#
+            + #""schemes":["No schemes found: Legilo is a guess, so check the scheme name.","Legilo/project.yml could not be read as YAML, so targets and schemes are guesses."],"#
+            + #""platforms":{"Tool":"Couldn't tell which platform Tool builds for, so it is set to macOS."}}"#)
+    }
+
     /// The editor's files with the shared summary, loaded together as the wizard uses them.
     static let editorFiles = ["yaml.js", "workflow-model.js", "workflow-summary.js"]
 

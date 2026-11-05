@@ -11,12 +11,14 @@ import {
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
 import {
-  PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels,
-  firstExactBranch, itemProblems, modelsFromFile, platformName, scratchWorkflow, testDestinationText, toWorkflow, uniqueName,
+  PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, detectionNotes, fileFromModels,
+  firstExactBranch, firstScheme, itemProblems, modelsFromFile, platformHasSchemes, platformName, schemesFor, scratchWorkflow,
+  testDestinationText, toWorkflow, uniqueName,
 } from '../workflow-model.js';
 import { workflowSummary } from '../workflow-summary.js';
 import {
-  betaGroupsStore, branchesStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, plusGlyph, segmented, tile,
+  betaGroupsStore, branchesStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, guessNotes, plusGlyph, segmented,
+  tile,
 } from './workflow-parts.js';
 import { openWorkflowWizard } from './workflow-wizard.js';
 import { openDeploySheet } from './deploy.js';
@@ -451,18 +453,12 @@ function workflowEditor({ app, stored: initial, context }) {
 
   // MARK: Add menus
 
-  function schemePlatforms() {
-    if (!suggestion?.schemes?.length) return null;
-    return new Set(suggestion.schemes.map((scheme) => scheme.platform).filter(Boolean));
-  }
-
   function actionMenuItems() {
-    const known = schemePlatforms();
     const items = [];
     for (const kind of ['archive', 'test']) {
       items.push({ heading: kind === 'archive' ? 'Archive' : 'Test' });
       for (const [platform, label] of PLATFORMS) {
-        const available = !known || known.has(platform);
+        const available = platformHasSchemes(suggestion?.schemes, platform);
         items.push({
           icon: kind, label, disabled: !available, detail: available ? null : `No scheme for ${label} in this repository`,
           onSelect: () => addAction(kind, platform),
@@ -489,7 +485,7 @@ function workflowEditor({ app, stored: initial, context }) {
 
   function addAction(kind, platform) {
     const target = model();
-    const action = { ...blankAction(kind), platform, scheme: firstScheme(platform, kind) ?? '' };
+    const action = { ...blankAction(kind), platform, scheme: firstScheme(suggestion?.schemes, platform, kind) ?? '' };
     target.actions.push(action);
     select({ kind: 'action', index: target.actions.length - 1 });
     changed();
@@ -626,6 +622,7 @@ function workflowEditor({ app, stored: initial, context }) {
       options: projects.map((path) => [path, path]),
       placeholder: 'MyApp.xcodeproj',
       hint: target.kind === 'workspace' ? 'A workspace, relative to the repository root.' : 'Relative to the repository root. Its folder holds ci_scripts/.',
+      note: guessNotes(notes().project),
       onChange: (value) => {
         target.path = value;
         target.kind = /\.xcworkspace\/?$/i.test(value.trim()) ? 'workspace' : 'project';
@@ -668,9 +665,13 @@ function workflowEditor({ app, stored: initial, context }) {
       unknownLabel: (text) => `Xcode ${text} · no Mac has it`,
       placeholder: '27.2',
       hint: 'Matched as a prefix: 27 picks any installed 27.x.',
-      note: machines !== null && versions.length === 0
-        ? h('p', { class: 'wf-note wf-note-warning' }, 'No Mac has reported Xcode yet. ', h('a', { href: '/machines', 'data-link': true }, 'Add a Mac'))
-        : null,
+      note: [
+        machines !== null && versions.length === 0
+          ? h('p', { class: 'wf-note wf-note-warning' }, 'No Mac has reported Xcode yet. ', h('a', { href: '/machines', 'data-link': true }, 'Add a Mac'))
+          : null,
+        // The placeholder note, while the version is still the placeholder.
+        value && value === firstSuggested()?.xcode ? guessNotes(notes().xcode) : null,
+      ],
       onChange: (text) => { target.xcode = text; },
       invalid: () => !target.xcode.trim(),
     });
@@ -744,7 +745,8 @@ function workflowEditor({ app, stored: initial, context }) {
       replaceChildren(element,
         h('span', { class: 'wf-field-label', id: 'wf-tools-label' }, 'Required tools'),
         h('ul', { class: 'wf-checklist', 'aria-labelledby': 'wf-tools-label' }, rows, add),
-        h('p', { class: 'wf-field-hint' }, 'Only Macs with these tools run this workflow.'));
+        h('p', { class: 'wf-field-hint' }, 'Only Macs with these tools run this workflow.'),
+        guessNotes(notes().tools));
     }
     draw();
     return element;
@@ -849,28 +851,30 @@ function workflowEditor({ app, stored: initial, context }) {
       changed();
     };
     // Platform first: a pop-up of every platform, those without a detected scheme greyed with the reason. The scheme
-    // list below follows it; a scheme that doesn't build for the new platform is cleared, to be picked again.
-    const known = schemePlatforms();
+    // list below follows it; a scheme that doesn't build for the new platform is cleared, to be picked again, and so
+    // is a simulator picked for the old one.
     const platformSelect = h('select', {
       class: 'select',
+      dataset: { field: 'platform' },
       onChange: () => {
         const value = platformSelect.value;
         action.platform = value;
-        const schemes = schemesFor(value, action.kind).map((scheme) => scheme.name);
-        if (known && !schemes.includes(action.scheme)) action.scheme = '';
+        const schemes = currentSchemes(value, action.kind).map((scheme) => scheme.name);
+        if (suggestion?.schemes?.length && !schemes.includes(action.scheme)) action.scheme = '';
         if (action.export === 'developer-id' && value !== 'macos') action.export = 'app-store-connect';
+        action.destination = '';
         renderDetail();
         changed();
-        const schemeSelect = detail.querySelectorAll('.wf-form select')[1];
-        (action.scheme ? detail.querySelector('.wf-form select') : schemeSelect)?.focus();
+        detail.querySelector(`.wf-form select[data-field="${action.scheme ? 'platform' : 'scheme'}"]`)?.focus();
       },
     }, PLATFORMS.map(([value, label]) => {
-      const available = !known || known.has(value) || value === action.platform;
+      const available = platformHasSchemes(suggestion?.schemes, value) || value === action.platform;
       return h('option', { value, disabled: !available },
         available ? label : `${label} — no scheme for ${label} in this repository`);
     }));
     platformSelect.value = action.platform;
-    const platform = wfField({ label: 'Platform', control: platformSelect });
+    const platformNote = action.platform === 'macos' ? notes().platforms[action.scheme.trim()] : null;
+    const platform = wfField({ label: 'Platform', control: platformSelect, note: platformNote ? guessNotes([platformNote]) : null });
     const scheme = schemeField(action, redraw);
     const fields = isTest ? testFields(action, redraw) : [distributionField(action, target, redraw)];
     return {
@@ -906,17 +910,23 @@ function workflowEditor({ app, stored: initial, context }) {
   }
 
   function schemeField(action, onChange) {
-    const schemes = schemesFor(action.platform, action.kind);
+    const schemes = currentSchemes(action.platform, action.kind);
     const apps = schemes.filter((scheme) => scheme.isApplication);
     const others = schemes.filter((scheme) => !scheme.isApplication);
-    const label = (scheme) => (action.kind === 'test' && scheme.hasTests ? `${scheme.name} · has tests` : scheme.name);
+    // A scheme of unknown platform is listed under every platform, saying so.
+    const label = (scheme) => [scheme.name, action.kind === 'test' && scheme.hasTests && 'has tests', scheme.unverified && 'platform not detected']
+      .filter(Boolean).join(' · ');
     const groupsOfOptions = action.kind === 'test'
       ? [['', schemes.map((scheme) => [scheme.name, label(scheme)])]]
-      : [['', apps.map((scheme) => [scheme.name, label(scheme)])], ['Other schemes', others.map((scheme) => [scheme.name, scheme.name])]];
+      : [['', apps.map((scheme) => [scheme.name, label(scheme)])], ['Other schemes', others.map((scheme) => [scheme.name, label(scheme)])]];
     const known = schemes.find((scheme) => scheme.name === action.scheme);
+    // What detection guessed about the schemes, while the action still has one it suggested.
+    const suggested = (firstSuggested()?.actions ?? []).map((item) => item.scheme);
     return pickerWithOther({
       label: 'Scheme',
+      field: 'scheme',
       value: action.scheme,
+      note: suggested.includes(action.scheme.trim()) ? guessNotes(notes().schemes) : null,
       groups: groupsOfOptions,
       placeholder: 'Scheme name',
       emptyLabel: 'Choose a scheme',
@@ -1271,17 +1281,14 @@ function workflowEditor({ app, stored: initial, context }) {
     return workflows[Object.keys(workflows)[0]] ?? null;
   }
 
-  /** Detected schemes for `platform`; for archives, apps first. */
-  function schemesFor(platform, kind) {
-    const all = suggestion?.schemes ?? [];
-    const matching = all.filter((scheme) => (scheme.platform ?? 'macos') === platform);
-    return kind === 'test' ? matching : [...matching.filter((s) => s.isApplication), ...matching.filter((s) => !s.isApplication)];
+  /** The detector's notes, filed by field (workflow-model.js's `detectionNotes`). */
+  function notes() {
+    return detectionNotes(suggestion?.notes);
   }
 
-  function firstScheme(platform, kind) {
-    const schemes = schemesFor(platform, kind);
-    if (kind === 'test') return (schemes.find((scheme) => scheme.isApplication && scheme.hasTests) ?? schemes.find((s) => s.hasTests) ?? schemes[0])?.name;
-    return schemes.find((scheme) => scheme.isApplication)?.name ?? schemes[0]?.name;
+  /** Detected schemes for `platform` (workflow-model.js's `schemesFor`). */
+  function currentSchemes(platform, kind) {
+    return schemesFor(suggestion?.schemes, platform, kind);
   }
 
   /** Xcode versions the Macs report, newest first, with the Macs that have each. */
@@ -1328,10 +1335,11 @@ function workflowEditor({ app, stored: initial, context }) {
 
   /**
    * A pop-up of `options` (`[value, label]`, or `groups` of them) plus "Other…", which reveals a text field for any
-   * value. A value not among the options shows as its own entry (`unknownLabel`), so nothing is lost.
+   * value. A value not among the options shows as its own entry (`unknownLabel`), so nothing is lost. `field` names
+   * the pop-up (`data-field`), for focusing it after a redraw.
    */
   function pickerWithOther({
-    label, value, options = [], groups: optionGroups, placeholder, hint, note, onChange, invalid, emptyLabel, unknownLabel,
+    label, value, options = [], groups: optionGroups, placeholder, hint, note, onChange, invalid, emptyLabel, unknownLabel, field,
   }) {
     const element = h('div', { class: 'wf-field' });
     const all = optionGroups ?? [['', options]];
@@ -1341,7 +1349,7 @@ function workflowEditor({ app, stored: initial, context }) {
     function draw(focus) {
       const id = `wf-field-${++fieldCount}`;
       const select = h('select', {
-        class: 'select', id,
+        class: 'select', id, dataset: field ? { field } : null,
         onChange: () => {
           if (select.value === OTHER) {
             other = true;

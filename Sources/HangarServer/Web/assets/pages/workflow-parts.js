@@ -56,6 +56,12 @@ export function explain(pieces) {
   return h('p', { class: 'wf-explain' }, sentence(pieces));
 }
 
+/** What detection guessed about a field (workflow-model.js's `detectionNotes`), in small secondary text under it;
+ * null without notes. */
+export function guessNotes(list) {
+  return list?.length ? h('div', { class: 'wf-guesses' }, list.map((text) => h('p', { class: 'wf-guess' }, text))) : null;
+}
+
 // MARK: Controls
 
 let controlCount = 0;

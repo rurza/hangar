@@ -311,6 +311,53 @@ function allProblems(found) {
   return [...found.workflow, ...found.general, ...found.environment, ...found.start, ...found.actions.flat(), ...found.testflight];
 }
 
+// MARK: Detected schemes
+//
+// The detector leaves a scheme's platform out (`platform: null`) when it couldn't tell. Such a scheme is offered under
+// every platform, marked `unverified`, so a platform it may build for is never greyed out.
+
+/** Detected schemes for `platform`: those that build for it, then those of unknown platform (`unverified: true`); for
+ * archives, apps first within each. */
+function schemesFor(schemes, platform, kind) {
+  const order = (list) => (kind === 'test' ? list : [...list.filter((s) => s.isApplication), ...list.filter((s) => !s.isApplication)]);
+  const verified = (schemes ?? []).filter((scheme) => scheme.platform === platform);
+  const unverified = (schemes ?? []).filter((scheme) => !scheme.platform).map((scheme) => ({ ...scheme, unverified: true }));
+  return [...order(verified), ...order(unverified)];
+}
+
+/** Whether `platform` has a scheme to offer. Before detection (no schemes) every platform does. */
+function platformHasSchemes(schemes, platform) {
+  return !schemes?.length || schemesFor(schemes, platform, 'archive').length > 0;
+}
+
+/** The scheme a new action of `kind` for `platform` starts with: a verified one if any. Tests prefer an app with tests. */
+function firstScheme(schemes, platform, kind) {
+  const all = schemesFor(schemes, platform, kind);
+  const verified = all.filter((scheme) => !scheme.unverified);
+  const list = verified.length ? verified : all;
+  if (kind === 'test') return (list.find((scheme) => scheme.isApplication && scheme.hasTests) ?? list.find((s) => s.hasTests) ?? list[0])?.name;
+  return list.find((scheme) => scheme.isApplication)?.name ?? list[0]?.name;
+}
+
+/**
+ * The detector's notes (what it guessed), filed by the field each concerns: `{ project, xcode, tools, schemes,
+ * platforms }`, each a list except `platforms`, which maps a scheme name to its note. Advice the editor already gives
+ * another way (the export, TestFlight, the icon) is left out.
+ */
+function detectionNotes(notes) {
+  const filed = { project: [], xcode: [], tools: [], schemes: [], platforms: {} };
+  for (const note of notes ?? []) {
+    const platform = /^Couldn['’]t tell which platform (.+) builds for/.exec(note);
+    if (platform) filed.platforms[platform[1]] = note;
+    else if (/^Exports for App Store Connect|^Turn on TestFlight upload|^The app icon /.test(note)) continue;
+    else if (/Xcode \S+ is a placeholder/.test(note)) filed.xcode.push(note);
+    else if (/ci_scripts\//.test(note)) filed.tools.push(note);
+    else if (/scheme|targets|builds \d+ apps/i.test(note)) filed.schemes.push(note);
+    else filed.project.push(note);
+  }
+  return filed;
+}
+
 // MARK: The new-workflow wizard
 
 /**
@@ -343,4 +390,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, firstExactBranch, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformName, problems, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };
+export { ACTION_KINDS, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };
