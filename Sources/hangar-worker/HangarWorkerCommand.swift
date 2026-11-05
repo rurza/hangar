@@ -11,7 +11,7 @@ private let defaultConfigPath = defaultSupportDirectory + "/config.json"
 struct HangarWorkerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "hangar-worker", abstract: "The Hangar build worker.",
-        subcommands: [Run.self, Doctor.self, Setup.self, Check.self])
+        subcommands: [Run.self, Doctor.self, Setup.self, Check.self, Isolate.self])
 
     struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Runs the worker: heartbeats and builds assigned jobs.")
@@ -120,6 +120,63 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             try WorkerConfiguration(serverURL: url, token: token, maxConcurrentJobs: maxJobs, dataDirectory: dataDir)
                 .write(to: config)
             print("Wrote \(config)")
+        }
+    }
+
+    struct Isolate: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Moves this Mac's worker onto the dedicated, unprivileged hangar user.",
+            discussion: """
+                Run it in Terminal as an administrator, without sudo; it asks for your password when it needs sudo. \
+                It creates the hangar user with a generated password (shown once and saved in your login keychain \
+                as app.hangar.worker-account), copies the worker, its configuration (the same machine token) and \
+                its build cache into that user, locks the user's home to 0700 and installs its launch agent. Then it \
+                waits for you to log in as hangar once with fast user switching, confirms the worker runs and \
+                reaches the server as hangar, and removes this user's agent and configuration. Neither Hangar nor \
+                the worker keeps the password. Running it again picks up where it stopped.
+                """)
+
+        @Flag(help: "Print the steps instead of doing them. Nothing runs with sudo.")
+        var dryRun = false
+        @Option(help: "The worker configuration to move. Default: this user's worker configuration.")
+        var config: String?
+        @Option(help: "The hangar-worker binary to install for hangar. Default: this executable.")
+        var binary: String?
+        @Option(help: "The Hangar server's data directory on this Mac, checked to be unreadable by hangar; empty skips it. Default: this user's, when it exists.")
+        var serverData: String?
+        @Flag(help: "Give an existing hangar user a new generated password.")
+        var resetPassword = false
+        @Flag(help: "Do not wait for the graphical login; run this again afterwards to finish.")
+        var noWait = false
+
+        func run() async throws {
+            let probe = TerminalRunner()
+            let groups = (try? probe.run(.probe("/usr/bin/id", "-Gn")))?.output.split(separator: " ") ?? []
+            let invoker = IsolationInvoker(
+                name: NSUserName(), uid: getuid(), home: NSHomeDirectory(), isAdmin: groups.contains("admin"))
+            let staging = NSTemporaryDirectory() + "hangar-isolate-" + UUID().uuidString
+            defer { try? FileManager.default.removeItem(atPath: staging) }
+            let say: @Sendable (String) -> Void = { line in
+                FileHandle.standardOutput.write(Data((line + "\n").utf8))
+            }
+            let isolation = WorkerIsolation(
+                invoker: invoker,
+                options: IsolationOptions(
+                    dryRun: dryRun, sourceConfig: config, binary: binary, serverData: serverData,
+                    resetPassword: resetPassword, noWait: noWait),
+                dependencies: .init(
+                    runner: dryRun ? DryRunRunner(print: say) : TerminalRunner(),
+                    passwords: LoginKeychainPasswordStore(), verifier: OpenDirectoryPasswordVerifier(),
+                    generator: RandomPasswordGenerator(),
+                    check: { await WorkerCheck.run(configuration: $0, transport: URLSessionTransport()) },
+                    sleep: { try? await Task.sleep(for: $0) }, now: Date.init, say: say,
+                    stagingDirectory: staging, ownExecutable: Bundle.main.executablePath))
+            do {
+                _ = try await isolation.run()
+            } catch let error as IsolationError {
+                FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
+                throw ExitCode(1)
+            }
         }
     }
 }
