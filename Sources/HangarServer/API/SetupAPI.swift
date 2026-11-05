@@ -207,10 +207,14 @@ extension HangarServerApp {
                 message: "The server listens on a port picked at start-up, which the worker cannot be given. Start it with --port.")
         }
         if let existing = await setup.installedWorker() {
-            let detail = existing.serverURL.map { "for \($0)" } ?? (existing.agentLoaded ? "its launchd agent is loaded" : "its configuration exists")
-            throw APIError(
-                code: "worker_already_installed",
-                message: "A worker is already set up on this Mac (\(detail)); to update it, run the install command again: curl -fsSL \(existing.serverURL ?? origin)/install | sh")
+            // The update command is only offered for the server the worker is set up for; with that unknown, any
+            // command could point it at the wrong server.
+            let message = if let serverURL = existing.serverURL {
+                "A worker is already set up on this Mac (for \(serverURL)); to update it, run the install command again: curl -fsSL \(serverURL)/install | sh"
+            } else {
+                "A worker is already set up on this Mac (\(existing.agentLoaded ? "its launchd agent is loaded" : "its configuration exists")), so Hangar leaves it alone. Check it with hangar-worker doctor on this Mac."
+            }
+            throw APIError(code: "worker_already_installed", message: message)
         }
         // The slot first, then the code: two clicks at once make one install and one code.
         guard let reserved = localWorkerSetup.reserve() else { return localWorkerSetup.current ?? LocalWorkerInstall(state: .running) }

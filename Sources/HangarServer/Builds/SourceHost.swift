@@ -12,6 +12,8 @@ public protocol SourceHost: Sendable {
     func readData(repoURL: String, commit: String, path: String, token: String?, maxBytes: Int?) async throws -> Data?
     /// Every file and directory path at `commit`.
     func tree(repoURL: String, commit: String, token: String?) async throws -> RepositoryTree
+    /// The repository's default branch and its branch names.
+    func branches(repoURL: String, token: String?) async throws -> RepositoryBranches
 }
 
 public enum SourceHostError: Error, Equatable, Sendable {
@@ -27,6 +29,11 @@ public enum SourceHostError: Error, Equatable, Sendable {
 }
 
 extension SourceHost {
+    /// Hosts that cannot list branches offer none; the Deploy sheet then takes a typed ref only.
+    public func branches(repoURL: String, token: String?) async throws -> RepositoryBranches {
+        RepositoryBranches(defaultBranch: nil, branches: [])
+    }
+
     public func readData(repoURL: String, commit: String, path: String, token: String?) async throws -> Data? {
         try await readData(repoURL: repoURL, commit: commit, path: path, token: token, maxBytes: nil)
     }

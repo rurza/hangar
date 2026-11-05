@@ -48,6 +48,9 @@ final class FakeSourceHost: SourceHost {
         var treeError: SourceHostError?
         /// Each call waits this long first (real time), to test timeouts.
         var delay: Duration = .zero
+        var branches = RepositoryBranches(defaultBranch: "main", branches: ["main"])
+        var branchesError: SourceHostError?
+        var branchReads = 0
     }
     let state = Mutex(State())
 
@@ -75,6 +78,15 @@ final class FakeSourceHost: SourceHost {
         }
         if let maxBytes, let data, data.count > maxBytes { throw SourceHostError.tooLarge(path: path, bytes: data.count) }
         return data
+    }
+
+    func branches(repoURL: String, token: String?) async throws -> RepositoryBranches {
+        try state.withLock { state in
+            state.tokens.append(token)
+            state.branchReads += 1
+            if let error = state.branchesError { throw error }
+            return state.branches.defaultFirst
+        }
     }
 
     func tree(repoURL: String, commit: String, token: String?) async throws -> RepositoryTree {

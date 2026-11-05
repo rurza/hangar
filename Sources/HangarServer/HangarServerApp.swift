@@ -38,6 +38,8 @@ public struct HangarServerApp: Sendable {
     public let repositoryDetector: RepositoryDetector
     /// Whether each app's repository has a `.hangar.yml`, for the app page and the workflow editor.
     public let repositoryWorkflowFiles: RepositoryWorkflowFileCache
+    /// Each app's branches, for the Deploy sheet.
+    public let repositoryBranches: RepositoryBranchesCache
     let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
     /// What the first-run setup reads from and runs on this Mac.
     let setup: SetupEnvironment
@@ -97,6 +99,7 @@ public struct HangarServerApp: Sendable {
         githubRepositories = GitHubRepositories(transport: githubTransport, now: now)
         repositoryDetector = RepositoryDetector(sourceHost: sourceHost, clock: clock, now: now)
         repositoryWorkflowFiles = RepositoryWorkflowFileCache(now: now)
+        repositoryBranches = RepositoryBranchesCache(now: now)
         self.setup = setup
         serverSettings = ServerSettingsRepository(database: database)
         githubAccounts = GitHubAccounts(transport: githubTransport, now: now)
