@@ -160,13 +160,26 @@ public enum CIScriptsCheck {
 
     /// One sentence per problem, for the deploy sheet: undefined variables first (by script), then hooks that are
     /// not executable.
-    public static func sentences(_ warnings: Warnings, directory: String = "ci_scripts") -> [String] {
+    /// `onlyFor` maps a name the app sets only for some workflows to those workflows: the sentence says so, as the
+    /// deployed workflow is not among them.
+    public static func sentences(
+        _ warnings: Warnings, directory: String = "ci_scripts", onlyFor: [String: [String]] = [:]
+    ) -> [String] {
         var lines: [String] = []
         for script in warnings.undefined.keys.sorted() {
             let names = warnings.undefined[script] ?? []
             let list = listText(names.map { "$\($0)" })
+            let one = names.count == 1
+            let elsewhere = names.compactMap { name in
+                onlyFor[name].flatMap { $0.isEmpty ? nil : "\(one ? "" : "$\(name) ")only for \(listText($0.map { "“\($0)”" }))" }
+            }
+            if !elsewhere.isEmpty {
+                lines.append(
+                    "\(directory)/\(script) uses \(list), which \(one ? "isn’t" : "aren’t") defined in Hangar for this workflow (\(elsewhere.joined(separator: "; "))): add \(one ? "it" : "them") for this workflow too, or the script sees \(one ? "it" : "them") empty.")
+                continue
+            }
             lines.append(
-                "\(directory)/\(script) uses \(list), which \(names.count == 1 ? "isn’t" : "aren’t") defined in Hangar: add \(names.count == 1 ? "it" : "them") under Variables, or the script sees \(names.count == 1 ? "it" : "them") empty.")
+                "\(directory)/\(script) uses \(list), which \(one ? "isn’t" : "aren’t") defined in Hangar: add \(one ? "it" : "them") under Variables, or the script sees \(one ? "it" : "them") empty.")
         }
         for script in warnings.notExecutable {
             lines.append(

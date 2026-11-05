@@ -58,7 +58,7 @@ extension HangarServerApp {
 
     /// The token builds of `app` use: its own `HANGAR_GITHUB_TOKEN`, else the global one.
     func appGitHubToken(_ app: App) throws -> String? {
-        try variables.resolvedEntries(appID: app.id).first { $0.name == BuildService.tokenVariable }?.value
+        try variables.resolvedEntries(appID: app.id, workflow: nil).first { $0.name == BuildService.tokenVariable }?.value
     }
 
     /// The app's bundle ID from App Store Connect (`GET /v1/apps/{id}`), nil without a key or when App Store

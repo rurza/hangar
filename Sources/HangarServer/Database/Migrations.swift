@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 enum Migrations {
@@ -140,6 +141,59 @@ enum Migrations {
                     created_at DOUBLE NOT NULL
                 );
                 CREATE INDEX job_tokens_job ON job_tokens(job_id);
+                """)
+        }
+        // Variable scopes (variable scopes design): groups of variables that apps link, and app variables limited
+        // to some workflows. `variables` is rebuilt because its UNIQUE constraint changes: one name may now exist
+        // once per set of workflows. `owner_id` replaces `app_id` ('' global, else the app's or the group's id);
+        // `workflows` is '' for all workflows, else a sorted JSON array of names. Existing rows get '': the same
+        // behaviour as before.
+        migrator.registerMigration("v9") { db in
+            try db.execute(sql: """
+                CREATE TABLE variable_groups (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    created_at DOUBLE NOT NULL
+                );
+
+                CREATE TABLE app_variable_groups (
+                    app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+                    group_id TEXT NOT NULL REFERENCES variable_groups(id) ON DELETE CASCADE,
+                    workflows TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL,
+                    PRIMARY KEY (app_id, group_id)
+                );
+
+                CREATE TABLE variables_v9 (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    owner_id TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    workflows TEXT NOT NULL DEFAULT '',
+                    ciphertext BLOB NOT NULL,
+                    is_secret BOOLEAN NOT NULL,
+                    as_file BOOLEAN NOT NULL,
+                    updated_at DOUBLE NOT NULL,
+                    UNIQUE (scope, owner_id, name, workflows)
+                );
+                """)
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT scope, app_id, name, ciphertext, is_secret, as_file, updated_at FROM variables")
+            for row in rows {
+                try db.execute(
+                    sql: """
+                        INSERT INTO variables_v9 (id, scope, owner_id, name, workflows, ciphertext, is_secret, as_file, updated_at)
+                        VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)
+                        """,
+                    arguments: [
+                        UUID().uuidString, row["scope"], row["app_id"], row["name"], row["ciphertext"] as Data,
+                        row["is_secret"], row["as_file"], row["updated_at"],
+                    ])
+            }
+            try db.execute(sql: """
+                DROP TABLE variables;
+                ALTER TABLE variables_v9 RENAME TO variables;
+                CREATE INDEX variables_owner ON variables(scope, owner_id);
                 """)
         }
         return migrator

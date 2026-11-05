@@ -8,13 +8,13 @@ enum APIErrorMapping {
     static let notFoundCodes: Set<String> = [
         "not_found", "app_not_found", "build_not_found", "job_not_found", "machine_not_found", "workflow_not_found",
         "artifact_not_found", "ref_not_found", "workflow_file_not_found", "icon_not_found", "repository_not_found",
-        "token_not_found",
+        "token_not_found", "variable_not_found", "variable_group_not_found",
     ]
     static let conflictCodes: Set<String> = [
         "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",
         "asc_not_configured", "github_not_configured", "issuer_required", "worker_already_installed",
         "dedicated_user_required",
-        "token_exists",
+        "token_exists", "variable_workflows_overlap", "variable_exists", "variable_group_exists",
     ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {

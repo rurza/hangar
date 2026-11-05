@@ -227,6 +227,46 @@ private struct DescriptionASC: AppStoreConnectClient {
         #expect(state.reads.filter { $0.hasPrefix("ci_scripts/") }.sorted() == ["ci_scripts/ci_post_clone.sh", "ci_scripts/ci_post_xcodebuild.sh"])
     }
 
+    /// A variable the deployed workflow does not get counts as undefined, and the notice says where it is set; a
+    /// restriction naming a workflow the file does not have is a notice of its own.
+    @Test func variablesOfOtherWorkflowsAreUndefinedAndUnknownWorkflowNamesAreFlagged() async throws {
+        let fixture = try fixture()
+        _ = try addMachine(fixture, "mini", report: report())
+        let app = try #require(try fixture.server.apps.find(slugOrID: "legilo"))
+        let variables = fixture.server.variables
+        try variables.set(scope: .app(app.id), name: "SENTRY_DSN", input: VariableInput(value: "d", workflows: ["beta"]))
+        try variables.set(scope: .app(app.id), name: "OLD", input: VariableInput(value: "o", workflows: ["Nightly"]))
+        try variables.set(scope: .app(app.id), name: "MIXED", input: VariableInput(value: "m", workflows: ["Gone", "testflight"]))
+        let sentry = try variables.createGroup(name: "Sentry")
+        try variables.set(scope: .group(sentry.id), name: "SENTRY_AUTH_TOKEN", input: VariableInput(value: "t", isSecret: true))
+        try variables.link(appID: app.id, group: "Sentry", workflows: ["testflight"])
+        let renamed = try variables.createGroup(name: "Renamed")
+        try variables.link(appID: app.id, group: "Renamed", workflows: ["Release"])
+        fixture.host.state.withLock { state in
+            state.tree = RepositoryTree(paths: ["ci_scripts/ci_post_clone.sh"], executables: ["ci_scripts/ci_post_clone.sh"])
+            state.files["ci_scripts/ci_post_clone.sh"] = "#!/bin/sh\necho \"$SENTRY_DSN $SENTRY_AUTH_TOKEN\"\n"
+        }
+        let commit = fixture.host.state.withLock { $0.commit }
+
+        let testflight = try await check(fixture, "workflow=testflight&commit=\(commit)")
+        #expect(testflight.notices.map(\.code) == [
+            "undefined-variables", "unknown-workflow-names", "unknown-workflow-names", "unknown-workflow-names",
+        ])
+        #expect(testflight.notices[0].message
+            == "ci_scripts/ci_post_clone.sh uses $SENTRY_DSN, which isn’t defined in Hangar for this workflow (only for “beta”): add it for this workflow too, or the script sees it empty.")
+        #expect(testflight.notices[1].message
+            == "MIXED is limited to “Gone” and “testflight”, but no workflow is called “Gone”. Edit it under the app’s Environment.")
+        #expect(testflight.notices[2].message
+            == "OLD is limited to “Nightly”, but no workflow is called that: no build gets this value. Edit it under the app’s Environment.")
+        #expect(testflight.notices[3].message
+            == "The group “Renamed” is linked for “Release”, but no workflow is called that: no build gets its variables. Edit the link under the app’s Environment.")
+
+        // The beta workflow gets SENTRY_DSN but not the group linked for testflight only.
+        let beta = try await check(fixture, "workflow=beta&commit=\(commit)")
+        #expect(beta.notices.first?.message
+            == "ci_scripts/ci_post_clone.sh uses $SENTRY_AUTH_TOKEN, which isn’t defined in Hangar for this workflow (only for “testflight”): add it for this workflow too, or the script sees it empty.")
+    }
+
     @Test func aRepositoryThatCannotBeReadOnlyMeansNoNotices() async throws {
         let fixture = try fixture()
         _ = try addMachine(fixture, "mini", report: report())

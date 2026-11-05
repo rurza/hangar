@@ -19,6 +19,11 @@ struct FormQuery: Sendable {
         pairs.first { $0.name == name }?.value
     }
 
+    /// Every value of `name`, in order (`?workflow=Beta&workflow=Release`).
+    func all(_ name: String) -> [String] {
+        pairs.filter { $0.name == name }.map(\.value)
+    }
+
     /// `+` to a space, then percent escapes; text that is not valid percent-encoding is kept as sent.
     static func decode(_ text: Substring) -> String {
         let spaced = text.replacingOccurrences(of: "+", with: " ")

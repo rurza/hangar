@@ -243,7 +243,7 @@ extension HangarServerApp {
         else { throw IncompleteJob(jobID: job.id) }
         return JobAssignment(
             job: job, app: app, workflow: workflow.forJob(running: job.action), workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
-            environment: try variables.resolvedEntries(appID: app.id))
+            environment: try variables.resolvedEntries(appID: app.id, workflow: build.workflow))
     }
 
     /// The `{id}` job, which must be assigned to the authenticated machine, and be the job of a job token's scope.

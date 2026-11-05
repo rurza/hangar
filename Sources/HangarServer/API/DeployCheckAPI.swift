@@ -37,14 +37,64 @@ extension HangarServerApp {
             guard let workflow = file.workflows[name] else {
                 throw DeployError.workflowNotFound(name: name, available: file.workflows.keys.sorted())
             }
-            let entries = try variables.resolvedEntries(appID: app.id)
+            let entries = try variables.resolvedEntries(appID: app.id, workflow: name)
             var check = try deployCheck(workflow: workflow, pinned: pinned, teamKey: SchedulerLoop.hasTeamKey(entries))
+            let own = try variables.summaries(scope: .app(app.id))
+            let links = try variables.links(appID: app.id)
             check.notices = await preflight.notices(
                 app: app, workflow: workflow, commit: resolved,
                 token: entries.first { $0.name == BuildService.tokenVariable }?.value,
-                definedNames: Set(entries.map(\.name)), appStoreConnect: { try appStoreConnectClient() })
+                definedNames: Set(entries.map(\.name)), onlyFor: Self.restrictedNames(own, links),
+                appStoreConnect: { try appStoreConnectClient() })
+            check.notices += Self.unknownWorkflowNotices(own, links, workflows: Set(file.workflows.keys))
             return try Response.json(check)
         }
+    }
+
+    /// Each name the app sets only for some workflows (its own variables and its groups' through limited links), with
+    /// those workflows.
+    static func restrictedNames(_ own: [VariableSummary], _ links: [AppVariableGroupLink]) -> [String: [String]] {
+        var names: [String: Set<String>] = [:]
+        for variable in own where !variable.workflows.isEmpty { names[variable.name, default: []].formUnion(variable.workflows) }
+        for link in links where !link.workflows.isEmpty {
+            for variable in link.variables { names[variable.name, default: []].formUnion(link.workflows) }
+        }
+        return names.mapValues { $0.sorted() }
+    }
+
+    /// A restriction naming a workflow the file does not have (renamed or removed) gives that value to no build of
+    /// it: `unknown-workflow-names`, one notice per variable or link.
+    static func unknownWorkflowNotices(
+        _ own: [VariableSummary], _ links: [AppVariableGroupLink], workflows: Set<String>
+    ) -> [DeployCheckNotice] {
+        /// "“Beta”, but no workflow is called that" or "“Beta” and “Old”, but no workflow is called “Old”".
+        func describe(_ limited: [String]) -> (none: Bool, text: String)? {
+            let missing = limited.filter { !workflows.contains($0) }
+            guard !missing.isEmpty else { return nil }
+            let all = missing.count == limited.count
+            let called = all ? (limited.count == 1 ? "that" : "any of these") : Self.listText(missing.map { "“\($0)”" }, or: true)
+            return (all, "\(Self.listText(limited.map { "“\($0)”" })), but no workflow is called \(called)")
+        }
+        var notices: [DeployCheckNotice] = []
+        for variable in own {
+            guard let found = describe(variable.workflows) else { continue }
+            let none = found.none
+            notices.append(DeployCheckNotice(
+                code: "unknown-workflow-names",
+                message: "\(variable.name) is limited to \(found.text)\(none ? ": no build gets this value" : ""). Edit it under the app’s Environment."))
+        }
+        for link in links {
+            guard let found = describe(link.workflows) else { continue }
+            let none = found.none
+            notices.append(DeployCheckNotice(
+                code: "unknown-workflow-names",
+                message: "The group “\(link.name)” is linked for \(found.text)\(none ? ": no build gets its variables" : ""). Edit the link under the app’s Environment."))
+        }
+        return notices
+    }
+
+    static func listText(_ items: [String], or: Bool = false) -> String {
+        items.count < 2 ? items.joined() : items.dropLast().joined(separator: ", ") + (or ? " or " : " and ") + items.last!
     }
 
     /// Reasons that pass with time: the job waits in the queue.

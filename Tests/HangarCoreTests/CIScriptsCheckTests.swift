@@ -67,4 +67,13 @@ import Testing
         #expect(scan.referenced.isSuperset(of: ["SENTRY_DSN", "CLIENTS_PATH", "CI_PRIMARY_REPOSITORY_PATH", "HOME"]))
         #expect(scan.assigned.isSuperset(of: ["CLIENTS_PATH", "FILE", "FIRST", "SECOND", "BUILT_HERE"]))
     }
+
+    @Test func namesSetForOtherWorkflowsSaySo() {
+        let lines = CIScriptsCheck.sentences(
+            CIScriptsCheck.Warnings(undefined: ["ci_post_xcodebuild.sh": ["SENTRY_AUTH_TOKEN", "SENTRY_DSN"]], notExecutable: []),
+            onlyFor: ["SENTRY_DSN": ["Beta", "Release"]])
+        #expect(lines == [
+            "ci_scripts/ci_post_xcodebuild.sh uses $SENTRY_AUTH_TOKEN and $SENTRY_DSN, which aren’t defined in Hangar for this workflow ($SENTRY_DSN only for “Beta” and “Release”): add them for this workflow too, or the script sees them empty.",
+        ])
+    }
 }

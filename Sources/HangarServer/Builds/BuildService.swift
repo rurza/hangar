@@ -135,7 +135,7 @@ public struct BuildService: Sendable {
     }
 
     private func token(_ app: App) throws -> String? {
-        try variables.resolvedEntries(appID: app.id).first { $0.name == Self.tokenVariable }?.value
+        try variables.resolvedEntries(appID: app.id, workflow: nil).first { $0.name == Self.tokenVariable }?.value
     }
 
     private static func parse(_ text: String) throws -> WorkflowFile {

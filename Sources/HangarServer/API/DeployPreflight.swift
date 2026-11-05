@@ -30,7 +30,7 @@ final class DeployPreflight: Sendable {
 
     func notices(
         app: App, workflow: Workflow, commit: String, token: String?, definedNames: Set<String>,
-        appStoreConnect: () throws -> (any AppStoreConnectClient)?
+        onlyFor: [String: [String]] = [:], appStoreConnect: () throws -> (any AppStoreConnectClient)?
     ) async -> [DeployCheckNotice] {
         var notices: [DeployCheckNotice] = []
         let directory = workflow.projectDirectory == "." ? "ci_scripts" : "\(workflow.projectDirectory)/ci_scripts"
@@ -39,7 +39,7 @@ final class DeployPreflight: Sendable {
             let warnings = CIScriptsCheck.check(found, definedNames: definedNames)
             for script in warnings.undefined.keys.sorted() {
                 let single = CIScriptsCheck.Warnings(undefined: [script: warnings.undefined[script] ?? []], notExecutable: [])
-                notices += CIScriptsCheck.sentences(single, directory: directory)
+                notices += CIScriptsCheck.sentences(single, directory: directory, onlyFor: onlyFor)
                     .map { DeployCheckNotice(code: "undefined-variables", message: $0) }
             }
             notices += CIScriptsCheck.sentences(

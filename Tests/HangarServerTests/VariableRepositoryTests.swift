@@ -23,7 +23,7 @@ import Testing
         try variables.set(scope: .global, name: "A", input: VariableInput(value: "global-a"))
         try variables.set(scope: .global, name: "B", input: VariableInput(value: "global-b", isSecret: true))
         try variables.set(scope: .app(demo.id), name: "A", input: VariableInput(value: "app-a", asFile: true))
-        let entries = try variables.resolvedEntries(appID: demo.id)
+        let entries = try variables.resolvedEntries(appID: demo.id, workflow: nil)
         #expect(entries == [
             EnvEntry(name: "A", value: "app-a", isSecret: false, asFile: true),
             EnvEntry(name: "B", value: "global-b", isSecret: true, asFile: false),

@@ -93,7 +93,7 @@ public struct HangarServerApp: Sendable {
             config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock, now: now,
             // An unreadable variable counts as a team key: the worker then says what is wrong, instead of every
             // headless machine refusing the job.
-            teamKey: { appID in (try? variables.resolvedEntries(appID: appID)).map(SchedulerLoop.hasTeamKey) ?? true })
+            teamKey: { appID in (try? variables.resolvedEntries(appID: appID, workflow: nil)).map(SchedulerLoop.hasTeamKey) ?? true })
         cancelRequests = CancelRequests()
         buildService = BuildService(
             apps: apps, builds: builds, machines: machines, variables: variables, workflowFiles: workflowFiles,

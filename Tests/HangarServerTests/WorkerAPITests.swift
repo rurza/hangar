@@ -117,6 +117,16 @@ final class ManualNow: Sendable {
         try server.variables.set(scope: .global, name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-global", isSecret: true))
         try server.variables.set(scope: .app(app.id), name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-app", isSecret: true))
         try server.variables.set(scope: .global, name: "TEAM", input: VariableInput(value: "YL78V8PY6H"))
+        // Per workflow: the build runs "testflight", so the "beta" value and the group linked for "beta" stay out.
+        try server.variables.set(scope: .app(app.id), name: "SENTRY_DSN", input: VariableInput(value: "dsn-all"))
+        try server.variables.set(
+            scope: .app(app.id), name: "SENTRY_DSN", input: VariableInput(value: "dsn-beta", workflows: ["beta"]))
+        let sentry = try server.variables.createGroup(name: "Sentry")
+        try server.variables.set(scope: .group(sentry.id), name: "SENTRY_ORG", input: VariableInput(value: "acme"))
+        try server.variables.link(appID: app.id, group: "Sentry", workflows: ["testflight"])
+        let other = try server.variables.createGroup(name: "Other")
+        try server.variables.set(scope: .group(other.id), name: "OTHER", input: VariableInput(value: "x"))
+        try server.variables.link(appID: app.id, group: "Other", workflows: ["beta"])
         let (_, otherToken) = try server.machines.create(name: "laptop")
         try await setup.fixture.test { client in
             let assignment = try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) {
@@ -136,6 +146,8 @@ final class ManualNow: Sendable {
             #expect(
                 assignment.environment == [
                     EnvEntry(name: "HANGAR_GITHUB_TOKEN", value: "ghp-app", isSecret: true),
+                    EnvEntry(name: "SENTRY_DSN", value: "dsn-all"),
+                    EnvEntry(name: "SENTRY_ORG", value: "acme"),
                     EnvEntry(name: "TEAM", value: "YL78V8PY6H"),
                 ])
             // Another machine gets nothing: the secrets go only to the machine the job is assigned to.

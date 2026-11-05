@@ -64,7 +64,7 @@ public struct AppRepository: Sendable {
     /// Removes the app with its builds, jobs, numbers and variables.
     public func delete(id: UUID) throws {
         try database.write { db in
-            try db.execute(sql: "DELETE FROM variables WHERE scope = 'app' AND app_id = ?", arguments: [id.uuidString])
+            try db.execute(sql: "DELETE FROM variables WHERE scope = 'app' AND owner_id = ?", arguments: [id.uuidString])
             try db.execute(sql: "DELETE FROM apps WHERE id = ?", arguments: [id.uuidString])
         }
     }
