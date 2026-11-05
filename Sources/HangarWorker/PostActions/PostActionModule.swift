@@ -29,13 +29,16 @@ public struct PostActionContext: Sendable {
     public var runner: any ProcessRunner
     public var clock: any Clock<Duration>
     public var log: @Sendable (String) -> Void
+    /// Reports the action's stages so far while it runs; the build page shows them under its step.
+    public var reportStages: @Sendable ([StepStage]) async -> Void
 
     public init(
         app: App, action: WorkflowAction, buildNumber: Int, archivePath: String, exportedArtifactPath: String?,
         repository: String, projectDirectory: String, environment: [String: String],
         xcodebuildEnvironment: [String: String]? = nil, layout: WorkspaceLayout,
         developerDir: String, teamID: String?, key: ASCKeyArguments?, appStoreConnect: (any AppStoreConnectClient)?,
-        runner: any ProcessRunner, clock: any Clock<Duration>, log: @escaping @Sendable (String) -> Void
+        runner: any ProcessRunner, clock: any Clock<Duration>, log: @escaping @Sendable (String) -> Void,
+        reportStages: @escaping @Sendable ([StepStage]) async -> Void = { _ in }
     ) {
         self.app = app
         self.action = action
@@ -54,6 +57,7 @@ public struct PostActionContext: Sendable {
         self.runner = runner
         self.clock = clock
         self.log = log
+        self.reportStages = reportStages
     }
 }
 
@@ -62,10 +66,17 @@ public struct PostActionOutput: Sendable, Equatable {
     public var summary: String
     /// Named values later steps and the UI can read, such as `testflight.buildID`.
     public var outputs: [String: String]
+    /// What went wrong after the action did its main work, one sentence each. The step then ends as `warning` and
+    /// the job still succeeds: a TestFlight build that was uploaded is in TestFlight even when a group refused it.
+    public var warnings: [String]
+    /// The action's stages as they ended, when it reports any.
+    public var stages: [StepStage]?
 
-    public init(summary: String, outputs: [String: String] = [:]) {
+    public init(summary: String, outputs: [String: String] = [:], warnings: [String] = [], stages: [StepStage]? = nil) {
         self.summary = summary
         self.outputs = outputs
+        self.warnings = warnings
+        self.stages = stages
     }
 }
 

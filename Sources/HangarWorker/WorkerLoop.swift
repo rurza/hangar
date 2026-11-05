@@ -5,7 +5,11 @@ import Synchronization
 
 /// What the loop needs from `JobRunner`; a seam so loop tests need no real builds.
 public protocol JobRunning: Sendable {
-    func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult
+    /// `stopReason` is set once the worker itself cancels the job because it is shutting down.
+    func run(
+        _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool,
+        stopReason: @escaping @Sendable () -> String?
+    ) async -> JobResult
 }
 
 extension JobRunner: JobRunning {}
@@ -135,7 +139,7 @@ public actor WorkerLoop {
                     let id = assignment.job.id
                     jobs.begin(id)
                     group.addTask { [jobs, jobRunner, logger] in
-                        let result = await jobRunner.run(assignment, cancelled: { jobs.isCancelled(id) })
+                        let result = await jobRunner.run(assignment, cancelled: { jobs.isCancelled(id) }, stopReason: { nil })
                         jobs.end(id)
                         logger.info("job ended", metadata: ["job": "\(id)", "status": "\(result.status.rawValue)"])
                     }

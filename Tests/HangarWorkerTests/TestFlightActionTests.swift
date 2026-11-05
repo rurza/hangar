@@ -25,10 +25,14 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
     private let state: Mutex<State>
     private let groups: [ASCBetaGroup]
+    private let addBuildError: ASCError?
+    private let reviewError: ASCError?
 
-    init(polls: [[ASCBuild]], groups: [ASCBetaGroup] = []) {
+    init(polls: [[ASCBuild]], groups: [ASCBetaGroup] = [], addBuildError: ASCError? = nil, reviewError: ASCError? = nil) {
         state = Mutex(State(polls: polls))
         self.groups = groups
+        self.addBuildError = addBuildError
+        self.reviewError = reviewError
     }
 
     var calls: [Call] { state.withLock { $0.calls } }
@@ -53,6 +57,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
     func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {
         state.withLock { $0.calls.append(.addBuild(buildID: buildID, groupID: groupID)) }
+        if let addBuildError { throw addBuildError }
     }
 
     func setWhatToTest(buildID: String, locale: String, text: String) async throws {
@@ -65,7 +70,15 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
     func submitForBetaReview(buildID: String) async throws {
         state.withLock { $0.calls.append(.submitForBetaReview(buildID: buildID)) }
+        if let reviewError { throw reviewError }
     }
+}
+
+/// Every stage list a run reported, in order.
+private final class StageLog: Sendable {
+    private let lists = Mutex<[[StepStage]]>([])
+    var all: [[StepStage]] { lists.withLock { $0 } }
+    @Sendable func append(_ stages: [StepStage]) async { lists.withLock { $0.append(stages) } }
 }
 
 @Suite(.timeLimit(.minutes(1))) struct TestFlightActionTests {
@@ -88,7 +101,8 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
 
         func context(
             client: (any AppStoreConnectClient)?, key: ASCKeyArguments? = TestFlightActionTests.key,
-            platform: Platform = .iOS, projectDirectory: String = ".", teamID: String? = nil
+            platform: Platform = .iOS, projectDirectory: String = ".", teamID: String? = nil,
+            reportStages: @escaping @Sendable ([StepStage]) async -> Void = { _ in }
         ) -> PostActionContext {
             PostActionContext(
                 app: App(
@@ -98,7 +112,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
                 buildNumber: 311, archivePath: layout.archive(scheme: "Demo"), exportedArtifactPath: nil,
                 repository: directory + "/repo", projectDirectory: projectDirectory, environment: [:],
                 layout: layout, developerDir: "/Xcode", teamID: teamID, key: key, appStoreConnect: client, runner: runner,
-                clock: clock, log: log.append)
+                clock: clock, log: log.append, reportStages: reportStages)
         }
 
         /// Runs the action while a ticker moves the test clock forward until it finishes.
@@ -191,7 +205,7 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
         #expect(output.outputs["testflight.buildID"] == "ios")
     }
 
-    @Test func unknownGroupListsAvailable() async throws {
+    @Test func unknownGroupIsAWarningAndTheOthersAreStillAdded() async throws {
         let fixture = try Fixture()
         let client = FakeAppStoreConnect(
             polls: [[build("b1", "VALID")]],
@@ -201,12 +215,67 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
             ])
         var settings = TestFlightSettings()
         settings.groups = ["Internal", "internal"]
-        let result = await fixture.run(settings, fixture.context(client: client))
-        #expect(throws: TestFlightError.unknownGroup(name: "internal", available: ["Internal", "Testers"])) {
-            try result.get()
-        }
-        // All names are resolved before any build is added.
+        let output = try await fixture.run(settings, fixture.context(client: client)).get()
+        #expect(output.warnings == [
+            "Groups: " + TestFlightError.unknownGroup(name: "internal", available: ["Internal", "Testers"]).description
+        ])
+        #expect(client.calls.contains(.addBuild(buildID: "b1", groupID: "g1")))
+        #expect(output.stages?.first { $0.name == "Groups" }?.status == .warning)
+    }
+
+    @Test func groupThatGetsEveryBuildIsNotAssigned() async throws {
+        let fixture = try Fixture()
+        let client = FakeAppStoreConnect(
+            polls: [[build("b1", "VALID")]],
+            groups: [
+                ASCBetaGroup(id: "g1", name: "Internal", isInternal: true, receivesEveryBuild: true),
+                ASCBetaGroup(id: "g2", name: "QA", isInternal: true),
+            ])
+        var settings = TestFlightSettings()
+        settings.groups = ["Internal", "QA"]
+        let output = try await fixture.run(settings, fixture.context(client: client)).get()
         #expect(!client.calls.contains(.addBuild(buildID: "b1", groupID: "g1")))
+        #expect(client.calls.contains(.addBuild(buildID: "b1", groupID: "g2")))
+        #expect(output.warnings.isEmpty)
+        #expect(fixture.log.all.contains("TestFlight group Internal receives every build automatically; not adding it"))
+        let groups = try #require(output.stages?.first { $0.name == "Groups" })
+        #expect(groups == StepStage(name: "Groups", status: .succeeded, detail: "Added to QA; Internal gets every build automatically"))
+    }
+
+    @Test func refusalsAfterTheUploadAreWarningsNotFailures() async throws {
+        let fixture = try Fixture()
+        let refusal = ASCError.http(status: 422, body: #"{"errors":[{"title":"x","detail":"Cannot add internal group to a build."}]}"#)
+        let review = ASCError.http(
+            status: 422, body: #"{"errors":[{"detail":"Beta App Description is required to submit a build for external testing."}]}"#)
+        let client = FakeAppStoreConnect(
+            polls: [[build("b1", "VALID")]],
+            groups: [ASCBetaGroup(id: "g1", name: "Internal", isInternal: true)],
+            addBuildError: refusal, reviewError: review)
+        try fixture.writeWhatToTest("WhatToTest.en-US.txt", "Changes")
+        var settings = TestFlightSettings()
+        settings.groups = ["Internal"]
+        settings.submitForExternalReview = true
+        let reported = StageLog()
+        let output = try await fixture.run(settings, fixture.context(client: client, reportStages: reported.append)).get()
+        #expect(output.warnings == [
+            "Groups: could not add the build to Internal: Cannot add internal group to a build.",
+            "Beta review: Beta App Description is required to submit a build for external testing.",
+        ])
+        #expect(output.stages?.map(\.name) == ["Upload", "Processing", "Groups", "What to Test", "Beta review"])
+        #expect(output.stages?.map(\.status) == [.succeeded, .succeeded, .warning, .succeeded, .warning])
+        #expect(output.outputs["testflight.buildID"] == "b1")
+        // Progress went out as it happened: the upload was reported running before anything else finished.
+        #expect(reported.all.first?.first == StepStage(name: "Upload", status: .running))
+        #expect(reported.all.last == output.stages)
+    }
+
+    @Test func aFailedUploadMarksItsStageAndFails() async throws {
+        let fixture = try Fixture()
+        fixture.runner.script({ $0.arguments.contains("-exportArchive") }, lines: [], exitCode: 70)
+        let reported = StageLog()
+        let result = await fixture.run(TestFlightSettings(), fixture.context(client: FakeAppStoreConnect(polls: []), reportStages: reported.append))
+        #expect(throws: (any Error).self) { try result.get() }
+        #expect(reported.all.last?.first?.status == .failed)
     }
 
     @Test func readsWhatToTestPerLocale() async throws {

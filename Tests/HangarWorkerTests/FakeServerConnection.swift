@@ -23,6 +23,7 @@ final class FakeServerConnection: ServerConnection {
         var failLogCalls = 0
         var finishErrors: [any Error] = []
         var finishAttempts = 0
+        var updates: [StepUpdate] = []
     }
 
     private let state: Mutex<State>
@@ -73,8 +74,22 @@ final class FakeServerConnection: ServerConnection {
         state.withLock { $0.events.append(.start) }
     }
 
+    /// A `running` update that only carries stages (a post-action's progress) is kept in `updates` alone, so
+    /// `events` and `steps` list each step's transitions.
     func step(jobID: UUID, _ update: StepUpdate) async throws {
-        state.withLock { $0.events.append(.step(update.name, update.status)) }
+        state.withLock {
+            $0.updates.append(update)
+            let progress = update.status == .running && update.stages != nil
+            if !progress { $0.events.append(.step(update.name, update.status)) }
+        }
+    }
+
+    /// Every step update, progress included, with its detail and stages.
+    var updates: [StepUpdate] { state.withLock { $0.updates } }
+
+    /// The last update of `step` that changed its status.
+    func lastUpdate(of step: String) -> StepUpdate? {
+        updates.last { $0.name == step && !($0.status == .running && $0.stages != nil) }
     }
 
     func log(jobID: UUID, _ batch: LogBatch) async throws {

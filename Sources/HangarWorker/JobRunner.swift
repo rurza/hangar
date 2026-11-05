@@ -69,7 +69,11 @@ public struct JobRunner: Sendable {
         var testDestination: TestDestination?
     }
 
-    public func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
+    /// `stopReason` says why the worker itself cancelled the job (it is shutting down); the job then reports it.
+    public func run(
+        _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool,
+        stopReason: @escaping @Sendable () -> String? = { nil }
+    ) async -> JobResult {
         let jobID = assignment.job.id
         let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID,
             temporaryRoot: temporaryRoot)
@@ -86,7 +90,8 @@ public struct JobRunner: Sendable {
             return result
         }
 
-        var pipeline = JobPipeline(jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled)
+        var pipeline = JobPipeline(
+            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason)
         let prepared = await pipeline.step(StepName.checkout) { [self] in
             let prepared = try await prepare(assignment, layout: layout, materializer: materializer, log: log.lines(StepName.checkout))
             try await Checkout(runner: runner, layout: layout).run(
@@ -106,6 +111,31 @@ public struct JobRunner: Sendable {
             for name in later { await pipeline.skip(name) }
         }
 
+        // A worker that is shutting down has seconds before launchd kills it: a stopped job's partial artifacts are
+        // not worth them.
+        if pipeline.stopNote != nil {
+            await pipeline.skip(StepName.uploadArtifacts)
+        } else {
+            await uploadArtifacts(assignment, layout: layout, log: log, pipeline: &pipeline)
+        }
+
+        await pipeline.report(StepName.cleanup, .running)
+        let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
+        await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
+        await log.finalFlush()
+
+        // Error descriptions (an App Store Connect response body, say) and post-action outputs may hold a secret.
+        let result = JobResult(
+            status: pipeline.status, failureReason: pipeline.reason.map(masker.mask),
+            outputs: outputs.mapValues(masker.mask))
+        await reportFinish(jobID: jobID, result)
+        return result
+    }
+
+    private func uploadArtifacts(
+        _ assignment: JobAssignment, layout: WorkspaceLayout, log: JobLog, pipeline: inout JobPipeline
+    ) async {
+        let jobID = assignment.job.id
         await pipeline.step(StepName.uploadArtifacts, .always) { [connection, runner] in
             let lines = log.lines(StepName.uploadArtifacts)
             // Every piece is attempted; the step fails at the end if any could not be zipped or uploaded.
@@ -123,18 +153,6 @@ public struct JobRunner: Sendable {
             }
             if !failures.isEmpty { throw ArtifactError.incomplete(failures) }
         }
-
-        await pipeline.report(StepName.cleanup, .running)
-        let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
-        await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
-        await log.finalFlush()
-
-        // Error descriptions (an App Store Connect response body, say) and post-action outputs may hold a secret.
-        let result = JobResult(
-            status: pipeline.status, failureReason: pipeline.failureReason.map(masker.mask),
-            outputs: outputs.mapValues(masker.mask))
-        await reportFinish(jobID: jobID, result)
-        return result
     }
 
     /// The Mac's computer name (System Settings › General › Sharing), read once without a DNS lookup.
@@ -307,9 +325,20 @@ public struct JobRunner: Sendable {
                 projectDirectory: projectDirectory, environment: environment,
                 xcodebuildEnvironment: prepared.xcodebuildEnvironment, layout: layout,
                 developerDir: prepared.developerDir, teamID: workflow.teamID, key: prepared.key,
-                appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name))
-            let output = await pipeline.step(name) { try await PostActionRegistry.make(spec).run(context) }
+                appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name),
+                reportStages: { [reporter = pipeline.stageReporter(name)] stages in
+                    await reporter(stages.map { StepStage(name: $0.name, status: $0.status, detail: $0.detail.map(masker.mask)) })
+                })
+            let output = await pipeline.step(name, ending: { output in
+                JobPipeline.Ending(
+                    status: output.warnings.isEmpty ? .succeeded : .warning,
+                    detail: output.warnings.isEmpty ? nil : masker.mask(output.warnings.joined(separator: " ")),
+                    stages: output.stages?.map { stage in
+                        StepStage(name: stage.name, status: stage.status, detail: stage.detail.map(masker.mask))
+                    })
+            }) { try await PostActionRegistry.make(spec).run(context) }
             if let output {
+                for warning in output.warnings { log.line(step: name, "warning: \(warning)") }
                 log.line(step: name, output.summary)
                 outputs.merge(output.outputs) { _, new in new }
             }

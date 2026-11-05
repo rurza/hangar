@@ -143,7 +143,10 @@ private final class BlockingJobRunner: JobRunning, Sendable {
 
     func release(_ id: UUID) { state.withLock { _ = $0.released.insert(id) } }
 
-    func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
+    func run(
+        _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool,
+        stopReason: @escaping @Sendable () -> String?
+    ) async -> JobResult {
         let id = assignment.job.id
         state.withLock { $0.started.append(id) }
         while true {

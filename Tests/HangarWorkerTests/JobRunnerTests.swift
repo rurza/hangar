@@ -344,7 +344,8 @@ private final class Shared<Value: Sendable>: Sendable {
 
         let result = await fixture.run()
 
-        #expect(result == JobResult(status: .failed, failureReason: "test: xcodebuild exited with 70"))
+        // The log's error says more than the exit status, which follows it.
+        #expect(result == JobResult(status: .failed, failureReason: "test: error: build failed (xcodebuild exited with 70)"))
     }
 
     /// A build that fails before any test ran leaves a result bundle with no tests in it: no Tests section then.
@@ -419,6 +420,24 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postXcodebuild.environment["CI_APP_STORE_SIGNED_APP_PATH"] == nil)
         #expect(!fixture.runner.commands.contains { $0.arguments.contains("-exportArchive") })
         #expect(fixture.connection.logLines.contains("** ARCHIVE FAILED **"))
+    }
+
+    @Test func failedStepNamesTheFirstErrorItsLogShows() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.runner.recording.script(Self.isArchive, lines: [
+            "CompileSwift normal arm64 /src/AnalyticsClient+Live.swift",
+            "/Users/me/w/BatFiKit/Sources/AnalyticsClient+Live.swift:19:35: error: cannot find 'analyticsDSN' in scope",
+            "/Users/me/w/BatFiKit/Sources/Other.swift:3:1: error: a later error",
+            "** ARCHIVE FAILED **",
+        ], exitCode: 65)
+
+        let result = await fixture.run()
+
+        let cause = "AnalyticsClient+Live.swift:19:35: error: cannot find 'analyticsDSN' in scope (xcodebuild exited with 65)"
+        #expect(result.failureReason == "archive: " + cause)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.status == .failed)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == cause)
     }
 
     @Test func secretsWipedEvenOnFailure() async throws {
@@ -565,7 +584,9 @@ private final class Shared<Value: Sendable>: Sendable {
         let result = await fixture.runTicking(cancelled: { archiveStarted.get() })
 
         #expect(result.status == .cancelled)
-        #expect(fixture.connection.status(of: "archive") == .failed)
+        #expect(fixture.connection.status(of: "archive") == .cancelled)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == "Cancelled")
+        #expect(result.failureReason == nil)
         #expect(fixture.connection.status(of: "post-xcodebuild") == .skipped)
         #expect(fixture.hook(.postXcodebuild) == nil)
         #expect(fixture.connection.status(of: "upload-artifacts") == .succeeded)
