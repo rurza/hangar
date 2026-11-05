@@ -11,9 +11,12 @@ struct Logs: HangarCommand {
     @Flag(help: "Keep printing new lines until the job ends.") var follow = false
     @Option(help: "Only this step's lines, such as archive or post-action:testflight.") var step: String?
     @Option(help: "Only the last N lines.") var tail: Int?
+    @Flag(help: "xcodebuild's output as it printed it, compiler invocations included, instead of one line per task.")
+    var raw = false
 
     func validate() throws {
         if follow, tail != nil { throw ValidationError("--tail does not apply with --follow.") }
+        if follow, raw { throw ValidationError("--raw does not apply with --follow; the full log is kept once the job ends.") }
         if let tail, tail < 1 { throw ValidationError("--tail must be at least 1.") }
     }
 
@@ -25,8 +28,17 @@ struct Logs: HangarCommand {
                 for job in jobs {
                     let prefix = prefix(job)
                     group.addTask { [step] in
+                        // A job logged by a worker that sends xcodebuild's output uncondensed is condensed here.
+                        var condensers: [String: XcodebuildLogCondenser] = [:]
                         for try await entry in cli.api.followLog(jobID: job.id, step: step) {
-                            cli.print(cli.json ? try Format.jsonLine(entry) : Format.logLine(entry, prefix: prefix, timeZone: cli.timeZone))
+                            var lines = [entry.line]
+                            if XcodebuildLogCondenser.condenses(step: entry.step) {
+                                lines = condensers[entry.step, default: XcodebuildLogCondenser()].consume(entry.line)
+                            }
+                            for line in lines {
+                                let shown = LogEntry(t: entry.t, step: entry.step, line: line)
+                                cli.print(cli.json ? try Format.jsonLine(shown) : Format.logLine(shown, prefix: prefix, timeZone: cli.timeZone))
+                            }
                         }
                     }
                 }
@@ -36,7 +48,7 @@ struct Logs: HangarCommand {
         }
         var byJob: [String: [LogEntry]] = [:]
         for job in jobs {
-            let entries = try await cli.api.log(jobID: job.id, step: step, tail: tail)
+            let entries = try await cli.api.readableLog(jobID: job.id, step: step, tail: tail, raw: raw).entries
             byJob[job.id.uuidString] = entries
             if !cli.json {
                 for entry in entries { cli.print(Format.logLine(entry, prefix: prefix(job), timeZone: cli.timeZone)) }
