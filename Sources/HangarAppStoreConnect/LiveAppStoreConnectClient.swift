@@ -172,6 +172,40 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
             }
     }
 
+    public func createCertificate(type: ASCCertificateType, csrPEM: String) async throws -> ASCCertificate {
+        struct One: Decodable {
+            struct Item: Decodable {
+                struct Attributes: Decodable {
+                    var certificateContent: String?
+                    var serialNumber: String?
+                    var name: String?
+                    var expirationDate: String?
+                }
+                var id: String
+                var attributes: Attributes
+            }
+            var data: Item
+        }
+        let body = JSONNode.object(["data": .object([
+            "type": .string("certificates"),
+            "attributes": .object(["certificateType": .string(type.rawValue), "csrContent": .string(csrPEM)]),
+        ])])
+        let one = try decode(One.self, from: try await request("POST", url: try url(path: "/v1/certificates"), body: body))
+        guard let base64 = one.data.attributes.certificateContent, let content = Data(base64Encoded: base64) else {
+            throw ASCError.decoding("the new certificate has no content")
+        }
+        return ASCCertificate(
+            id: one.data.id, serialNumber: one.data.attributes.serialNumber, name: one.data.attributes.name,
+            expirationDate: one.data.attributes.expirationDate.flatMap(Self.parseDate), content: content)
+    }
+
+    public func revokeCertificate(id: String) async throws {
+        guard !id.isEmpty, id.allSatisfy({ $0.isLetter || $0.isNumber }) else {
+            throw ASCError.decoding("invalid certificate ID")
+        }
+        _ = try await request("DELETE", url: try url(path: "/v1/certificates/\(id)"), body: nil)
+    }
+
     // MARK: - Plumbing
 
     /// Minimal JSON tree for request bodies.

@@ -292,4 +292,31 @@ struct LiveClientDecodingTests {
             try await makeClient(StubTransport()).betaGroups(appID: "a")
         }
     }
+
+    @Test func createCertificatePostsADevelopmentCSRAndDecodesTheCertificate() async throws {
+        let der = Data([0x30, 0x82, 0x01, 0x02])
+        let body = #"{"data":{"type":"certificates","id":"CERT1","attributes":{"certificateContent":"\#(der.base64EncodedString())","serialNumber":"5A1B","name":"Apple Development: Created via API","certificateType":"DEVELOPMENT","expirationDate":"2027-11-06T10:00:00.000+00:00"}}}"#
+        let transport = StubTransport(responses: [StubTransport.Response(status: 201, body: Data(body.utf8))])
+        let certificate = try await makeClient(transport).createCertificate(type: .development, csrPEM: "-----BEGIN CERTIFICATE REQUEST-----")
+
+        #expect(certificate == ASCCertificate(
+            id: "CERT1", serialNumber: "5A1B", name: "Apple Development: Created via API",
+            expirationDate: Date(timeIntervalSince1970: 1_825_495_200), content: der))
+        let request = try #require(transport.requests.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/v1/certificates")
+        let data = try #require(try bodyJSON(request)["data"] as? [String: Any])
+        #expect(data["type"] as? String == "certificates")
+        let attributes = try #require(data["attributes"] as? [String: Any])
+        #expect(attributes["certificateType"] as? String == "DEVELOPMENT")
+        #expect(attributes["csrContent"] as? String == "-----BEGIN CERTIFICATE REQUEST-----")
+    }
+
+    @Test func revokeCertificateDeletesOnlyThatID() async throws {
+        let transport = StubTransport(responses: [StubTransport.Response(status: 204, body: Data())])
+        try await makeClient(transport).revokeCertificate(id: "CERT1")
+        #expect(transport.requests.map(\.httpMethod) == ["DELETE"])
+        #expect(transport.requests.first?.url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/certificates/CERT1")
+        await #expect(throws: ASCError.self) { try await makeClient(transport).revokeCertificate(id: "../apps") }
+    }
 }

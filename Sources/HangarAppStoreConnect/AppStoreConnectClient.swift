@@ -27,9 +27,24 @@ public protocol AppStoreConnectClient: Sendable {
     func submitForBetaReview(buildID: String) async throws
     /// The app's TestFlight test information per locale (`GET /v1/apps/{id}/betaAppLocalizations`, read-only).
     func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization]
+    /// Creates a signing certificate from a PEM certificate signing request (`POST /v1/certificates`). Only the
+    /// server's explicit "Create Hangar's signing certificate" action calls it. Needs a team key: individual keys
+    /// cannot use the provisioning endpoints.
+    func createCertificate(type: ASCCertificateType, csrPEM: String) async throws -> ASCCertificate
+    /// Revokes one certificate by its App Store Connect ID (`DELETE /v1/certificates/{id}`).
+    func revokeCertificate(id: String) async throws
 }
 
 extension AppStoreConnectClient {
+    /// Clients that cannot create certificates say so.
+    public func createCertificate(type: ASCCertificateType, csrPEM: String) async throws -> ASCCertificate {
+        throw ASCError.decoding("creating certificates is not available from this client")
+    }
+
+    public func revokeCertificate(id: String) async throws {
+        throw ASCError.decoding("revoking certificates is not available from this client")
+    }
+
     /// Clients that cannot read it say so; the deploy check then says nothing about it.
     public func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization] {
         throw ASCError.decoding("beta app localizations are not available from this client")

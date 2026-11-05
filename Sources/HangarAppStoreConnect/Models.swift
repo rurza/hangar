@@ -115,3 +115,27 @@ extension ASCError {
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 }
+
+/// `certificateType` of `POST /v1/certificates`. `DEVELOPMENT` is the "Apple Development" certificate that signs
+/// development builds of every platform (the API has no `APPLE_DEVELOPMENT`); the per-platform types are legacy.
+public enum ASCCertificateType: String, Sendable, Codable {
+    case development = "DEVELOPMENT"
+}
+
+/// A certificate App Store Connect created; `content` is the DER certificate (no private key: that never leaves
+/// the server that made the request).
+public struct ASCCertificate: Sendable, Equatable {
+    public var id: String
+    public var serialNumber: String?
+    public var name: String?
+    public var expirationDate: Date?
+    public var content: Data
+
+    public init(id: String, serialNumber: String?, name: String?, expirationDate: Date?, content: Data) {
+        self.id = id
+        self.serialNumber = serialNumber
+        self.name = name
+        self.expirationDate = expirationDate
+        self.content = content
+    }
+}
