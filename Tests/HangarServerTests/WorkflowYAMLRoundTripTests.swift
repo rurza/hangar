@@ -62,6 +62,8 @@ import Testing
                 .test(scheme: "LegiloTests", platform: .iOS, destination: "iPhone 17 Pro", testPlan: "Smoke"),
                 .test(scheme: "Legilo", platform: .macOS),
                 .test(scheme: "Vision: Tests", platform: .visionOS, testPlan: "true"),
+                .test(scheme: "Pad", platform: .iOS, destination: "iPad Pro 11-inch (M4)"),
+                .test(scheme: "Odd", platform: .iOS, destination: "Phone: #2, [beta]", testPlan: "Plan B"),
                 WorkflowAction(scheme: "Legilo", platform: .macOS, export: .developerID),
             ],
             postActions: [PostActionSpec(name: "testflight")]),
@@ -155,12 +157,16 @@ import Testing
         let yaml = try Self.workflowToYAML(Self.withTests)
         #expect(yaml.contains("""
                 actions:
-                  - test: { scheme: LegiloTests, platform: ios, destination: iPhone 17 Pro, test-plan: Smoke }
+                  - test: { scheme: LegiloTests, platform: ios, destination: "iPhone 17 Pro", test-plan: Smoke }
                   - test: { scheme: Legilo, platform: macos }
                   - test: { scheme: "Vision: Tests", platform: visionos, test-plan: "true" }
+                  - test: { scheme: Pad, platform: ios, destination: "iPad Pro 11-inch (M4)" }
+                  - test: { scheme: Odd, platform: ios, destination: "Phone: #2, [beta]", test-plan: "Plan B" }
                   - { scheme: Legilo, platform: macos, export: developer-id }
 
             """), "\(yaml)")
+        // Destinations and plans are quoted as the Swift writer quotes them, so both write the same file.
+        #expect(yaml == WorkflowYAMLWriter.yaml(Self.withTests))
     }
 
     /// Switching an action's kind in the form keeps only the fields of the new kind.
@@ -172,10 +178,10 @@ import Testing
               const models = modelsFromFile(input);
               const actions = models[0].actions;
               setActionKind(actions[0], 'archive');
-              setActionKind(actions[3], 'test');
-              actions[3].destination = '  ';
+              setActionKind(actions[5], 'test');
+              actions[5].destination = '  ';
               const blank = blankAction('test');
-              return JSON.stringify([fileFromModels(models).workflows.ci.actions[0], fileFromModels(models).workflows.ci.actions[3],
+              return JSON.stringify([fileFromModels(models).workflows.ci.actions[0], fileFromModels(models).workflows.ci.actions[5],
                 blank, problems(models)]);
             })()
             """)

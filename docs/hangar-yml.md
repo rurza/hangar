@@ -60,17 +60,19 @@ An action archives a scheme or runs its tests, like Xcode Cloud's Archive and Te
 
 #### What a test action runs
 
-A test job runs `checkout` → `post-clone` → `pre-xcodebuild` → `test` → `post-xcodebuild` → `upload-artifacts` → `cleanup`. It has no stamp, export or post-actions. The `test` step resolves Swift packages as an archive does, then runs `xcodebuild test -scheme … -destination … [-testPlan …] -resultBundlePath <job>/result.xcresult` with the same signing flags as an archive (`-allowProvisioningUpdates`, and the team API key when there is one) and without secret variables. Test actions do not need the App Store Connect key.
+A test job runs `checkout` → `post-clone` → `pre-xcodebuild` → `test` → `post-xcodebuild` → `upload-artifacts` → `cleanup`. It has no stamp, export or post-actions. The `test` step resolves Swift packages as an archive does, then runs `xcodebuild test -scheme … -destination … [-testPlan …] -resultBundlePath <job>/result.xcresult` with the same signing flags as an archive (`-allowProvisioningUpdates`, and the team API key when there is one) and without secret variables. The worker does not need the App Store Connect key for a test job, but a deploy still does: the server reserves the build number through App Store Connect, for test-only workflows too.
 
 Destinations:
 
 - macOS tests run on the worker itself (`platform=macOS`).
 - iOS, visionOS, tvOS and watchOS tests run on a simulator from `xcrun simctl list devices available`, using the workflow's Xcode. `recommended` picks the newest runtime of the platform and its newest iPhone, Apple Vision, Apple TV or Apple Watch. A name picks the device with that name or device type (case-insensitive) on the newest runtime that has it.
-- With no simulator for the platform, the job fails before checkout ("No iOS simulator available on <machine>; install one in Xcode › Settings › Components"). The scheduler already skips machines that report no runtime for the platform ("no iOS simulator").
+- With no simulator for the platform, the job fails before checkout ("No iOS simulator available on <machine>; install one in Xcode › Settings › Components"). The scheduler already skips machines that report no runtime for the platform ("no iOS simulator"). It knows runtimes only, not device names, so a test that names a device can go to a Mac that lacks it and fail there. Workers list runtimes with the Xcode `xcode-select` points at, every 10 minutes; the job uses the workflow's Xcode, so a runtime only one of them can use may make the two disagree.
+- Two test jobs running at once on one Mac (`maxConcurrentJobs` above 1) pick the same simulator; give test-heavy Macs one slot.
+- Test jobs need an updated worker: one from before test actions shows "update the worker (run the install command again)" in the queue note and gets no test jobs. Its archive jobs keep running.
 
 The environment has `CI_XCODEBUILD_ACTION=test`, `CI_RESULT_BUNDLE_PATH`, `CI_TEST_DESTINATION_DEVICE_TYPE` and `CI_TEST_DESTINATION_RUNTIME` (for example `iPhone 17` and `iOS 27.2`), and `CI_TEST_PLAN` when set. `CI_ARCHIVE_PATH` is not set.
 
-After the tests, pass or fail, Hangar reads the result bundle with `xcrun xcresulttool get test-results summary` and logs the totals and each failing test. Failing tests fail the job with "test: 3 tests failed"; when xcodebuild fails for another reason (a compile error, say), the reason stays "test: xcodebuild exited with 65". The result bundle is uploaded as `<scheme>.xcresult.zip`, and the totals become job outputs (see the [API](api.md#test-outputs)).
+After the tests, pass or fail, Hangar reads the result bundle with `xcrun xcresulttool get test-results summary` (Xcode 16 or later; with an older Xcode there are no totals and the job keeps xcodebuild's reason) and logs the totals and each failing test. Failing tests fail the job with "test: 3 tests failed"; when xcodebuild fails for another reason (a compile error, say), the reason stays "test: xcodebuild exited with 65". The result bundle is uploaded as `<scheme>.xcresult.zip`, and the totals become job outputs (see the [API](api.md#test-outputs)).
 
 ### Secret variables
 

@@ -56,6 +56,13 @@ function string(text) {
   return needsQuotes(value) ? quoted(value) : value;
 }
 
+/** Like `string`, but quoted unless it is a run of ASCII letters, digits and `._/-` (as the Swift writer does):
+ * for simulator names and test plans, which often have spaces and parentheses. */
+function name(text) {
+  const value = String(text);
+  return /^[A-Za-z/][A-Za-z0-9._/-]*$/.test(value) && !RESERVED.test(value) ? value : quoted(value);
+}
+
 /** Any settings value: booleans and numbers stay bare, strings follow `string`, lists and maps are flow style. */
 function value(item) {
   if (item === null || item === undefined) return 'null';
@@ -98,8 +105,8 @@ function settingsEntries(spec) {
 function actionLine(action) {
   const fields = [`scheme: ${string(action.scheme)}`, `platform: ${string(action.platform)}`];
   if (action.kind !== 'test') return `{ ${[...fields, `export: ${string(action.export)}`].join(', ')} }`;
-  if (action.destination !== undefined && action.destination !== null) fields.push(`destination: ${string(action.destination)}`);
-  if (action.testPlan !== undefined && action.testPlan !== null) fields.push(`test-plan: ${string(action.testPlan)}`);
+  if (action.destination !== undefined && action.destination !== null) fields.push(`destination: ${name(action.destination)}`);
+  if (action.testPlan !== undefined && action.testPlan !== null) fields.push(`test-plan: ${name(action.testPlan)}`);
   return `test: { ${fields.join(', ')} }`;
 }
 

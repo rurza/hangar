@@ -39,6 +39,7 @@ import Testing
             "--path", "/data/jobs/00000000-0000-0000-0000-000000000001/result.xcresult", "--compact",
         ])
         #expect(command.environment["DEVELOPER_DIR"] == Self.developerDir)
+        #expect(command.discardsStandardError)
     }
 
     @Test func failureReasons() {

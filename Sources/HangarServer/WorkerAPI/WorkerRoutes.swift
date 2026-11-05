@@ -156,7 +156,7 @@ extension HangarServerApp {
             let workflow = try builds.workflow(buildID: build.id)
         else { throw IncompleteJob(jobID: job.id) }
         return JobAssignment(
-            job: job, app: app, workflow: workflow, workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
+            job: job, app: app, workflow: workflow.forJob(running: job.action), workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
             environment: try variables.resolvedEntries(appID: app.id))
     }
 

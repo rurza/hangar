@@ -22,7 +22,7 @@ import Testing
             "test.failures": #"[{"message":"XCTAssertEqual failed","name":"A/testOne()"},{"message":"line 1\nline 2","name":"A/testTwo()"}]"#,
         ]
         let text = Status.renderDetail(H.build(job), apps: [H.app], machines: [], now: H.t0, timeZone: H.utc)
-        #expect(text.contains("[LegiloTests/ios (test)] Test – iOS failed on 22222222: test: 2 tests failed"))
+        #expect(text.contains("[LegiloTests/ios] Test – iOS failed on 22222222: test: 2 tests failed"))
         #expect(text.contains("Tests: 40 passed · 2 failed · 1 skipped\n  ✗ A/testOne(): XCTAssertEqual failed\n  ✗ A/testTwo(): line 1"))
         #expect(!text.contains("line 2"))
 

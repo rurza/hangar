@@ -137,13 +137,16 @@ private final class Shared<Value: Sendable>: Sendable {
         /// Makes the job a test action of `DemoTests` and scripts the simulator list and the result summary.
         mutating func makeTestJob(
             _ action: WorkflowAction = .test(scheme: "DemoTests", platform: .iOS, testPlan: "Smoke"),
-            simulators: String = "simctl-devices", summary: String? = "xcresult-summary-passed"
+            simulators: String = "simctl-devices", summary: String? = "xcresult-summary-passed", summaryJSON: String? = nil
         ) throws {
             assignment.job.action = action
             assignment.workflow.actions = [action]
             let devices = String(decoding: try SimulatorCatalogTests.fixture(simulators), as: UTF8.self)
-            runner.recording.script({ $0.arguments.starts(with: ["simctl", "list"]) }, lines: [devices])
-            if let summary {
+            // Noise as CoreSimulator writes it to stderr; the live runner drops stderr, the parser skips it anyway.
+            runner.recording.script({ $0.arguments.starts(with: ["simctl", "list"]) }, lines: [SimulatorCatalogTests.noise, devices])
+            if let summaryJSON {
+                runner.recording.script({ $0.arguments.first == "xcresulttool" }, lines: [summaryJSON])
+            } else if let summary {
                 let json = String(decoding: try SimulatorCatalogTests.fixture(summary), as: UTF8.self)
                 runner.recording.script({ $0.arguments.first == "xcresulttool" }, lines: [json])
             } else {
@@ -270,10 +273,12 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(test.environment["HANGAR_ASC_KEY_PATH"] == nil)
         #expect(!test.environment.values.contains { $0.contains(Self.githubToken) || $0.contains(Self.pemBody) })
         let simctl = try #require(fixture.command { $0.arguments.starts(with: ["simctl"]) })
+        #expect(simctl.discardsStandardError)
         #expect(simctl.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
         #expect(simctl.environment["HANGAR_GITHUB_TOKEN"] == nil)
         let summary = try #require(fixture.command { $0.arguments.first == "xcresulttool" })
         #expect(summary.environment["HANGAR_GITHUB_TOKEN"] == nil)
+        #expect(summary.discardsStandardError)
         #expect(fixture.hook(.postXcodebuild)?.environment["CI_XCODEBUILD_ACTION"] == "test")
         #expect(fixture.hook(.postXcodebuild)?.environment["CI_XCODEBUILD_EXIT_CODE"] == "0")
         #expect(!fixture.runner.commands.contains(where: Self.isArchive))
@@ -300,6 +305,26 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.status(of: "post-xcodebuild") == .succeeded)
         #expect(fixture.hook(.postXcodebuild)?.environment["CI_XCODEBUILD_EXIT_CODE"] == "65")
         #expect(fixture.connection.logLines.contains { $0.contains("SwiftUIRecorderTests/testTabFromAFieldReachesTheRecorder()") })
+    }
+
+    @Test func failingTestNamesAndMessagesAreMaskedBeforeEncoding() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let secret = #"p"ss\word"#
+        fixture.assignment.environment.append(EnvEntry(name: "QUOTED_SECRET", value: secret, isSecret: true))
+        let failures: [[String: Any]] = [["testIdentifierString": "T/test()", "failureText": "got \(secret) back"]]
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: [
+            "passedTests": 0, "failedTests": 1, "testFailures": failures,
+        ]), as: UTF8.self)
+        try fixture.makeTestJob(summaryJSON: json)
+        fixture.runner.recording.script(Self.isTest, lines: [], exitCode: 65)
+
+        let result = await fixture.run()
+
+        let list = try #require(result.outputs["test.failures"])
+        #expect(!list.contains("ss\\\\word") && !list.contains("ss\\word"))
+        #expect(try JSONDecoder().decode([TestFailure].self, from: Data(list.utf8))
+            == [TestFailure(name: "T/test()", message: "got [masked] back")])
     }
 
     @Test func aTestRunThatBreaksKeepsTheXcodebuildReason() async throws {

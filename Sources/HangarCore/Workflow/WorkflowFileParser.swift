@@ -73,8 +73,12 @@ public enum WorkflowFileParser {
         guard case .object(let map) = value else { throw .invalidYAML("workflow '\(workflow)': each action must be a map") }
         let explicit = map.keys.filter { $0 == "archive" || $0 == "test" }
         guard !explicit.isEmpty else { return try archiveFields(map, context: "an action in workflow '\(workflow)'", workflow: workflow) }
-        guard map.count == 1, let (key, body) = map.first else {
+        guard explicit.count == 1 else {
             throw .invalidYAML("workflow '\(workflow)': an action is either '- archive: {...}' or '- test: {...}', not both")
+        }
+        guard map.count == 1, let (key, body) = map.first else {
+            throw .invalidYAML(
+                "workflow '\(workflow)': '\(explicit[0]):' cannot be mixed with other keys; put scheme and platform inside it")
         }
         guard case .object(let fields) = body else {
             throw .invalidYAML("workflow '\(workflow)': '\(key)' must be a map, e.g. - \(key): { scheme: App, platform: ios }")
@@ -113,6 +117,9 @@ public enum WorkflowFileParser {
                 "\(context): macOS tests run on the Mac itself; remove destination '\(destination)' or set it to recommended")
         }
         let testPlan = try optionalString(map["test-plan"], key: "test-plan", workflow: workflow)
+        if let testPlan, testPlan.trimmingCharacters(in: .whitespaces).isEmpty {
+            throw .invalidYAML("\(context): 'test-plan' is empty; remove it to use the scheme's test plan")
+        }
         return .test(scheme: scheme, platform: platform, destination: destination, testPlan: testPlan)
     }
 

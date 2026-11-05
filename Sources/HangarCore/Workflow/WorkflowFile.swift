@@ -140,6 +140,20 @@ public struct Workflow: Codable, Equatable, Sendable {
     /// Path of the project or workspace, relative to the repository root.
     public var projectOrWorkspacePath: String { project ?? workspace ?? "" }
 
+    /// The workflow as sent to the worker running `action`. An archive job's leaves out the test actions, so a worker
+    /// from before test actions can still decode it (it reads only its own action); a test job's is complete.
+    public func forJob(running action: WorkflowAction) -> Workflow {
+        guard action.kind == .archive else { return self }
+        var workflow = self
+        workflow.actions = actions.filter { $0.kind == .archive }
+        return workflow
+    }
+
+    /// The `WorkerCapability` names a worker needs to run `action` of this workflow, given `forJob(running:)`.
+    public func needsCapabilities(for action: WorkflowAction) -> Set<String> {
+        action.kind == .test ? [WorkerCapability.testActions] : []
+    }
+
     /// Directory holding the project or workspace (`.` at the repository root).
     public var projectDirectory: String {
         guard let slash = projectOrWorkspacePath.lastIndex(of: "/") else { return "." }

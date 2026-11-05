@@ -29,7 +29,7 @@ public struct TestSummary: Equatable, Sendable {
     /// Lenient: missing numbers count as 0 and failures without a name are dropped. Nil when `data` is not a JSON
     /// object.
     public static func parse(_ data: Data) -> TestSummary? {
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        guard let root = JSONText.object(in: data) else { return nil }
         func count(_ key: String) -> Int { (root[key] as? NSNumber)?.intValue ?? 0 }
         var summary = TestSummary(
             passed: count("passedTests"), failed: count("failedTests"), skipped: count("skippedTests"),
@@ -39,12 +39,20 @@ public struct TestSummary: Equatable, Sendable {
         var seen = Set<String>()
         for entry in root["testFailures"] as? [[String: Any]] ?? [] {
             guard summary.failures.count < failureCap else { break }
-            guard let name = (entry["testIdentifierString"] ?? entry["testName"]) as? String, !name.isEmpty,
-                seen.insert(name).inserted
+            let identifier = (entry["testIdentifierString"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            guard let name = identifier ?? entry["testName"] as? String, !name.isEmpty, seen.insert(name).inserted
             else { continue }
             let message = (entry["failureText"] as? String) ?? ""
             summary.failures.append(TestFailure(name: name, message: String(message.prefix(messageCap))))
         }
+        return summary
+    }
+
+    /// The summary with `mask` applied to every failure's name and message, before they are encoded as JSON (a
+    /// secret with a quote or a backslash would no longer match once escaped).
+    public func masked(by mask: (String) -> String) -> TestSummary {
+        var summary = self
+        summary.failures = failures.map { TestFailure(name: mask($0.name), message: mask($0.message)) }
         return summary
     }
 
@@ -124,7 +132,7 @@ public struct TestStep: Sendable {
         return ProcessCommand(
             executable: "/usr/bin/xcrun",
             arguments: ["xcresulttool", "get", "test-results", "summary", "--path", layout.resultBundle, "--compact"],
-            environment: environment)
+            environment: environment, discardsStandardError: true)
     }
 
     /// Throws only when packages cannot be resolved or a tool cannot be launched; test failures are in the result.

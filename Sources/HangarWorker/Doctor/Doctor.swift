@@ -1,5 +1,6 @@
 import Foundation
 import HangarCore
+import Synchronization
 
 /// Probes this machine for the health data the scheduler uses for eligibility. Never throws: a failed probe
 /// yields a conservative default (0, empty, false).
@@ -10,13 +11,24 @@ public struct Doctor: Sendable {
     private let dataDirectory: String
     private let clock: any Clock<Duration>
     private let signTimeout: Duration
+    private let simulatorTimeout: Duration
+    private let simulatorRefresh: TimeInterval
+    private let now: @Sendable () -> Date
+    /// The last simulator runtimes listed and when the list was last attempted, shared by the copies of this Doctor.
+    private let simulators = SimulatorListCache()
 
+    /// `simctl` gets `simulatorTimeout` and is asked again only every `simulatorRefresh` seconds (by `now`), so a
+    /// slow or wedged CoreSimulatorService cannot hold up the heartbeat; a failed listing keeps the last good one.
     public init(
         runner: any ProcessRunner, locator: XcodeLocator,
         knownTools: [String] = ["git", "brew", "xcodegen", "rclone", "sentry-cli"],
         dataDirectory: String = NSHomeDirectory(), clock: any Clock<Duration> = ContinuousClock(),
-        signTimeout: Duration = .seconds(10)
+        signTimeout: Duration = .seconds(10), simulatorTimeout: Duration = .seconds(10),
+        simulatorRefresh: TimeInterval = 600, now: @escaping @Sendable () -> Date = Date.init
     ) {
+        self.simulatorTimeout = simulatorTimeout
+        self.simulatorRefresh = simulatorRefresh
+        self.now = now
         self.runner = runner
         self.locator = locator
         self.knownTools = knownTools
@@ -39,7 +51,8 @@ public struct Doctor: Sendable {
             tools: await tools(),
             canSignWithoutPrompt: await canSign,
             runningJobIDs: runningJobIDs,
-            simulatorRuntimes: await simulatorRuntimes())
+            simulatorRuntimes: await simulatorRuntimes(),
+            capabilities: WorkerCapability.all)
     }
 
     // MARK: Probes
@@ -76,10 +89,35 @@ public struct Doctor: Sendable {
         return !text.contains("'Battery Power'")
     }
 
-    /// Runtimes with an available simulator, through the Xcode `xcode-select` points at.
+    /// Runtimes with an available simulator, through the Xcode `xcode-select` points at; cached, see `init`.
     private func simulatorRuntimes() async -> [String] {
-        guard let json = await output("/usr/bin/xcrun", SimulatorCatalog.listArguments) else { return [] }
-        return SimulatorCatalog.runtimeNames(SimulatorCatalog.devices(fromJSON: Data(json.utf8)))
+        let date = now()
+        let cached = simulators.withLock { $0 }
+        if let attempted = cached.attemptedAt, date.timeIntervalSince(attempted) < simulatorRefresh { return cached.runtimes }
+        let command = ProcessCommand(
+            executable: "/usr/bin/xcrun", arguments: SimulatorCatalog.listArguments, environment: Self.environment,
+            discardsStandardError: true)
+        let runner = runner, clock = clock, timeout = simulatorTimeout
+        let listed = await withTaskGroup(of: [String]?.self) { group in
+            group.addTask {
+                guard let outcome = try? await runner.run(command, onLine: { _ in }), outcome.exitCode == 0,
+                    let devices = SimulatorCatalog.list(fromJSON: Data(outcome.output.utf8))
+                else { return nil }
+                return SimulatorCatalog.runtimeNames(devices)
+            }
+            group.addTask {
+                try? await clock.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        return simulators.withLock { state in
+            state.attemptedAt = date
+            if let listed { state.runtimes = listed }
+            return state.runtimes
+        }
     }
 
     private func tools() async -> [String: String] {
@@ -125,5 +163,13 @@ public struct Doctor: Sendable {
             if let match = line.firstMatch(of: /\)\s+([0-9A-Fa-f]{40})\s/) { return String(match.1) }
         }
         return nil
+    }
+}
+
+private final class SimulatorListCache: Sendable {
+    private let state = Mutex<(runtimes: [String], attemptedAt: Date?)>(([], nil))
+
+    func withLock<R: Sendable>(_ body: (inout (runtimes: [String], attemptedAt: Date?)) -> R) -> R {
+        state.withLock { body(&$0) }
     }
 }

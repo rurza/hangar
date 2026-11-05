@@ -12,6 +12,15 @@ public struct InstalledXcode: Codable, Equatable, Sendable {
     }
 }
 
+/// What a worker build can do beyond the original protocol; the scheduler gives a job only to workers that have every
+/// capability it needs.
+public enum WorkerCapability {
+    /// Runs test actions and decodes assignments that contain them.
+    public static let testActions = "test-actions"
+    /// Everything this build of the worker can do.
+    public static let all = [testActions]
+}
+
 public struct MachineReport: Codable, Equatable, Sendable {
     public var macOSVersion: String
     public var xcodes: [InstalledXcode]
@@ -26,13 +35,16 @@ public struct MachineReport: Codable, Equatable, Sendable {
     /// Simulator runtimes with at least one available device, e.g. ["iOS 27.2", "visionOS 27.1"]. Empty when the
     /// worker reports none or predates the field.
     public var simulatorRuntimes: [String]
+    /// `WorkerCapability` names; empty for a worker from before capabilities.
+    public var capabilities: [String]
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
-        canSignWithoutPrompt: Bool, runningJobIDs: [UUID], simulatorRuntimes: [String] = []
+        canSignWithoutPrompt: Bool, runningJobIDs: [UUID], simulatorRuntimes: [String] = [], capabilities: [String] = []
     ) {
         self.simulatorRuntimes = simulatorRuntimes
+        self.capabilities = capabilities
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
         self.chip = chip
@@ -47,7 +59,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools
-        case canSignWithoutPrompt, runningJobIDs, simulatorRuntimes
+        case canSignWithoutPrompt, runningJobIDs, simulatorRuntimes, capabilities
     }
 
     public init(from decoder: any Decoder) throws {
@@ -63,6 +75,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
         canSignWithoutPrompt = try container.decode(Bool.self, forKey: .canSignWithoutPrompt)
         runningJobIDs = try container.decode([UUID].self, forKey: .runningJobIDs)
         simulatorRuntimes = try container.decodeIfPresent([String].self, forKey: .simulatorRuntimes) ?? []
+        capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
     }
 }
 

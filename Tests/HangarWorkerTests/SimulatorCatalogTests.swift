@@ -67,6 +67,16 @@ import Testing
         #expect(SimulatorCatalog.select(platform: .visionOS, destination: "iPhone 18 Pro", from: devices) == nil)
     }
 
+    static let noise = "objc[123]: Class SimServiceContext is implemented in both A and B. One of the two will be used."
+
+    @Test func readsTheJSONPastNoiseOnOtherLines() throws {
+        let text = Self.noise + "\n" + String(decoding: try Self.fixture("simctl-devices"), as: UTF8.self) + "\nwarning: trailing"
+        let devices = try #require(SimulatorCatalog.list(fromJSON: Data(text.utf8)))
+        #expect(devices.count == 3)
+        #expect(SimulatorCatalog.list(fromJSON: Data("no json at all".utf8)) == nil)
+        #expect(SimulatorCatalog.list(fromJSON: Data(#"{"devices": {}}"#.utf8)) == [])
+    }
+
     @Test func toleratesGarbage() {
         #expect(SimulatorCatalog.devices(fromJSON: Data()).isEmpty)
         #expect(SimulatorCatalog.devices(fromJSON: Data("[1]".utf8)).isEmpty)
@@ -87,6 +97,24 @@ import Testing
             name: "SwiftUIRecorderTests/testListeningStartedFromTheKeyboardIsNotEndedByTheView()",
             message: "XCTAssertTrue failed"))
         #expect(summary.line == "1 passed · 3 failed · 0 skipped")
+    }
+
+    @Test func readsACompactSummaryPastNoise() throws {
+        let json = String(decoding: try SimulatorCatalogTests.fixture("xcresult-summary-passed"), as: UTF8.self)
+        let summary = try #require(TestSummary.parse(Data((SimulatorCatalogTests.noise + "\n" + json + "\n").utf8)))
+        #expect(summary.passed == 42)
+    }
+
+    @Test func prefersTheIdentifierAndFallsBackWhenItIsNull() throws {
+        let json = #"{"failedTests": 1, "testFailures": [{"testIdentifierString": null, "testName": "named()", "failureText": "x"}]}"#
+        #expect(TestSummary.parse(Data(json.utf8))?.failures == [TestFailure(name: "named()", message: "x")])
+    }
+
+    @Test func masksNamesAndMessagesBeforeEncoding() {
+        var summary = TestSummary()
+        summary.failures = [TestFailure(name: "T/p\"ss()", message: "got p\"ss\nnext")]
+        let masked = summary.masked { $0.replacingOccurrences(of: "p\"ss", with: "[masked]") }
+        #expect(masked.failures == [TestFailure(name: "T/[masked]()", message: "got [masked]\nnext")])
     }
 
     @Test func parsesARealPassingSummary() throws {

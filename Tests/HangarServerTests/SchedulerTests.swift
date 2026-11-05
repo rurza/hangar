@@ -9,22 +9,39 @@ import Testing
 
     func job(
         _ offset: TimeInterval = 0, xcode: String = "27.2", tools: [String] = [], pinned: UUID? = nil,
-        simulator: Platform? = nil
+        simulator: Platform? = nil, capabilities: Set<String> = []
     ) -> QueuedJob {
         QueuedJob(
             id: UUID(), buildID: UUID(), createdAt: Self.start.addingTimeInterval(offset), xcode: xcode, tools: tools,
-            pinnedMachineID: pinned, simulatorPlatform: simulator)
+            pinnedMachineID: pinned, simulatorPlatform: simulator, requiredCapabilities: capabilities)
     }
 
     func machine(
         _ name: String, isOnline: Bool = true, freeSlots: Int = 1, runningJobs: Int = 0,
         xcodeVersions: [String] = ["27.2.1"], tools: Set<String> = ["git"], freeDiskGB: Double = 100,
-        performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = []
+        performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = [],
+        capabilities: Set<String> = [WorkerCapability.testActions]
     ) -> MachineSnapshot {
         MachineSnapshot(
             id: UUID(), name: name, isOnline: isOnline, freeSlots: freeSlots, runningJobs: runningJobs,
             xcodeVersions: xcodeVersions, tools: tools, freeDiskGB: freeDiskGB, performanceCores: performanceCores,
-            onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes)
+            onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes,
+            capabilities: capabilities)
+    }
+
+    @Test func aJobNeedingACapabilityWaitsForAnUpdatedWorker() throws {
+        let queued = job(capabilities: [WorkerCapability.testActions])
+        let old = machine("Old", capabilities: [])
+        let plan = Scheduler.plan(jobs: [queued], machines: [old], minFreeDiskGB: 20)
+        #expect(plan.assignments.isEmpty)
+        let reasons = try #require(plan.waiting[queued.id])
+        #expect(reasons == ["Old": [.workerOutdated]])
+        #expect(Scheduler.queueNote(reasons) == "Old: update the worker (run the install command again)")
+        let updated = machine("New")
+        #expect(Scheduler.plan(jobs: [queued], machines: [old, updated], minFreeDiskGB: 20).assignments
+            == [Assignment(jobID: queued.id, machineID: updated.id)])
+        // Jobs that need nothing still go to old workers.
+        #expect(Scheduler.plan(jobs: [job()], machines: [old], minFreeDiskGB: 20).assignments.count == 1)
     }
 
     @Test func aSimulatorTestNeedsARuntimeOfItsPlatform() throws {

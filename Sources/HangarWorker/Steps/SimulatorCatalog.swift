@@ -34,10 +34,14 @@ public struct SimulatorDevice: Equatable, Sendable {
 public enum SimulatorCatalog {
     public static let listArguments = ["simctl", "list", "devices", "available", "--json"]
 
+    /// Like `list`, with nothing for output that is not a simulator list.
     public static func devices(fromJSON data: Data) -> [SimulatorDevice] {
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let byRuntime = root["devices"] as? [String: Any]
-        else { return [] }
+        list(fromJSON: data) ?? []
+    }
+
+    /// The available devices, or nil when `data` holds no `{"devices": {...}}` object (lines around it are skipped).
+    public static func list(fromJSON data: Data) -> [SimulatorDevice]? {
+        guard let root = JSONText.object(in: data), let byRuntime = root["devices"] as? [String: Any] else { return nil }
         var devices: [SimulatorDevice] = []
         for (runtimeID, list) in byRuntime {
             guard let (platform, version) = runtime(runtimeID), let list = list as? [[String: Any]] else { continue }
@@ -107,5 +111,19 @@ public enum SimulatorCatalog {
         }
         let version = Array(parts.dropFirst().prefix { Int($0) != nil }.compactMap { Int($0) })
         return version.isEmpty ? nil : (platform, version)
+    }
+}
+
+/// Reads the JSON object a tool printed, skipping lines of other output around it (a warning on stderr that reached
+/// the same stream, say).
+enum JSONText {
+    static func object(in data: Data) -> [String: Any]? {
+        if let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] { return object }
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: false)
+        guard let first = lines.firstIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("{") }),
+            let last = lines.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasSuffix("}") }), first <= last
+        else { return nil }
+        let text = lines[first...last].joined(separator: "\n")
+        return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
     }
 }

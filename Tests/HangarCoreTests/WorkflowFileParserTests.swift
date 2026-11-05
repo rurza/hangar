@@ -255,6 +255,8 @@ private func yaml(project: String = "project: A.xcodeproj", actions: String = "-
         ("- test: A", "map"),
         ("- { test: { scheme: A, platform: ios }, archive: { scheme: A, platform: ios, export: app-store-connect } }", "test"),
         ("- test: { scheme: A, platform: macos, destination: \"iPhone 17\" }", "macOS"),
+        ("- { test: { scheme: A, platform: ios }, scheme: B }", "cannot be mixed"),
+        ("- test: { scheme: A, platform: ios, test-plan: \"\" }", "test-plan"),
     ])
     func rejectsInvalidActionCombinations(action: String, mentioned: String) {
         let message = invalidYAMLMessage(yaml(actions: action))

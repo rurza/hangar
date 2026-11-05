@@ -2,6 +2,7 @@ import Foundation
 import HangarAppStoreConnect
 import HangarCore
 import Logging
+import SystemConfiguration
 import Synchronization
 
 /// Runs one assigned job end to end in the order the spec fixes (`StepName.sequence(for:postActions:)`):
@@ -35,7 +36,7 @@ public struct JobRunner: Sendable {
 
     public init(
         connection: any ServerConnection, runner: any ProcessRunner, locator: XcodeLocator, dataDirectory: String,
-        machineName: String = Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
+        machineName: String = JobRunner.computerName,
         clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
@@ -91,7 +92,8 @@ public struct JobRunner: Sendable {
 
         var outputs: [String: String] = [:]
         if let prepared {
-            outputs = await build(assignment, prepared: prepared, layout: layout, log: log, pipeline: &pipeline)
+            outputs = await build(
+                assignment, prepared: prepared, layout: layout, log: log, masker: masker, pipeline: &pipeline)
         } else {
             let sequence = StepName.sequence(
                 for: assignment.job.action, postActions: assignment.workflow.postActions.map(\.name))
@@ -129,6 +131,12 @@ public struct JobRunner: Sendable {
         await reportFinish(jobID: jobID, result)
         return result
     }
+
+    /// The Mac's computer name (System Settings › General › Sharing), read once without a DNS lookup.
+    public static let computerName: String = {
+        if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty { return name }
+        return "this Mac"
+    }()
 
     /// Delays between attempts to report a job's result; five attempts in all.
     static let finishRetryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
@@ -208,7 +216,8 @@ public struct JobRunner: Sendable {
         environment["DEVELOPER_DIR"] = developerDir
         environment["PATH"] = Self.basePATH
         let command = ProcessCommand(
-            executable: "/usr/bin/xcrun", arguments: SimulatorCatalog.listArguments, environment: environment)
+            executable: "/usr/bin/xcrun", arguments: SimulatorCatalog.listArguments, environment: environment,
+            discardsStandardError: true)
         let outcome = try await runner.run(command, onLine: { _ in })
         let devices = outcome.exitCode == 0 ? SimulatorCatalog.devices(fromJSON: Data(outcome.output.utf8)) : []
         let platform = action.platform.ciName
@@ -226,7 +235,7 @@ public struct JobRunner: Sendable {
 
     /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs.
     private func build(
-        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog,
+        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog, masker: SecretMasker,
         pipeline: inout JobPipeline
     ) async -> [String: String] {
         let workflow = assignment.workflow
@@ -243,10 +252,14 @@ public struct JobRunner: Sendable {
                 try await hooks.run(hook, scriptsDirectory: scripts, environment: environment, log: log.lines(name))
             }
         }
-        if action.kind == .test, let destination = prepared.testDestination {
-            return await test(
+        switch action.kind {
+        case .archive: break
+        case .test:
+            guard let destination = prepared.testDestination else { preconditionFailure("prepare picks a test's destination") }
+            let summary = await test(
                 assignment, prepared: prepared, destination: destination, layout: layout, log: log, pipeline: &pipeline,
                 hooks: hooks, scripts: scripts)
+            return summary?.masked(by: masker.mask).outputs ?? [:]
         }
         await pipeline.step(StepName.archive, .xcodebuild) { [runner] in
             try await ArchiveStep(runner: runner).run(
@@ -258,9 +271,10 @@ public struct JobRunner: Sendable {
             try BuildNumberStamper().stamp(
                 archivePath: archivePath, buildNumber: assignment.buildNumber, log: log.lines(StepName.stamp))
         }
+        guard let export = action.export else { preconditionFailure("the parser requires an archive's export") }
         let exported = await pipeline.step(StepName.export, .xcodebuild) { [runner] in
             try await ExportStep(runner: runner).run(
-                archivePath: archivePath, method: action.export ?? .appStoreConnect, destination: "export", exportPath: layout.export,
+                archivePath: archivePath, method: export, destination: "export", exportPath: layout.export,
                 jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
                 key: prepared.key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
                 log: log.lines(StepName.export))
@@ -294,12 +308,12 @@ public struct JobRunner: Sendable {
         return outputs
     }
 
-    /// `test` and `post-xcodebuild` of a test job; returns the `test.*` outputs when the result bundle could be read,
-    /// whether the tests passed or not.
+    /// `test` and `post-xcodebuild` of a test job; returns the summary when the result bundle could be read, whether
+    /// the tests passed or not.
     private func test(
         _ assignment: JobAssignment, prepared: Prepared, destination: TestDestination, layout: WorkspaceLayout,
         log: JobLog, pipeline: inout JobPipeline, hooks: HookRunner, scripts: String
-    ) async -> [String: String] {
+    ) async -> TestSummary? {
         let action = assignment.job.action
         let summary = Captured<TestSummary?>(nil)
         await pipeline.step(StepName.test, .xcodebuild) { [runner] in
@@ -319,7 +333,7 @@ public struct JobRunner: Sendable {
                 environment: prepared.environment.merging(additions) { _, new in new },
                 log: log.lines(StepName.postXcodebuild))
         }
-        return summary.get()?.outputs ?? [:]
+        return summary.get()
     }
 
     /// Credentials from the reserved variables; the private key is read from the file `HANGAR_ASC_KEY_PATH` names,

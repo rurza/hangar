@@ -53,7 +53,8 @@ struct Status: HangarCommand {
         ]
         for job in build.jobs {
             lines.append("")
-            var heading = "[\(Format.label(job.action))] \(job.action.kindLabel) \(job.status.rawValue)"
+            // The kind label says archive or test, so the bracket is the plain `scheme/platform`.
+            var heading = "[\(job.action.scheme)/\(job.action.platform.rawValue)] \(job.action.kindLabel) \(job.status.rawValue)"
             if job.machineID != nil { heading += " on \(machineName(job.machineID, machines))" }
             if let note = job.queueNote { heading += ": \(note)" }
             if let reason = job.failureReason { heading += ": \(reason)" }

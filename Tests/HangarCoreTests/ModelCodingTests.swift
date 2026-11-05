@@ -40,6 +40,37 @@ struct ModelCodingTests {
         object.removeValue(forKey: "simulatorRuntimes")
         let old = try JSONCoding.decoder.decode(MachineReport.self, from: JSONSerialization.data(withJSONObject: object))
         #expect(old.simulatorRuntimes == [])
+        #expect(old.capabilities == [])
+        #expect(report.capabilities == [])
+    }
+
+    /// The `ArchiveAction`-era shapes, as a worker from before test actions decodes an assignment.
+    private struct OldAssignment: Decodable {
+        struct Action: Decodable { var scheme: String; var platform: String; var export: String }
+        struct OldJob: Decodable { var action: Action }
+        struct OldWorkflow: Decodable { var actions: [Action] }
+        var job: OldJob
+        var workflow: OldWorkflow
+    }
+
+    @Test func anArchiveJobOfAMixedWorkflowStaysReadableByOldWorkers() throws {
+        let archive = WorkflowAction(scheme: "Legilo", platform: .iOS, export: .appStoreConnect)
+        let test = WorkflowAction.test(scheme: "LegiloTests", platform: .iOS)
+        let workflow = Workflow(xcode: "27.2", actions: [test, archive], postActions: [PostActionSpec(name: "testflight")])
+        var job = Self.job()
+        job.action = archive
+        let assignment = JobAssignment(
+            job: job,
+            app: App(id: UUID(), slug: "legilo", name: "Legilo", repoURL: "u", appStoreConnectAppID: "1", createdAt: Self.when),
+            workflow: workflow.forJob(running: archive), workflowName: "release", buildNumber: 42, commit: "abc", ref: "main",
+            environment: [])
+        let old = try JSONCoding.decoder.decode(OldAssignment.self, from: JSONCoding.encoder.encode(assignment))
+        #expect(old.job.action.export == "app-store-connect")
+        #expect(old.workflow.actions.map(\.scheme) == ["Legilo"])
+        // A test job keeps the whole workflow: only a worker with the test-actions capability gets it.
+        #expect(workflow.forJob(running: test) == workflow)
+        #expect(workflow.needsCapabilities(for: test) == [WorkerCapability.testActions])
+        #expect(workflow.needsCapabilities(for: archive) == [])
     }
 
     @Test func datesKeepMilliseconds() throws {
