@@ -1,4 +1,5 @@
 import Foundation
+import HangarCore
 import Testing
 
 @testable import HangarServer
@@ -81,9 +82,9 @@ import Testing
         }
 
         /// Runs the script; returns its exit status and the stub log's lines.
-        func run(_ environment: [String: String]) throws -> (status: Int32, log: [String], output: String) {
+        func run(_ environment: [String: String], workerSHA256: String? = nil) throws -> (status: Int32, log: [String], output: String) {
             let script = root.appendingPathComponent("install.sh")
-            try Data(InstallScript.render(origin: "http://studio:8787").utf8).write(to: script)
+            try Data(InstallScript.render(origin: "http://studio:8787", workerSHA256: workerSHA256).utf8).write(to: script)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
             process.arguments = ["-q", "/dev/null", "/bin/sh", script.path]
@@ -173,5 +174,27 @@ import Testing
         #expect(result.status == 0, "\(result.output)")
         #expect(!result.log.contains { $0.hasPrefix("worker isolate") || $0.hasPrefix("sudo") })
         #expect(result.log.contains { $0.hasPrefix("launchctl bootstrap gui/501 ") })
+    }
+
+    /// The SHA-256 check guards every install: a binary that is not the announced one never reaches isolate (and so
+    /// never the hangar user) or setup.
+    @Test(arguments: [admin, admin.merging(["HANGAR_AS_CURRENT_USER": "1"]) { $1 }])
+    func aBinaryThatIsNotTheAnnouncedOneIsNeverRun(environment: [String: String]) throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        let result = try sandbox.run(environment, workerSHA256: String(repeating: "0", count: 64))
+        #expect(result.status != 0)
+        #expect(result.output.contains("SHA-256 mismatch"), "\(result.output)")
+        #expect(!result.log.contains { $0.hasPrefix("worker ") }, "the stub was never run: \(result.log)")
+        #expect(!FileManager.default.fileExists(atPath: sandbox.home.appendingPathComponent(".local/bin/hangar-worker").path))
+    }
+
+    @Test func theAnnouncedBinaryIsHandedToIsolate() throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        let worker = try Data(contentsOf: sandbox.root.appendingPathComponent("fake-worker"))
+        let result = try sandbox.run(Self.admin, workerSHA256: SHA256File.hex(of: worker))
+        #expect(result.status == 0, "\(result.output)")
+        #expect(result.log.contains { $0.hasPrefix("worker isolate --binary ") })
     }
 }
