@@ -24,9 +24,15 @@ enum InstallScript {
         return "http://\(renderedHost)" + (port.map { ":\($0)" } ?? "")
     }
 
-    /// The script for `origin`, which must come from `origin(authority:)`.
-    static func render(origin: String) -> String {
-        template.replacingOccurrences(of: originPlaceholder, with: origin)
+    static let sha256Placeholder = "__HANGAR_WORKER_SHA256__"
+
+    /// The script for `origin`, which must come from `origin(authority:)`. `workerSHA256` is the hex SHA-256 of the
+    /// binary `GET /install/hangar-worker` serves; the script refuses a download that does not match it. Nil (no
+    /// binary to hash) leaves the check out; the download then fails on its own with 503.
+    static func render(origin: String, workerSHA256: String? = nil) -> String {
+        let digest = workerSHA256.flatMap { $0.wholeMatch(of: /[0-9a-f]{64}/) != nil ? $0 : nil } ?? ""
+        return template.replacingOccurrences(of: originPlaceholder, with: origin)
+            .replacingOccurrences(of: sha256Placeholder, with: digest)
     }
 
     static let template = #"""
@@ -58,6 +64,8 @@ enum InstallScript {
         set -eu
 
         HANGAR_SERVER='__HANGAR_ORIGIN__'
+        # SHA-256 of the hangar-worker the server hands out, as of this script; empty when it had none to hash.
+        HANGAR_WORKER_SHA256='__HANGAR_WORKER_SHA256__'
         LABEL='app.hangar.worker'
 
         say() { printf '%s\n' "$*"; }
@@ -80,6 +88,14 @@ enum InstallScript {
                 "~/"*) set -- "$HOME/${1#"~/"}" ;;
             esac
             case $1 in /*) printf '%s' "$1" ;; *) printf '%s' "$PWD/$1" ;; esac
+        }
+
+        # Succeeds when the file's SHA-256 is the expected hex digest, or when there is no digest to compare with.
+        # verify_sha256 <file> <expected hex>
+        verify_sha256() {
+            [ -n "$2" ] || return 0
+            actual=$(/usr/bin/shasum -a 256 "$1" 2>/dev/null | cut -d ' ' -f 1) || return 1
+            [ "$actual" = "$2" ]
         }
 
         # Writes the launchd agent (the keys of scripts/worker/app.hangar.worker.plist) and (re)loads it.
@@ -213,6 +229,10 @@ enum InstallScript {
                 503) die "The server has no hangar-worker to hand out. Reinstall the server with the latest scripts/server/install-server.sh, then run this again." ;;
                 *) die "Downloading hangar-worker failed: HTTP $status." ;;
             esac
+            # The script and the binary come from the same server; a binary that differs from the one the server
+            # described (cut off, altered on the way, or replaced since) is never run.
+            verify_sha256 "$download" "$HANGAR_WORKER_SHA256" \
+                || die "The downloaded hangar-worker is not the one the server announced (SHA-256 mismatch). Run this again; if it keeps failing, reinstall the server."
             chmod 755 "$download"
             xattr -d com.apple.quarantine "$download" 2>/dev/null || true
             "$download" --help >/dev/null 2>&1 \

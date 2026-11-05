@@ -226,7 +226,8 @@ extension HangarServerApp {
         if environment["HANGAR_BIN_DIR"] == nil {
             environment["HANGAR_BIN_DIR"] = URL(fileURLWithPath: setup.homeDirectory).appendingPathComponent(".local/bin").path
         }
-        let script = InstallScript.render(origin: origin)
+        let script = InstallScript.render(
+            origin: origin, workerSHA256: WorkerBinaryDigest.current(at: configuration.workerBinaryPath))
         let installer = setup.installer
         let machines = machines
         let childEnvironment = environment
