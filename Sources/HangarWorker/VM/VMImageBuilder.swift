@@ -49,8 +49,8 @@ public struct VMImageBuilder: Sendable {
     }
 
     public func build(
-        from baseName: String, xcodePath: String, name: String?, platforms: [String], metalToolchain: Bool = true,
-        now: Date = Date()
+        from baseName: String, xcodePath: String, name: String?, platforms: [String], homebrew: Bool = false,
+        metalToolchain: Bool = false, now: Date = Date()
     ) async throws -> VMImage {
         let storage = host.storage
         let base: VMImage
@@ -67,7 +67,7 @@ public struct VMImageBuilder: Sendable {
         try FileManager.default.createDirectory(atPath: partial.path + "/share", withIntermediateDirectories: true)
         do {
             let image = try await provision(base: base, into: partial, xcodePath: xcodePath, xcode: xcode, platforms: platforms,
-                metalToolchain: metalToolchain, now: now)
+                homebrew: homebrew, metalToolchain: metalToolchain, now: now)
             try FileManager.default.removeItem(atPath: partial.path + "/share")
             try? FileManager.default.removeItem(atPath: partial.path + "/askpass.sh")
             try FileManager.default.moveItem(atPath: partial.path, toPath: storage.image(name).path)
@@ -80,7 +80,7 @@ public struct VMImageBuilder: Sendable {
 
     private func provision(
         base: VMImage, into partial: VMImageDirectory, xcodePath: String, xcode: (version: String, build: String),
-        platforms: [String], metalToolchain: Bool, now: Date
+        platforms: [String], homebrew: Bool, metalToolchain: Bool, now: Date
     ) async throws -> VMImageMetadata {
         try VMVolume.clone(base.directory.disk, to: partial.disk)
         try VMVolume.clone(base.directory.nvram, to: partial.nvram)
@@ -112,7 +112,7 @@ public struct VMImageBuilder: Sendable {
             progress("up at \(address) after \(VMLauncher.seconds(since: started))")
             let metadata = try await provisionGuest(
                 address: address, partial: partial, base: base, xcodePath: xcodePath, xcode: xcode, platforms: platforms,
-                metalToolchain: metalToolchain, now: now, floor: guard_)
+                homebrew: homebrew, metalToolchain: metalToolchain, now: now, floor: guard_)
             progress("shutting down")
             let ssh = keySSH(partial)
             _ = try? await ssh.run(user: "admin", host: address, "sudo -n shutdown -h now")
@@ -136,7 +136,7 @@ public struct VMImageBuilder: Sendable {
 
     private func provisionGuest(
         address: String, partial: VMImageDirectory, base: VMImage, xcodePath: String, xcode: (version: String, build: String),
-        platforms: [String], metalToolchain: Bool, now: Date, floor: FloorGuard
+        platforms: [String], homebrew: Bool, metalToolchain: Bool, now: Date, floor: FloorGuard
     ) async throws -> VMImageMetadata {
         let publicKey = try GuestKeys.publicKey(storage: host.storage)
         // 1. admin: the host's key in, the published password out, password logins off.
@@ -181,16 +181,18 @@ public struct VMImageBuilder: Sendable {
                 """,
                 input: SensitiveText(password.value + "\n" + Self.kcpassword(password.value).base64EncodedString() + "\n"))
         }
-        // 3. Homebrew, owned by builder, as on Xcode Cloud.
-        try await step("install Homebrew into /opt/homebrew, owned by \(user)") {
-            try await ssh.require(
-                "own /opt/homebrew", user: "admin", host: address,
-                "sudo -n mkdir -p /opt/homebrew && sudo -n chown -R \(user):admin /opt/homebrew")
-            // `brew update` turns the tarball into a git checkout, so later updates work; its output is long.
-            try await ssh.require(
-                "install Homebrew", user: user, host: address,
-                "export HOMEBREW_NO_ANALYTICS=1 && cd /opt/homebrew && ( [ -x bin/brew ] || curl -fsSL https://github.com/Homebrew/brew/tarball/main | tar xz --strip-components 1 -C /opt/homebrew ) && bin/brew update --force --quiet >/dev/null 2>&1; bin/brew --version | head -1",
-                onLine: progress)
+        // 3. Homebrew only when asked for: an image carries macOS, Xcode and the platforms, nothing a job did not ask for.
+        if homebrew {
+            try await step("install Homebrew into /opt/homebrew, owned by \(user)") {
+                try await ssh.require(
+                    "own /opt/homebrew", user: "admin", host: address,
+                    "sudo -n mkdir -p /opt/homebrew && sudo -n chown -R \(user):admin /opt/homebrew")
+                // `brew update` turns the tarball into a git checkout, so later updates work; its output is long.
+                try await ssh.require(
+                    "install Homebrew", user: user, host: address,
+                    "export HOMEBREW_NO_ANALYTICS=1 && cd /opt/homebrew && ( [ -x bin/brew ] || curl -fsSL https://github.com/Homebrew/brew/tarball/main | tar xz --strip-components 1 -C /opt/homebrew ) && bin/brew update --force --quiet >/dev/null 2>&1; bin/brew --version | head -1",
+                    onLine: progress)
+            }
         }
         // 4. This Mac's Xcode, as a tar stream: ditto from a virtio-fs share hit symlink loops in the spike.
         try await step("copy \(xcodePath) (Xcode \(xcode.version)) into the VM") {

@@ -165,12 +165,13 @@ struct VMCommand: AsyncParsableCommand {
 
         struct Build: AsyncParsableCommand {
             static let configuration = CommandConfiguration(
-                abstract: "Builds a job image from a vanilla one: the build user, Homebrew, this Mac's Xcode, then the slot states.",
+                abstract: "Builds a job image from a vanilla one: the build user, this Mac's Xcode, then the slot states.",
                 discussion: """
                     Over SSH as the vanilla image's admin: replaces admin's published password, creates the standard \
-                    user builder (no sudo) that owns /opt/homebrew with Homebrew in it, streams this Mac's Xcode in, \
+                    user builder (no sudo), streams this Mac's Xcode in, \
                     runs xcodebuild -runFirstLaunch, downloads the simulator platforms asked for, turns off Spotlight, \
-                    sleep and software update, and turns on automatic login for builder. Then it saves a state per slot.
+                    sleep and software update, and turns on automatic login for builder. Then it saves a state per slot. Nothing else is \
+                    installed unless asked for: jobs install what they need.
                     """)
 
             @Option(help: "The vanilla image to start from.")
@@ -183,8 +184,10 @@ struct VMCommand: AsyncParsableCommand {
             var platforms: [String] = []
             @Flag(help: "Download no simulator platform (archives only; saves 8 to 17 GB).")
             var noPlatforms = false
-            @Flag(help: "Skip the Metal toolchain download (about 3 GB; only projects with Metal shaders need it).")
-            var noMetalToolchain = false
+            @Flag(help: "Install Homebrew into /opt/homebrew, owned by builder, as on Xcode Cloud. Off by default.")
+            var homebrew = false
+            @Flag(help: "Download the Metal toolchain (about 3 GB; only projects with Metal shaders need it). Off by default.")
+            var metalToolchain = false
             @Flag(help: "Leave the slot states for later (`vm slots prepare`).")
             var skipSlots = false
             @OptionGroup var location: Location
@@ -200,7 +203,7 @@ struct VMCommand: AsyncParsableCommand {
                 do {
                     image = try await builder.build(
                         from: from, xcodePath: xcode, name: name, platforms: noPlatforms ? [] : (platforms.isEmpty ? ["iOS"] : platforms),
-                        metalToolchain: !noMetalToolchain)
+                        homebrew: homebrew, metalToolchain: metalToolchain)
                 } catch {
                     throw VMCommand.fail("\(error)")
                 }
