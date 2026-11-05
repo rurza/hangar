@@ -1,22 +1,26 @@
-// The workflow editor (`/apps/:app/workflow`): the app's workflow file stored in Hangar, edited as a form and
-// shown as `.hangar.yml`. The server's parser is the authority: a save sends the YAML and the form is rebuilt
-// from what the server parsed.
+// The workflow editor (`/apps/:app/workflow`), modelled on Xcode Cloud's: a sidebar of General, Environment,
+// Start Conditions, Actions and Post-Actions, and the selected item's detail beside it (pushed on narrow screens).
+// A new workflow starts in the wizard (workflow-wizard.js). The server's parser is the authority: a save sends the
+// YAML and the editor is rebuilt from what the server parsed.
 
 import { api, ApiError, seg } from '../api.js';
 import { addLeaveGuard, navigate } from '../router.js';
 import {
-  button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, section, selectContents,
-  spinner, switchField, toast,
+  button, card, confirm, copyText, emptyState, h, page, relativeTime, replaceChildren, selectContents, sheet, switchField,
+  toast,
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
 import {
-  ACTION_KINDS, blankAction, fileFromModels, modelsFromFile, problems, scratchWorkflow, setActionKind,
+  PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels,
+  itemProblems, modelsFromFile, platformName, scratchWorkflow, testDestinationText, uniqueName, workflowSummary,
 } from '../workflow-model.js';
+import {
+  betaGroupsStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, plusGlyph, segmented, tile,
+} from './workflow-parts.js';
+import { openWorkflowWizard } from './workflow-wizard.js';
+import { openDeploySheet } from './deploy.js';
 
-const PLATFORMS = [
-  ['ios', 'iOS'], ['macos', 'macOS'], ['visionos', 'visionOS'], ['tvos', 'tvOS'], ['watchos', 'watchOS'],
-];
-const EXPORTS = [['app-store-connect', 'App Store Connect'], ['developer-id', 'Developer ID']];
+const OTHER = '\u0000other';
 
 // MARK: Page
 
@@ -36,94 +40,90 @@ export async function workflowPage(params, context) {
     }
     throw error;
   }
-  const base = `/apps/${seg(app.slug)}`;
-
   let stored = null;
   try {
-    stored = await api.get(`${base}/workflow-file`, { signal });
+    stored = await api.get(`/apps/${seg(app.slug)}/workflow-file`, { signal });
   } catch (error) {
     if (error.code !== 'workflow_file_not_found') throw error;
   }
-
-  const suggestions = machineSuggestions(signal);
-  const editor = workflowEditor({ app, base, stored, suggestions, context });
-
-  const view = page({
-    title: 'Workflow',
-    subtitle: 'Builds use this workflow instead of the repository’s .hangar.yml.',
-    actions: editor.saveButton,
-  }, editor.element, suggestions.lists);
-  view.prepend(h('a', { href: `/apps/${seg(app.slug)}`, 'data-link': true, class: 'back-link' },
-    h('span', { 'aria-hidden': 'true' }, '‹ '), app.name));
-  return view;
-}
-
-/** Datalists of Xcode versions and tool names that machines report; filled once `/machines` answers. */
-function machineSuggestions(signal) {
-  const xcodes = h('datalist', { id: 'workflow-xcodes' });
-  const tools = h('datalist', { id: 'workflow-tools' });
-  api.get('/machines', { signal }).then((machines) => {
-    const versions = new Set();
-    const names = new Set();
-    for (const machine of machines ?? []) {
-      for (const xcode of machine.report?.xcodes ?? []) if (xcode.version) versions.add(xcode.version);
-      for (const name of Object.keys(machine.report?.tools ?? {})) names.add(name);
-    }
-    const byVersion = (a, b) => b.localeCompare(a, 'en', { numeric: true });
-    replaceChildren(xcodes, [...versions].sort(byVersion).map((version) => h('option', { value: version })));
-    replaceChildren(tools, [...names].sort().map((name) => h('option', { value: name })));
-  }, () => {
-    // Suggestions are a convenience; without machines the fields are still plain text.
-  });
-  return { lists: h('div', { hidden: true }, xcodes, tools), xcodes: xcodes.id, tools: tools.id };
+  return workflowEditor({ app, stored, context });
 }
 
 // MARK: Editor
 
-function workflowEditor({ app, base, stored: initial, suggestions, context }) {
+function workflowEditor({ app, stored: initial, context }) {
+  const base = `/apps/${seg(app.slug)}`;
   let stored = initial; // the StoredWorkflowFile, null while the app has none
-  let models = stored ? modelsFromFile(stored.workflows) : null; // null: nothing being edited
-  let saved = models ? snapshot() : null; // the file as last loaded or saved; null for an unsaved new one
-  let tab = 'form';
+  let models = stored ? modelsFromFile(stored.workflows) : []; // every workflow of the file
+  let saved = stored ? snapshot() : null; // the file as last loaded or saved
+  let current = 0; // index of the workflow on screen
+  let selection = { kind: 'general' }; // the sidebar item: general, environment, start, action (with index), testflight
+  let view = 'list'; // narrow screens: the sidebar (list) or the selected item (detail)
   let busy = false;
-  let detectedNotes = []; // what workflow detection guessed, shown above the form until the workflow is saved
-  // Whether the repository has a .hangar.yml at its default branch: undefined until asked, null when unknown.
-  let repoFile = stored ? null : undefined;
-  let autoDetect = context.query?.get('suggest') === '1';
-  if (!stored) {
+  let banner = null; // { kind: 'error' | 'success' | 'info', text, items?, actions? }
+  let repoFile; // whether the repository has a .hangar.yml: undefined until known, null when unknown
+  let machines = null; // [Machine] once loaded
+  let suggestion = null; // WorkflowSuggestion once loaded
+  let suggestionPromise = null;
+  const groups = betaGroupsStore(base);
+
+  // MARK: Data
+
+  function loadSuggestion() {
+    if (!suggestionPromise) {
+      const bundleID = context.query?.get('bundleID');
+      const query = bundleID ? `?bundleID=${encodeURIComponent(bundleID)}` : '';
+      suggestionPromise = api.get(`${base}/workflow-suggestion${query}`, { signal: context.signal }).then((result) => {
+        suggestion = result;
+        if (element.isConnected && models.length) renderEditor();
+        return result;
+      }, (error) => {
+        suggestionPromise = null;
+        throw error;
+      });
+    }
+    return suggestionPromise;
+  }
+
+  api.get('/machines', { signal: context.signal }).then((list) => {
+    machines = list ?? [];
+    if (element.isConnected && models.length) renderEditor();
+  }, () => { machines = []; });
+
+  if (stored) {
+    loadSuggestion().catch(() => {});
+    groups.load().then(() => { if (element.isConnected && models.length) renderEditor(); });
+  } else {
     // The server remembers the answer for a while, so this is not a GitHub call on every visit.
     api.get(`${base}/workflow-source`, { signal: context.signal }).then(
       (status) => { repoFile = status?.repositoryHasWorkflowFile ?? null; },
       (error) => { if (error.code !== 'aborted') repoFile = null; },
     ).then(() => {
-      if (models === null && element.isConnected) render();
+      if (!element.isConnected || models.length) return;
+      renderStart();
+      // Coming from Add App: straight into the wizard, unless the repository has its own .hangar.yml.
+      if (context.query?.get('suggest') === '1' && repoFile !== true) openWizard();
     });
   }
 
-  const element = h('div', { class: 'workflow-editor' });
-  const banner = h('div', { class: 'workflow-banner', role: 'alert', hidden: true });
-  const saveButton = button('Save', { kind: 'primary', onClick: save });
-  const status = h('p', { class: 'workflow-status', 'aria-live': 'polite' });
+  // MARK: State
 
   function snapshot() {
     return JSON.stringify(fileFromModels(models));
   }
 
   function isDirty() {
-    return models !== null && (saved === null || snapshot() !== saved);
+    return models.length > 0 && (saved === null || snapshot() !== saved);
   }
 
-  function changed() {
-    saveButton.disabled = busy || !isDirty();
-    status.textContent = models === null ? ''
-      : isDirty() ? (stored ? 'Unsaved changes' : 'Not saved yet')
-        : `Saved ${relativeTime(stored?.updatedAt)}`;
-  }
+  const model = () => models[current];
 
-  function showError(message) {
-    banner.textContent = message ?? '';
-    banner.hidden = !message;
-    if (message) banner.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  function problemsOf(index = current) {
+    const target = models[index];
+    return itemProblems(target, {
+      workflowNames: models.filter((_, i) => i !== index).map((other) => other.name.trim()),
+      betaGroups: groups.state?.groups?.map((group) => group.name),
+    });
   }
 
   // MARK: Leaving with unsaved edits
@@ -142,8 +142,7 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
   });
   // Back and Forward: the router asks before leaving and restores this page's URL when the user stays.
   const removeLeaveGuard = addLeaveGuard(() => !isDirty() || confirmDiscard());
-  // The router does not ask before following links, so in-app links are caught before its own (bubbling) click
-  // handler.
+  // The router does not ask before following links, so in-app links are caught before its own (bubbling) handler.
   const onLinkClick = async (event) => {
     if (!isDirty() || event.defaultPrevented || event.button !== 0) return;
     if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -154,439 +153,935 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
     event.preventDefault();
     event.stopPropagation();
     if (!(await confirmDiscard())) return;
-    models = null;
+    saved = snapshot();
     navigate(url.pathname + url.search + url.hash);
   };
   document.addEventListener('click', onLinkClick, true);
+  let closeMenu = null;
   context.onCleanup(() => {
     window.removeEventListener('beforeunload', onBeforeUnload);
     document.removeEventListener('click', onLinkClick, true);
     removeLeaveGuard();
+    closeMenu?.();
   });
 
-  // MARK: Rendering
+  // MARK: Page chrome
 
-  function render() {
-    if (models === null) {
-      saveButton.hidden = true;
-      replaceChildren(element, startView());
-      changed();
+  const backLink = h('a', { href: base, 'data-link': true, class: 'back-link' }, h('span', { 'aria-hidden': 'true' }, '‹ '), app.name);
+  const headerActions = h('div', { class: 'wf-header-actions' });
+  const element = page({ title: 'Workflow', subtitle: ' ', actions: headerActions });
+  element.classList.add('wf-page');
+  element.prepend(backLink);
+  const titleNode = element.querySelector('.large-title');
+  const subtitleNode = element.querySelector('.page-subtitle');
+  const body = h('div', { class: 'wf-body' });
+  element.append(body);
+
+  function updateChrome() {
+    if (!models.length) {
+      titleNode.textContent = 'Workflow';
+      subtitleNode.textContent = `How ${app.name} builds when you deploy.`;
+      replaceChildren(headerActions);
       return;
     }
-    saveButton.hidden = false;
-    replaceChildren(element,
-      banner,
-      detectedNotes.length && !stored
-        ? h('div', { class: 'workflow-notes', role: 'note' },
-          h('p', { class: 'workflow-notes-title' }, 'Detected from the repository. Check these before saving:'),
-          h('ul', null, detectedNotes.map((note) => h('li', null, note))))
-        : null,
-      h('div', { class: 'workflow-toolbar' }, tabs(), status),
-      tab === 'form' ? formView() : yamlView(),
-      stored ? section({ title: 'Remove' }, removeCard()) : null);
-    changed();
+    titleNode.textContent = model().name.trim() || 'Untitled Workflow';
+    subtitleNode.textContent = workflowSummary(model());
+    const switcher = models.length > 1
+      ? h('select', {
+        class: 'select wf-switcher', 'aria-label': 'Workflow',
+        onChange: (event) => switchTo(Number(event.target.value)),
+      }, models.map((other, index) => h('option', { value: String(index), selected: index === current }, other.name.trim() || 'Untitled')))
+      : null;
+    replaceChildren(headerActions, switcher,
+      button('New Workflow…', { kind: 'secondary', onClick: () => openWizard() }));
   }
 
-  function tabs() {
-    const item = (id, label) => h('button', {
-      type: 'button', class: 'segment', role: 'tab', 'aria-selected': String(tab === id), id: `workflow-tab-${id}`,
-      'aria-controls': 'workflow-panel', tabindex: tab === id ? '0' : '-1',
-      onClick: () => {
-        if (tab === id) return;
-        tab = id;
-        render();
-        element.querySelector(`#workflow-tab-${id}`)?.focus();
-      },
-      onKeydown: (event) => {
-        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-        event.preventDefault();
-        tab = tab === 'form' ? 'yaml' : 'form';
-        render();
-        element.querySelector(`#workflow-tab-${tab}`)?.focus();
-      },
-    }, label);
-    return h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'View' }, item('form', 'Form'), item('yaml', 'YAML'));
+  function switchTo(index) {
+    current = index;
+    selection = { kind: 'general' };
+    view = 'list';
+    renderEditor();
   }
 
   // MARK: Start
 
-  function startView() {
-    if (repoFile === undefined) {
-      return card({ class: 'workflow-start' },
-        h('p', { class: 'workflow-detecting' }, spinner('Checking the repository'), ' Checking the repository…'));
-    }
-    const message = h('p', { class: 'inline-error-message', role: 'alert', hidden: true });
-    const progress = h('p', { class: 'workflow-detecting', hidden: true });
-    const repoName = app.repoURL.replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/, '');
-    // With a .hangar.yml in the repository, using it is the first choice; detection would replace it.
-    const detectButton = button('Use Detected Settings', { kind: repoFile === true ? 'secondary' : 'primary' });
-    const importButton = button(
-      repoFile === true ? 'Use the Repository’s .hangar.yml' : 'Start from the Repository’s .hangar.yml',
-      { kind: repoFile === true ? 'primary' : 'secondary' });
-    const scratchButton = button('Start from Scratch', {
-      onClick: () => begin([scratchWorkflow('testflight')]),
-    });
-    const all = [detectButton, importButton, scratchButton];
-    async function attempt(work) {
-      message.hidden = true;
-      all.forEach((b) => { b.disabled = true; });
-      try {
-        await work();
-      } catch (error) {
-        if (error.code === 'aborted') return;
-        message.textContent = error.message;
-        message.hidden = false;
-      } finally {
-        progress.hidden = true;
-        if (element.contains(detectButton)) all.forEach((b) => { b.disabled = false; });
-      }
-    }
-    detectButton.addEventListener('click', () => attempt(async () => {
-      replaceChildren(progress, spinner(`Reading ${repoName}`), ` Reading ${repoName}…`);
-      progress.hidden = false;
-      const bundleID = context.query?.get('bundleID');
-      const query = bundleID ? `?bundleID=${encodeURIComponent(bundleID)}` : '';
-      const suggestion = await api.get(`${base}/workflow-suggestion${query}`, { signal: context.signal });
-      detectedNotes = [
-        ...(suggestion.hasWorkflowFile
-          ? ['The repository has its own .hangar.yml. Saving this workflow makes builds use it instead.'] : []),
-        ...(suggestion.notes ?? []),
-      ];
-      begin(modelsFromFile(suggestion.workflows));
-    }));
-    importButton.addEventListener('click', () => attempt(async () => {
-      // The repository's default branch.
+  function renderStart() {
+    updateChrome();
+    const createButton = button('Create Workflow', { kind: 'primary', onClick: () => openWizard() });
+    const importButton = repoFile === true
+      ? button('Use the Repository’s .hangar.yml', { kind: 'secondary', onClick: importRepositoryFile })
+      : null;
+    replaceChildren(body, card({ class: 'wf-start-card' },
+      h('div', { class: 'wf-start' },
+        tile('archive'),
+        h('h2', { class: 'wf-start-title' }, `Set Up How ${app.name} Builds`),
+        h('p', { class: 'wf-start-message' }, repoFile === true
+          ? `${app.name} builds with the .hangar.yml in its repository. Start from it, or create a workflow in Hangar.`
+          : 'Pick what to build and test and where the builds go. Hangar fills it in from the repository.'),
+        h('div', { class: 'wf-start-actions' }, createButton, importButton))));
+  }
+
+  async function importRepositoryFile(event) {
+    const control = event.currentTarget;
+    control.disabled = true;
+    try {
       const response = await api.get(`${base}/workflows`, { signal: context.signal });
-      begin(modelsFromFile(response.workflows));
-      toast(`Imported .hangar.yml at ${String(response.commit ?? '').slice(0, 7)}`, 'success');
-    }));
-    // Coming from Add App: read the repository at once, unless it has its own .hangar.yml (or that is not known yet).
-    if (autoDetect && repoFile !== undefined && repoFile !== true) {
-      autoDetect = false;
-      queueMicrotask(() => detectButton.click());
+      models = modelsFromFile(response.workflows);
+      saved = null;
+      current = 0;
+      selection = { kind: 'general' };
+      banner = { kind: 'info', text: `Imported the .hangar.yml at ${String(response.commit ?? '').slice(0, 7)}. Review it, then Save.` };
+      renderEditor();
+    } catch (error) {
+      if (error.code !== 'aborted') toast(error.message, 'error');
+      control.disabled = false;
     }
-    return card({ class: 'workflow-start' },
-      emptyState({
-        title: 'No Workflow in Hangar',
-        message: repoFile === true
-          ? `${app.name} builds with the .hangar.yml in its repository. Edit it here to define the workflow in Hangar instead.`
-          : `Define how ${app.name} builds: Hangar can fill the workflow in from the Xcode project in its repository.`,
-        action: h('div', { class: 'workflow-start-actions' },
-          repoFile === true ? [importButton, detectButton] : [detectButton, importButton], scratchButton),
-      }),
-      progress,
-      message);
   }
 
-  function begin(list) {
-    models = list;
-    saved = null;
-    tab = 'form';
-    showError(null);
-    render();
-    element.querySelector('.workflow-card input')?.focus();
+  // MARK: Wizard
+
+  function openWizard() {
+    openWorkflowWizard({
+      app,
+      loadSuggestion,
+      groups,
+      takenNames: models.map((other) => other.name.trim()),
+      onBlank: () => {
+        const name = uniqueName('Default', models.map((other) => other.name.trim()));
+        models = [...models, scratchWorkflow(name)];
+        current = models.length - 1;
+        selection = { kind: 'general' };
+        banner = { kind: 'info', text: 'A blank workflow: fill in each item, then Save.' };
+        renderEditor();
+      },
+      onCreate: async (created) => {
+        const next = [...models, created];
+        const file = fileFromModels(next);
+        stored = await api.put(`${base}/workflow-file`, { yaml: workflowToYAML(file) });
+        // Unsaved edits to the other workflows were saved along with it.
+        models = modelsFromFile(stored.workflows);
+        saved = snapshot();
+        current = Math.max(0, models.findIndex((other) => other.name === created.name.trim()));
+        selection = { kind: 'general' };
+        view = 'list';
+        banner = createdBanner(created.name.trim());
+        renderEditor();
+      },
+    });
   }
 
-  // MARK: YAML
-
-  function yamlView() {
-    const text = workflowToYAML(fileFromModels(models));
-    const code = h('pre', { class: 'yaml-block', tabindex: '0', 'aria-label': '.hangar.yml' }, h('code', null, text));
-    return h('div', { id: 'workflow-panel', role: 'tabpanel', 'aria-labelledby': 'workflow-tab-yaml', class: 'workflow-panel' },
-      card({ class: 'yaml-card' },
-        code,
-        h('div', { class: 'card-actions' },
-          button('Copy as .hangar.yml', { onClick: () => copy(text, code) }))),
-      h('p', { class: 'section-footer' },
-        'Read-only. Commit it as .hangar.yml at the repository root and remove the Hangar workflow to build from the repository instead.'));
+  function createdBanner(name) {
+    const noMac = machines !== null && machines.length === 0;
+    return {
+      kind: 'success',
+      text: noMac
+        ? `“${name}” is saved. Add a Mac to run it; meanwhile, fine-tune any step here.`
+        : `“${name}” is saved. Deploy it now, or fine-tune any step here.`,
+      actions: noMac
+        ? [h('a', { href: '/machines', 'data-link': true, class: 'button button-primary button-small' }, 'Add Mac…')]
+        : [button('Deploy…', { kind: 'primary', class: 'button button-primary button-small', onClick: () => openDeploySheet(app) })],
+    };
   }
 
-  async function copy(text, code) {
-    if (await copyText(text)) {
-      toast('Copied .hangar.yml', 'success');
+  // MARK: Editor
+
+  const editor = h('div', { class: 'wf-editor' });
+  const sidebar = h('nav', { class: 'wf-sidebar', 'aria-label': 'Workflow items' });
+  const detail = card({ class: 'wf-detail', role: 'region', 'aria-live': 'off' });
+  const bannerSlot = h('div', { class: 'wf-banner-slot' });
+  const status = h('p', { class: 'wf-savebar-status', 'aria-live': 'polite' });
+  const saveButton = button('Save', { kind: 'primary', onClick: save });
+  const savebar = h('div', { class: 'wf-savebar' },
+    status,
+    h('div', { class: 'wf-savebar-actions' },
+      button('Show .hangar.yml', { kind: 'plain', onClick: showYAML }),
+      saveButton));
+  editor.append(sidebar, detail);
+
+  function renderEditor({ focusDetail = false } = {}) {
+    if (!models.length) {
+      renderStart();
       return;
     }
-    selectContents(code);
-    toast('The YAML is selected. Press ⌘C to copy it.', 'info');
+    if (current >= models.length) current = models.length - 1;
+    if (selection.kind === 'action' && !model().actions[selection.index]) selection = { kind: 'general' };
+    if (selection.kind === 'testflight' && !model().testflightOn) selection = { kind: 'general' };
+    editor.dataset.view = view;
+    if (!body.contains(editor)) replaceChildren(body, bannerSlot, editor, savebar);
+    renderBanner();
+    renderSidebar();
+    renderDetail();
+    refresh();
+    if (focusDetail) detail.querySelector('.wf-detail-title')?.focus({ preventScroll: true });
   }
 
-  // MARK: Form
-
-  function formView() {
-    const cards = models.map((model) => workflowCard(model));
-    return h('div', { id: 'workflow-panel', role: 'tabpanel', 'aria-labelledby': 'workflow-tab-form', class: 'workflow-panel' },
-      cards,
-      h('div', { class: 'list workflow-add' },
-        h('button', { type: 'button', class: 'add-row-button', onClick: addWorkflow },
-          h('span', { class: 'add-row-plus', 'aria-hidden': 'true' }, '+'),
-          'Add Workflow')));
+  /** Everything that follows from the model without rebuilding the detail pane (and losing focus there). */
+  function refresh() {
+    updateChrome();
+    renderSidebar();
+    const found = allProblems(problemsOf());
+    const dirty = isDirty();
+    saveButton.disabled = busy || !dirty;
+    status.classList.toggle('wf-has-problems', dirty && found.length > 0);
+    status.textContent = busy ? 'Saving…'
+      : dirty
+        ? found.length ? `${found.length} ${found.length === 1 ? 'problem' : 'problems'} to fix before saving` : (saved === null ? 'Not saved yet' : 'Unsaved changes')
+        : `Saved ${relativeTime(stored?.updatedAt)}`;
   }
 
-  function addWorkflow() {
-    const taken = new Set(models.map((model) => model.name.trim()));
-    let name = 'testflight';
-    for (let n = 2; taken.has(name); n += 1) name = `workflow-${n}`;
-    const model = scratchWorkflow(name);
-    models.push(model);
-    render();
-    element.querySelector(`[data-workflow="${model.key}"] input`)?.focus();
+  function changed() {
+    refresh();
+    // The detail's own problems list follows the edits.
+    const slot = detail.querySelector('.wf-detail-problems');
+    if (slot) replaceChildren(slot, problemList(itemProblemsFor(selection)));
   }
 
-  function workflowCard(model) {
-    const container = card({ class: 'workflow-card', dataset: { workflow: String(model.key) } });
-
-    function rerender(focusSelector) {
-      container.replaceWith(workflowCard(model));
-      changed();
-      if (focusSelector) element.querySelector(`[data-workflow="${model.key}"] ${focusSelector}`)?.focus();
+  function renderBanner() {
+    if (!banner) {
+      replaceChildren(bannerSlot);
+      return;
     }
+    const dismiss = h('button', { type: 'button', class: 'button button-plain button-small', onClick: () => { banner = null; renderBanner(); } }, 'Dismiss');
+    replaceChildren(bannerSlot, h('div', {
+      class: ['wf-banner', banner.kind === 'error' && 'wf-banner-error', banner.kind === 'success' && 'wf-banner-success'],
+      role: banner.kind === 'error' ? 'alert' : 'status',
+    },
+    h('div', { class: 'wf-banner-text' }, banner.text,
+      banner.items?.length ? h('ul', null, banner.items.map((item) => h('li', null, item))) : null),
+    h('div', { class: 'wf-banner-actions' }, banner.actions ?? [], banner.kind === 'error' ? null : dismiss)));
+  }
 
-    const text = (key, attrs = {}) => h('input', {
-      class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false',
-      autocapitalize: 'off', autocorrect: 'off', value: model[key], placeholder: attrs.placeholder, list: attrs.list,
+  // MARK: Sidebar
+
+  function renderSidebar() {
+    // A redraw replaces the menu's trigger, so an open menu goes with it.
+    closeMenu?.();
+    const target = model();
+    const found = problemsOf();
+    const row = (item, { icon, tone, title, detail: text, problems = [] }) => {
+      const selected = sameItem(item, selection);
+      return h('li', null, h('button', {
+        type: 'button', class: 'wf-row', 'aria-current': selected ? 'true' : null,
+        'aria-label': problems.length ? `${title}, ${problems.length === 1 ? 'one problem' : `${problems.length} problems`}` : null,
+        dataset: { item: itemKey(item) },
+        onClick: () => select(item),
+      },
+      tile(icon, tone),
+      h('span', { class: 'wf-row-text' },
+        h('span', { class: 'wf-row-title' }, title),
+        text ? h('span', { class: 'wf-row-detail' }, text) : null),
+      problems.length ? h('span', { class: 'wf-row-problem', 'aria-hidden': 'true' }, '!') : null,
+      chevron()));
+    };
+    const group = (title, rows, add, empty) => h('div', { class: 'wf-group' },
+      title ? h('div', { class: 'wf-group-header' }, h('h2', { class: 'wf-group-title' }, title), add) : null,
+      rows.length ? h('ul', { class: 'wf-rows' }, rows) : h('p', { class: 'wf-group-empty' }, empty));
+
+    const actionRows = target.actions.map((action, index) => row({ kind: 'action', index }, {
+      icon: action.kind === 'test' ? 'test' : 'archive',
+      title: actionTitle(action),
+      detail: action.scheme.trim() || 'No scheme',
+      problems: found.actions[index],
+    }));
+    const postRows = target.testflightOn ? [row({ kind: 'testflight' }, {
+      icon: 'testflight', title: 'TestFlight Internal Testing',
+      detail: target.testflight.groups.length ? target.testflight.groups.join(', ') : 'No groups',
+      problems: found.testflight,
+    })] : [];
+    const focused = sidebar.contains(document.activeElement) ? document.activeElement.dataset.item : null;
+    replaceChildren(sidebar,
+      group(null, [
+        row({ kind: 'general' }, {
+          icon: 'general', title: 'General', detail: target.path.trim() || 'No project', problems: found.general,
+        }),
+        row({ kind: 'environment' }, {
+          icon: 'environment', title: 'Environment',
+          detail: target.xcode.trim() ? `Xcode ${target.xcode.trim()}` : 'No Xcode version', problems: found.environment,
+        }),
+      ]),
+      group('Start Conditions', [row({ kind: 'start' }, { icon: 'start', tone: 'start', title: 'Manual Start', detail: 'Deploy button, CLI or a skill' })]),
+      group('Actions', actionRows, addMenu('Add Action', actionMenuItems()), found.workflow[0] ?? 'No actions'),
+      group('Post-Actions', postRows, addMenu('Add Post-Action', postActionMenuItems()), 'None'));
+    if (focused) sidebar.querySelector(`[data-item="${focused}"]`)?.focus();
+  }
+
+  function select(item) {
+    selection = item;
+    view = 'detail';
+    editor.dataset.view = view;
+    renderSidebar();
+    renderDetail();
+    if (matchMedia('(max-width: 899.98px)').matches) {
+      window.scrollTo(0, 0);
+      detail.querySelector('.wf-detail-title')?.focus({ preventScroll: true });
+    }
+  }
+
+  function backToList() {
+    view = 'list';
+    editor.dataset.view = view;
+    sidebar.querySelector(`[data-item="${itemKey(selection)}"]`)?.focus();
+  }
+
+  // MARK: Add menus
+
+  function schemePlatforms() {
+    if (!suggestion?.schemes?.length) return null;
+    return new Set(suggestion.schemes.map((scheme) => scheme.platform).filter(Boolean));
+  }
+
+  function actionMenuItems() {
+    const known = schemePlatforms();
+    const items = [];
+    for (const kind of ['archive', 'test']) {
+      items.push({ heading: kind === 'archive' ? 'Archive' : 'Test' });
+      for (const [platform, label] of PLATFORMS) {
+        const available = !known || known.has(platform);
+        items.push({
+          icon: kind, label, disabled: !available, detail: available ? null : 'No scheme for this platform',
+          onSelect: () => addAction(kind, platform),
+        });
+      }
+    }
+    return items;
+  }
+
+  function postActionMenuItems() {
+    const target = model();
+    const hasArchive = target.actions.some((action) => action.kind !== 'test');
+    return [{
+      icon: 'testflight', label: 'TestFlight Internal Testing',
+      disabled: target.testflightOn || !hasArchive,
+      detail: target.testflightOn ? 'Already added' : hasArchive ? null : 'Add an archive action first',
+      onSelect: () => {
+        target.testflightOn = true;
+        select({ kind: 'testflight' });
+        changed();
+      },
+    }];
+  }
+
+  function addAction(kind, platform) {
+    const target = model();
+    const action = { ...blankAction(kind), platform, scheme: firstScheme(platform, kind) ?? '' };
+    target.actions.push(action);
+    select({ kind: 'action', index: target.actions.length - 1 });
+    changed();
+  }
+
+  /** The "+" button and its menu. `items`: `{heading}` or `{icon, label, detail, disabled, onSelect}`. */
+  function addMenu(label, items) {
+    const trigger = h('button', {
+      type: 'button', class: 'wf-icon-button', 'aria-label': label, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    }, plusGlyph());
+    trigger.addEventListener('click', () => {
+      if (closeMenu) {
+        closeMenu();
+        return;
+      }
+      open();
+    });
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        open();
+      }
+    });
+    function open() {
+      const menu = h('div', { class: 'wf-menu', role: 'menu', 'aria-label': label });
+      const buttons = [];
+      for (const item of items) {
+        if (item.heading) {
+          if (buttons.length) menu.append(h('div', { class: 'wf-menu-separator', role: 'separator' }));
+          menu.append(h('div', { class: 'wf-menu-heading', role: 'presentation' }, item.heading));
+          continue;
+        }
+        const entry = h('button', {
+          type: 'button', class: 'wf-menu-item', role: 'menuitem', tabindex: '-1',
+          'aria-disabled': item.disabled ? 'true' : null,
+          onClick: () => {
+            if (item.disabled) return;
+            close(false);
+            item.onSelect();
+          },
+        }, glyph(item.icon), h('span', null, item.label), item.detail ? h('span', { class: 'wf-menu-item-detail' }, item.detail) : null);
+        buttons.push(entry);
+        menu.append(entry);
+      }
+      menu.addEventListener('keydown', (event) => {
+        const index = buttons.indexOf(document.activeElement);
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          const step = event.key === 'ArrowDown' ? 1 : -1;
+          buttons[(index + step + buttons.length) % buttons.length].focus();
+        } else if (event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          buttons[event.key === 'Home' ? 0 : buttons.length - 1].focus();
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          close(true);
+        } else if (event.key === 'Tab') {
+          close(false);
+        }
+      });
+      const outside = (event) => {
+        if (!menu.contains(event.target) && event.target !== trigger && !trigger.contains(event.target)) close(false);
+      };
+      function close(refocus) {
+        document.removeEventListener('pointerdown', outside, true);
+        menu.remove();
+        trigger.setAttribute('aria-expanded', 'false');
+        closeMenu = null;
+        if (refocus) trigger.focus();
+      }
+      closeMenu?.();
+      closeMenu = () => close(false);
+      trigger.after(menu);
+      // Opens upwards when the room below (above the save bar) is short and there is more above.
+      const box = menu.getBoundingClientRect();
+      const below = innerHeight - 72 - trigger.getBoundingClientRect().bottom;
+      if (box.bottom > innerHeight - 72 && trigger.getBoundingClientRect().top - 64 > below) menu.classList.add('wf-menu-up');
+      trigger.setAttribute('aria-expanded', 'true');
+      document.addEventListener('pointerdown', outside, true);
+      (buttons.find((b) => !b.getAttribute('aria-disabled')) ?? buttons[0])?.focus();
+    }
+    return trigger;
+  }
+
+  // MARK: Detail
+
+  function itemProblemsFor(item) {
+    const found = problemsOf();
+    if (item.kind === 'action') return found.actions[item.index] ?? [];
+    if (item.kind === 'general') return [...found.workflow, ...found.general];
+    return found[item.kind] ?? [];
+  }
+
+  function problemList(list) {
+    return list.length
+      ? h('div', { class: 'wf-banner wf-banner-error', role: 'alert' },
+        h('div', { class: 'wf-banner-text' }, list.length === 1 ? list[0] : h('ul', null, list.map((item) => h('li', null, item)))))
+      : null;
+  }
+
+  function renderDetail() {
+    const target = model();
+    let content;
+    if (selection.kind === 'general') content = generalPane(target);
+    else if (selection.kind === 'environment') content = environmentPane(target);
+    else if (selection.kind === 'start') content = startPane();
+    else if (selection.kind === 'testflight') content = testFlightPane(target);
+    else content = actionPane(target, selection.index);
+    replaceChildren(detail,
+      h('button', { type: 'button', class: 'wf-back', onClick: backToList }, chevron('left'), 'Workflow'),
+      content.header,
+      h('div', { class: 'wf-detail-problems' }, problemList(itemProblemsFor(selection))),
+      content.body);
+  }
+
+  function header({ icon, tone, title, subtitle, tools }) {
+    return h('div', { class: 'wf-detail-header' },
+      tile(icon, tone),
+      h('div', { class: 'wf-detail-heading' },
+        h('h2', { class: 'wf-detail-title', tabindex: '-1' }, title),
+        subtitle ? h('p', { class: 'wf-detail-subtitle' }, subtitle) : null),
+      tools ? h('div', { class: 'wf-detail-tools' }, tools) : null);
+  }
+
+  // MARK: General
+
+  function generalPane(target) {
+    const nameInput = textInput(target.name, (value) => { target.name = value; }, { invalid: () => !target.name.trim() });
+    const projects = unique([...(suggestion?.projects ?? []), target.path.trim()].filter(Boolean));
+    const project = pickerWithOther({
+      label: 'Project or workspace',
+      value: target.path.trim(),
+      options: projects.map((path) => [path, path]),
+      placeholder: 'MyApp.xcodeproj',
+      hint: target.kind === 'workspace' ? 'A workspace, relative to the repository root.' : 'Relative to the repository root. Its folder holds ci_scripts/.',
+      onChange: (value) => {
+        target.path = value;
+        target.kind = /\.xcworkspace\/?$/i.test(value.trim()) ? 'workspace' : 'project';
+      },
+    });
+    const repository = app.repoURL.replace(/\.git$/, '');
+    const removeButton = button('Delete Workflow…', { kind: 'plain', class: 'button button-plain wf-destructive wf-flush-start', onClick: removeWorkflow });
+    return {
+      header: header({ icon: 'general', title: 'General', subtitle: 'What this workflow is called and what it builds.' }),
+      body: h('div', { class: 'wf-form' },
+        wfField({ label: 'Name', control: nameInput }),
+        wfField({ label: 'Repository', control: h('div', { class: 'wf-readonly' }, h('a', { href: repository, target: '_blank', rel: 'noopener' }, repository.replace(/^https:\/\//, ''), ' ↗')) }),
+        project,
+        h('div', null, removeButton)),
+    };
+  }
+
+  // MARK: Environment
+
+  function environmentPane(target) {
+    const versions = xcodeVersions();
+    const value = target.xcode.trim();
+    const options = versions.map(({ version, names }, index) => [version, `Xcode ${version}${index === 0 ? ' (newest)' : ''} · on ${listText(names)}`]);
+    const xcode = pickerWithOther({
+      label: 'Xcode version',
+      value,
+      options,
+      unknownLabel: (text) => `Xcode ${text} · no Mac has it`,
+      placeholder: '27.2',
+      hint: 'Matched as a prefix: 27 picks any installed 27.x.',
+      note: machines !== null && versions.length === 0
+        ? h('p', { class: 'wf-note wf-note-warning' }, 'No Mac has reported Xcode yet. ', h('a', { href: '/machines', 'data-link': true }, 'Add a Mac'))
+        : null,
+      onChange: (text) => { target.xcode = text; },
+      invalid: () => !target.xcode.trim(),
+    });
+    const team = textInput(target.team, (text) => { target.team = text; }, { placeholder: 'e.g. YL78V8PY6H', mono: true });
+    const suggestedTeam = firstSuggested()?.teamID;
+    return {
+      header: header({ icon: 'environment', title: 'Environment', subtitle: 'Where and with what the workflow builds.' }),
+      body: h('div', { class: 'wf-form' },
+        xcode,
+        wfField({
+          label: 'Team ID', control: team,
+          hint: suggestedTeam && suggestedTeam === target.team.trim() ? 'From the project.' : 'Signs with this team; empty uses the project’s.',
+        }),
+        toolsField(target),
+        wfField({
+          label: 'Environment variables',
+          control: h('p', { class: 'wf-note' }, 'Variables and secrets belong to the app, not a workflow: set them in ',
+            h('a', { href: base, 'data-link': true }, `${app.name}’s Environment`), '.'),
+        })),
+    };
+  }
+
+  function toolsField(target) {
+    const reported = new Map();
+    for (const machine of machines ?? []) {
+      for (const name of Object.keys(machine.report?.tools ?? {})) {
+        reported.set(name, [...(reported.get(name) ?? []), machine.name]);
+      }
+    }
+    const names = unique([...reported.keys(), ...target.tools]).sort();
+    let adding = false;
+    const element = h('div', { class: 'wf-field' });
+    function draw() {
+      const rows = names.map((name) => checkRow({
+        title: name,
+        detail: reported.has(name) ? `On ${listText(reported.get(name))}` : 'No Mac reports it',
+        checked: target.tools.includes(name),
+        onChange: (on) => {
+          const index = target.tools.indexOf(name);
+          if (on && index < 0) target.tools.push(name);
+          if (!on && index >= 0) target.tools.splice(index, 1);
+          changed();
+        },
+      }));
+      const input = h('input', {
+        class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', placeholder: 'Tool name, e.g. xcodegen',
+        'aria-label': 'Tool name',
+        onKeydown: (event) => {
+          if (event.key === 'Enter' && !event.isComposing) {
+            event.preventDefault();
+            const name = input.value.trim();
+            if (name && !names.includes(name)) names.push(name);
+            if (name && !target.tools.includes(name)) target.tools.push(name);
+            names.sort();
+            adding = false;
+            draw();
+            changed();
+          } else if (event.key === 'Escape') {
+            event.stopPropagation();
+            adding = false;
+            draw();
+          }
+        },
+      });
+      const add = adding
+        ? h('li', { class: 'wf-new-group' }, input, h('p', { class: 'wf-field-hint' }, 'Return adds it.'))
+        : h('li', null, h('button', {
+          type: 'button', class: 'wf-add-row',
+          onClick: () => { adding = true; draw(); element.querySelector('.wf-new-group input')?.focus(); },
+        }, plusGlyph(), 'Add Tool'));
+      replaceChildren(element,
+        h('span', { class: 'wf-field-label', id: 'wf-tools-label' }, 'Required tools'),
+        h('ul', { class: 'wf-checklist', 'aria-labelledby': 'wf-tools-label' }, rows, add),
+        h('p', { class: 'wf-field-hint' }, 'Only Macs with these tools run this workflow.'));
+    }
+    draw();
+    return element;
+  }
+
+  // MARK: Start conditions
+
+  function startPane() {
+    const later = (title) => checkRow({ title, tag: 'Coming later', checked: false, disabled: true });
+    return {
+      header: header({ icon: 'start', title: 'Start Conditions', subtitle: 'When this workflow runs.' }),
+      body: h('div', { class: 'wf-form' },
+        h('ul', { class: 'wf-checklist wf-conditions', 'aria-label': 'Start conditions' },
+          checkRow({
+            title: 'Manual Start', detail: 'From Hangar’s Deploy button, the hangar CLI or a skill.', checked: true, disabled: true,
+          }),
+          later('Branch Changes'), later('Pull Request Changes'), later('Tag Changes'), later('On a Schedule')),
+        h('p', { class: 'wf-note' }, 'Every build starts by hand for now.')),
+    };
+  }
+
+  // MARK: Actions
+
+  function actionPane(target, index) {
+    const action = target.actions[index];
+    const isTest = action.kind === 'test';
+    const tools = [
+      button('Duplicate', {
+        kind: 'plain', class: 'button button-plain button-small',
+        onClick: () => {
+          target.actions.splice(index + 1, 0, { ...action });
+          select({ kind: 'action', index: index + 1 });
+          changed();
+        },
+      }),
+      button('Delete…', { kind: 'plain', class: 'button button-plain button-small wf-destructive', onClick: () => removeAction(index) }),
+    ];
+    const explainBox = h('div', null, explain(isTest ? describeTest(action) : describeArchive(action, target)));
+    const redraw = () => {
+      replaceChildren(explainBox, explain(isTest ? describeTest(action) : describeArchive(action, target)));
+      changed();
+    };
+    const platforms = availablePlatforms(action.platform);
+    const platform = wfField({
+      label: 'Platform',
+      control: segmented({
+        label: 'Platform', value: action.platform, options: platforms.map((p) => [p, platformName(p)]),
+        onChange: (value) => {
+          action.platform = value;
+          const schemes = schemesFor(value, action.kind).map((scheme) => scheme.name);
+          if (schemes.length && !schemes.includes(action.scheme)) action.scheme = schemes[0];
+          if (action.export === 'developer-id' && value !== 'macos') action.export = 'app-store-connect';
+          renderDetail();
+          changed();
+          detail.querySelector(`.wf-segmented [data-value="${value}"]`)?.focus();
+        },
+      }),
+    });
+    const scheme = schemeField(action, redraw);
+    const fields = isTest ? testFields(action, redraw) : [distributionField(action, target, redraw)];
+    return {
+      header: header({
+        icon: isTest ? 'test' : 'archive', title: actionTitle(action),
+        tools,
+      }),
+      body: h('div', { class: 'wf-form' }, explainBox, platform, scheme, fields),
+    };
+  }
+
+  async function removeAction(index) {
+    const target = model();
+    const action = target.actions[index];
+    const confirmed = await confirm({
+      title: `Delete ${actionTitle(action)}?`,
+      message: `${action.scheme.trim() || 'This action'} is no longer ${action.kind === 'test' ? 'tested' : 'archived'} by this workflow once you save.`,
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    target.actions.splice(index, 1);
+    // A TestFlight step without any archive left has nothing to upload.
+    if (!target.actions.some((other) => other.kind !== 'test')) target.testflightOn = false;
+    selection = target.actions.length ? { kind: 'action', index: Math.max(0, index - 1) } : { kind: 'general' };
+    renderEditor();
+    sidebar.querySelector(`[data-item="${itemKey(selection)}"]`)?.focus();
+  }
+
+  function schemeField(action, onChange) {
+    const schemes = schemesFor(action.platform, action.kind);
+    const apps = schemes.filter((scheme) => scheme.isApplication);
+    const others = schemes.filter((scheme) => !scheme.isApplication);
+    const label = (scheme) => (action.kind === 'test' && scheme.hasTests ? `${scheme.name} · has tests` : scheme.name);
+    const groupsOfOptions = action.kind === 'test'
+      ? [['', schemes.map((scheme) => [scheme.name, label(scheme)])]]
+      : [['', apps.map((scheme) => [scheme.name, label(scheme)])], ['Other schemes', others.map((scheme) => [scheme.name, scheme.name])]];
+    const known = schemes.find((scheme) => scheme.name === action.scheme);
+    return pickerWithOther({
+      label: 'Scheme',
+      value: action.scheme,
+      groups: groupsOfOptions,
+      placeholder: 'Scheme name',
+      emptyLabel: 'Choose a scheme',
+      hint: action.kind === 'test' && known && !known.hasTests
+        ? 'No test target was found for this scheme; the build fails if it has no tests.'
+        : suggestion ? null : 'Reading the repository for its schemes…',
+      onChange: (value) => { action.scheme = value; onChange(); },
+      invalid: () => !action.scheme.trim(),
+      rerenderOnChange: true,
+    });
+  }
+
+  function distributionField(action, target, onChange) {
+    const ipa = action.platform === 'macos' ? '.pkg' : '.ipa';
+    const field = h('div', { class: 'wf-field' });
+    function draw() {
+      replaceChildren(field,
+        h('span', { class: 'wf-field-label' }, 'Distribution'),
+        choiceCards({
+          legend: 'Distribution', value: action.export,
+          options: [
+            {
+              value: 'app-store-connect', title: 'TestFlight and App Store',
+              detail: `Signs for App Store distribution and keeps the ${ipa}. Needed for TestFlight.`,
+            },
+            {
+              value: 'developer-id', title: 'Developer ID',
+              detail: action.platform === 'macos'
+                ? target.testflightOn
+                  ? 'Signs the Mac app for direct download. Can’t go to TestFlight, which this workflow uploads to.'
+                  : 'Signs the Mac app for direct download, outside the App Store. Can’t go to TestFlight.'
+                : 'Mac apps only.',
+              disabled: action.platform !== 'macos',
+            },
+          ],
+          onChange: (value) => {
+            action.export = value;
+            draw();
+            onChange();
+            field.querySelector('input:checked')?.focus();
+          },
+        }));
+    }
+    draw();
+    return field;
+  }
+
+  function testFields(action, onChange) {
+    const plans = suggestion?.testPlans ?? [];
+    const plan = plans.length
+      ? pickerWithOther({
+        label: 'Test plan', value: action.testPlan.trim(),
+        options: [['', 'The scheme’s default plan'], ...plans.map((name) => [name, name])],
+        placeholder: 'Test plan name',
+        onChange: (value) => { action.testPlan = value; onChange(); },
+      })
+      : wfField({
+        label: 'Test plan',
+        control: textInput(action.testPlan, (value) => { action.testPlan = value; onChange(); }, { placeholder: 'The scheme’s default plan' }),
+        hint: 'Optional. Leave empty to run the scheme’s default test plan.',
+      });
+    let destination;
+    if (action.platform === 'macos') {
+      destination = wfField({ label: 'Destination', control: h('div', { class: 'wf-readonly' }, 'This Mac'), hint: 'macOS tests run on the Mac that builds them.' });
+    } else {
+      const device = testDestinationText({ platform: action.platform, destination: '' }).replace(/^the /, '');
+      const runtimes = unique((machines ?? []).flatMap((machine) => machine.report?.simulatorRuntimes ?? [])
+        .filter((runtime) => runtime.toLowerCase().startsWith(platformName(action.platform).toLowerCase())));
+      destination = pickerWithOther({
+        label: 'Destination',
+        value: (action.destination ?? '').trim().toLowerCase() === 'recommended' ? '' : (action.destination ?? '').trim(),
+        options: [['', `Recommended (${device})`]],
+        placeholder: 'Simulator name, e.g. iPhone 17 Pro',
+        unknownLabel: (text) => text,
+        onChange: (value) => { action.destination = value; onChange(); },
+        note: machines === null ? null : runtimes.length
+          ? h('p', { class: 'wf-note' }, `Your Macs have ${listText(runtimes)} simulators.`)
+          : h('p', { class: 'wf-note wf-note-warning' }, `No Mac reports a ${platformName(action.platform)} simulator yet; the build waits for one.`),
+      });
+    }
+    return [plan, destination];
+  }
+
+  // MARK: TestFlight
+
+  function testFlightPane(target) {
+    const t = target.testflight;
+    const explainBox = h('div', null, explain(describeTestFlight(target)));
+    const redraw = () => {
+      replaceChildren(explainBox, explain(describeTestFlight(target)));
+      changed();
+    };
+    const tools = [button('Delete…', { kind: 'plain', class: 'button button-plain button-small wf-destructive', onClick: removeTestFlight })];
+    const groupsField = h('div', { class: 'wf-field' });
+    const drawGroups = () => replaceChildren(groupsField,
+      h('span', { class: 'wf-field-label' }, 'Groups'),
+      groupPicker({ store: groups, selected: t.groups, onChange: () => { redraw(); renderSidebar(); }, disabled: !t.waitForProcessing }));
+    drawGroups();
+
+    const timeout = h('input', {
+      class: 'input wf-number', type: 'number', inputmode: 'numeric', min: '1', step: '1', value: t.timeout, id: 'wf-timeout',
+      'aria-invalid': /^[1-9]\d*$/.test(t.timeout.trim()) ? null : 'true',
       onInput: (event) => {
-        model[key] = event.target.value;
+        t.timeout = event.target.value;
+        timeout.setAttribute('aria-invalid', /^[1-9]\d*$/.test(t.timeout.trim()) ? 'false' : 'true');
         changed();
       },
     });
-
-    const nameInput = text('name', { placeholder: 'testflight' });
-    const removeWorkflow = models.length > 1
-      ? button('Remove', {
-        kind: 'plain-destructive', 'aria-label': `Remove workflow ${model.name || ''}`.trim(),
-        onClick: () => {
-          models = models.filter((other) => other !== model);
-          render();
-        },
-      })
-      : null;
-
-    // Project or workspace: a segmented control choosing the key, and the path.
-    const kindControl = h('div', { class: 'segmented segmented-small', role: 'radiogroup', 'aria-labelledby': `kind-${model.key}` },
-      ['project', 'workspace'].map((kind) => h('button', {
-        type: 'button', class: 'segment', role: 'radio', 'aria-checked': String(model.kind === kind),
-        onClick: () => {
-          if (model.kind === kind) return;
-          model.kind = kind;
-          rerender(`[data-kind="${kind}"]`);
-        },
-        dataset: { kind },
-      }, kind === 'project' ? 'Project' : 'Workspace')));
-    const pathInput = text('path', {
-      placeholder: model.kind === 'project' ? 'MyApp.xcodeproj' : 'MyApp.xcworkspace',
-    });
-    pathInput.setAttribute('aria-label', model.kind === 'project' ? 'Project path' : 'Workspace path');
-
-    const xcodeInput = text('xcode', { placeholder: '27.2', list: suggestions.xcodes });
-    xcodeInput.setAttribute('inputmode', 'decimal');
-    const teamInput = text('team', { placeholder: 'Optional, e.g. YL78V8PY6H' });
-
-    const tools = chipsEditor({
-      label: 'Tools',
-      items: model.tools,
-      placeholder: 'brew',
-      list: suggestions.tools,
-      onChange: changed,
-    });
-
-    container.append(
-      h('div', { class: 'workflow-card-header' },
-        h('div', { class: 'workflow-name' }, field({ label: 'Workflow name', control: nameInput })),
-        removeWorkflow),
-      h('div', { class: 'form workflow-fields' },
-        h('div', { class: 'field' },
-          h('div', { class: 'field-label-row' },
-            h('span', { class: 'field-label', id: `kind-${model.key}` }, 'Project or workspace')),
-          h('div', { class: 'location-row' }, kindControl, pathInput),
-          h('p', { class: 'field-hint' }, 'Relative to the repository root. Its folder holds ci_scripts/.')),
-        h('div', { class: 'field-pair' },
-          field({ label: 'Xcode version', hint: 'Matched as a prefix: 27 picks any installed 27.x.', control: xcodeInput }),
-          field({ label: 'Team ID', hint: 'Optional.', control: teamInput })),
-        tools.element),
-      actionsEditor(model, rerender),
-      postActionsEditor(model, rerender));
-    return container;
-  }
-
-  function actionsEditor(model, rerender) {
-    const rows = model.actions.map((action, index) => {
-      const n = index + 1;
-      const scheme = h('input', {
-        class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
-        value: action.scheme, placeholder: 'Scheme', 'aria-label': `Scheme of action ${n}`, dataset: { scheme: String(index) },
-        onInput: (event) => {
-          action.scheme = event.target.value;
-          changed();
-        },
-      });
-      const select = (key, options, label) => {
-        const control = h('select', {
-          class: 'select', 'aria-label': `${label} of action ${n}`,
-          onChange: (event) => {
-            action[key] = event.target.value;
-            changed();
-          },
-        }, options.map(([value, text]) => h('option', { value }, text)));
-        // A value the form does not offer (impossible after parsing) still shows.
-        if (!options.some(([value]) => value === action[key])) control.append(h('option', { value: action[key] }, action[key]));
-        control.value = action[key];
-        return control;
-      };
-      const kind = select('kind', ACTION_KINDS, 'Kind');
-      kind.dataset.kind = String(index);
-      kind.addEventListener('change', () => {
-        setActionKind(action, kind.value);
-        rerender(`[data-kind="${index}"]`);
-      });
-      const destination = h('input', {
-        class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
-        value: action.destination ?? '', placeholder: action.platform === 'macos' ? 'This Mac' : 'Recommended',
-        disabled: action.platform === 'macos',
-        'aria-label': `Simulator of action ${n}`,
-        onInput: (event) => {
-          action.destination = event.target.value;
-          changed();
-        },
-      });
-      const platform = select('platform', PLATFORMS, 'Platform');
-      platform.dataset.platform = String(index);
-      // A macOS test runs on the Mac, so its simulator field turns off.
-      platform.addEventListener('change', () => {
-        if (action.kind === 'test') rerender(`[data-platform="${index}"]`);
-      });
-      return h('li', { class: 'action-row' },
-        kind,
-        scheme,
-        platform,
-        action.kind === 'test' ? destination : select('export', EXPORTS, 'Export'),
-        button('Remove', {
-          kind: 'plain-destructive', 'aria-label': `Remove action ${n}`,
-          onClick: () => {
-            model.actions.splice(index, 1);
-            rerender(model.actions.length ? `[data-scheme="${Math.max(0, index - 1)}"]` : '.add-action');
-          },
-        }));
-    });
-    return h('div', { class: 'workflow-group' },
-      h('h3', { class: 'workflow-group-title' }, 'Actions'),
-      h('p', { class: 'field-hint' },
-        'An archive action archives one scheme and exports it; a test action runs its tests on a simulator (or this Mac for macOS). Post-actions follow archives only.'),
-      h('div', { class: 'action-head', 'aria-hidden': 'true' },
-        h('span', null, 'Kind'), h('span', null, 'Scheme'), h('span', null, 'Platform'), h('span', null, 'Export or simulator'), h('span')),
-      h('ul', { class: 'action-list' }, rows),
-      h('button', {
-        type: 'button', class: 'add-row-button add-action',
-        onClick: () => {
-          model.actions.push(blankAction());
-          rerender(`[data-scheme="${model.actions.length - 1}"]`);
-        },
-      }, h('span', { class: 'add-row-plus', 'aria-hidden': 'true' }, '+'), 'Add Action'));
-  }
-
-  function postActionsEditor(model, rerender) {
-    const t = model.testflight;
-    const toggle = switchField({
-      label: 'Upload to TestFlight',
-      hint: 'After every action succeeds.',
-      checked: model.testflightOn,
-      onChange: (checked) => {
-        model.testflightOn = checked;
-        rerender('.testflight-toggle input');
-      },
-    });
-    toggle.element.classList.add('testflight-toggle');
-
-    let settings = null;
-    if (model.testflightOn) {
-      const timeout = h('input', {
-        class: 'input', type: 'text', inputmode: 'numeric', autocomplete: 'off', value: t.timeout,
-        onInput: (event) => {
-          t.timeout = event.target.value;
-          changed();
-        },
-      });
+    const timeoutRow = h('div', { class: 'wf-dependent-note' },
+      h('div', { class: 'wf-input-row' },
+        h('label', { class: 'wf-field-hint', for: 'wf-timeout' }, 'Give up after'), timeout, h('span', { class: 'wf-suffix' }, 'minutes')));
+    const files = suggestion?.whatToTestFiles ?? [];
+    const locales = files.map((path) => path.replace(/^.*WhatToTest\./, '').replace(/\.txt$/, ''));
+    const flags = h('div', { class: 'wf-switches' });
+    const drawFlags = () => {
       const wait = switchField({
         label: 'Wait for processing',
-        hint: 'Until App Store Connect has processed the build.',
+        hint: 'Hangar waits for App Store Connect to process the build (usually 5–30 minutes) so it can add it to groups.',
         checked: t.waitForProcessing,
-        onChange: (checked) => {
-          t.waitForProcessing = checked;
-          changed();
-          timeoutField.hidden = !checked;
+        onChange: (on) => {
+          t.waitForProcessing = on;
+          drawFlags();
+          drawGroups();
+          redraw();
+          flags.querySelector('input')?.focus();
         },
       });
-      const timeoutField = field({ label: 'Processing timeout (minutes)', control: timeout });
-      timeoutField.hidden = !t.waitForProcessing;
-      const groups = chipsEditor({ label: 'Beta groups', items: t.groups, placeholder: 'Internal', onChange: changed });
-      const flag = (label, hint, key) => switchField({
-        label, hint, checked: t[key],
-        onChange: (checked) => {
-          t[key] = checked;
-          changed();
-        },
-      }).element;
-      settings = h('div', { class: 'testflight-settings form' },
-        h('div', { class: 'switch-group' }, wait.element),
-        timeoutField,
-        groups.element,
-        h('div', { class: 'switch-group' },
-          flag('What to Test', 'Set the “What to Test” text.', 'whatToTest'),
-          flag('Submit for external review', 'Submit the build for external beta review.', 'submitForExternalReview')),
-        t.requiresApproval
-          ? h('p', { class: 'field-hint' }, 'This step waits for approval (requires-approval in the file).')
-          : null);
-    }
-
-    return h('div', { class: 'workflow-group' },
-      h('h3', { class: 'workflow-group-title' }, 'Post-actions'),
-      h('div', { class: 'switch-group' }, toggle.element),
-      settings,
-      model.otherPostActions.length
-        ? h('p', { class: 'field-hint' },
-          `Also runs ${model.otherPostActions.map((spec) => spec.name).join(', ')} (kept as in the file).`)
-        : null);
+      const whatToTest = switchField({
+        label: 'What to Test',
+        hint: suggestion
+          ? files.length
+            ? `From TestFlight/WhatToTest.<locale>.txt next to the project: found ${listText(locales)}.`
+            : 'From TestFlight/WhatToTest.<locale>.txt next to the project. The repository has none yet, so nothing is set.'
+          : 'From TestFlight/WhatToTest.<locale>.txt next to the project.',
+        checked: t.whatToTest, disabled: !t.waitForProcessing,
+        onChange: (on) => { t.whatToTest = on; changed(); },
+      });
+      const review = switchField({
+        label: 'Submit for external review',
+        hint: 'Sends the build to Beta App Review, which external groups need.',
+        checked: t.submitForExternalReview, disabled: !t.waitForProcessing,
+        onChange: (on) => { t.submitForExternalReview = on; changed(); },
+      });
+      replaceChildren(flags,
+        wait.element,
+        t.waitForProcessing ? timeoutRow : h('p', { class: 'wf-dependent-note' }, 'Groups, What to Test and review need processing to finish, so they are off.'),
+        whatToTest.element,
+        review.element);
+    };
+    drawFlags();
+    return {
+      header: header({
+        icon: 'testflight', title: 'TestFlight Internal Testing', tools,
+      }),
+      body: h('div', { class: 'wf-form' }, explainBox, groupsField, flags,
+        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step waits for approval (requires-approval in the file).') : null),
+    };
   }
 
-  // MARK: Save and remove
+  async function removeTestFlight() {
+    const confirmed = await confirm({
+      title: 'Delete TestFlight Internal Testing?',
+      message: 'Archives stay on the build page and are no longer uploaded once you save.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    model().testflightOn = false;
+    selection = { kind: 'general' };
+    renderEditor();
+  }
+
+  // MARK: Save, YAML and removal
 
   async function save() {
-    const found = problems(models);
-    if (found.length) {
-      showError(found.join(' '));
+    // Every workflow is checked; the first problem's item is shown.
+    for (let index = 0; index < models.length; index += 1) {
+      const found = problemsOf(index);
+      const list = allProblems(found);
+      if (!list.length) continue;
+      current = index;
+      selection = firstProblemItem(found);
+      view = 'detail';
+      const others = models.length > 1 ? ` in “${models[index].name.trim() || 'Untitled'}”` : '';
+      banner = {
+        kind: 'error',
+        text: `${list.length === 1 ? 'One problem blocks' : `${list.length} problems block`} saving${others}. Items marked ! need a fix.`,
+      };
+      renderEditor({ focusDetail: true });
+      // The banner and the item both in view, below the sticky top bar.
+      window.scrollTo({ top: Math.max(0, bannerSlot.getBoundingClientRect().top + window.scrollY - 72), behavior: 'smooth' });
       return;
     }
     busy = true;
-    changed();
+    refresh();
     try {
-      const file = fileFromModels(models);
-      stored = await api.put(`${base}/workflow-file`, { yaml: workflowToYAML(file) });
+      stored = await api.put(`${base}/workflow-file`, { yaml: workflowToYAML(fileFromModels(models)) });
+      const name = model().name.trim();
       models = modelsFromFile(stored.workflows);
+      current = Math.max(0, models.findIndex((other) => other.name === name));
       saved = snapshot();
-      showError(null);
       busy = false;
-      render();
+      banner = null;
+      renderEditor();
       toast('Workflow saved', 'success');
     } catch (error) {
       busy = false;
-      changed();
       if (error.code === 'aborted') return;
-      showError(error.message);
+      banner = { kind: 'error', text: error.message };
+      renderEditor();
     }
   }
 
-  function removeCard() {
-    return card({ class: 'danger-card' },
-      h('p', { class: 'card-detail' },
-        'Deploys use the .hangar.yml in the repository again. Copy the YAML first if you want to commit it.'),
-      h('div', { class: 'card-actions' },
-        button('Remove Hangar Workflow…', { kind: 'destructive', onClick: remove })));
+  function firstProblemItem(found) {
+    if (found.workflow.length || found.general.length) return { kind: 'general' };
+    if (found.environment.length) return { kind: 'environment' };
+    const index = found.actions.findIndex((list) => list.length);
+    if (index >= 0) return { kind: 'action', index };
+    return { kind: 'testflight' };
   }
 
-  async function remove() {
+  function showYAML() {
+    const text = workflowToYAML(fileFromModels(models));
+    const code = h('pre', { class: 'wf-yaml', tabindex: '0', 'aria-label': '.hangar.yml' }, h('code', null, text));
+    sheet({
+      title: '.hangar.yml',
+      body: [h('p', { class: 'wf-note' }, 'The workflow file as Hangar stores it. Commit it as .hangar.yml at the repository root to keep it with the code.'), code],
+      actions: [
+        { label: 'Done', kind: 'secondary' },
+        {
+          label: 'Copy', kind: 'primary',
+          onClick: async () => {
+            if (await copyText(text)) {
+              toast('Copied .hangar.yml', 'success');
+              return true;
+            }
+            selectContents(code);
+            toast('The YAML is selected. Press ⌘C to copy it.', 'info');
+            return false;
+          },
+        },
+      ],
+    });
+  }
+
+  async function removeWorkflow() {
+    const name = model().name.trim() || 'this workflow';
+    if (models.length > 1) {
+      const confirmed = await confirm({
+        title: `Delete “${name}”?`,
+        message: 'The other workflows stay. It is gone once you save.',
+        confirmLabel: 'Delete',
+        destructive: true,
+      });
+      if (!confirmed) return;
+      models.splice(current, 1);
+      current = 0;
+      selection = { kind: 'general' };
+      view = 'list';
+      renderEditor();
+      return;
+    }
+    if (!stored) {
+      models = [];
+      saved = null;
+      banner = null;
+      renderStart();
+      return;
+    }
+    const repositoryHasFile = await api.get(`${base}/workflow-source`).then((s) => s?.repositoryHasWorkflowFile, () => null);
     const confirmed = await confirm({
-      title: 'Remove the Hangar Workflow?',
-      message: `${app.name} builds with the .hangar.yml in its repository again. Builds fail if it has none.`,
-      confirmLabel: 'Remove',
+      title: `Delete “${name}”?`,
+      message: repositoryHasFile === true
+        ? `${app.name} builds with the .hangar.yml in its repository again.`
+        : `Without a workflow ${app.name} can’t build: its repository has no .hangar.yml.`,
+      confirmLabel: repositoryHasFile === true ? 'Delete' : 'Delete and Stop Builds',
       destructive: true,
     });
     if (!confirmed) return;
@@ -597,73 +1092,174 @@ function workflowEditor({ app, base, stored: initial, suggestions, context }) {
       return;
     }
     stored = null;
-    models = null;
+    models = [];
     saved = null;
-    showError(null);
-    render();
-    toast('Removed the Hangar workflow', 'success');
+    banner = null;
+    repoFile = repositoryHasFile;
+    renderStart();
+    toast('Deleted the workflow', 'success');
   }
 
-  render();
-  return { element, saveButton };
+  // MARK: Facts from the repository and the Macs
+
+  function firstSuggested() {
+    const workflows = suggestion?.workflows?.workflows ?? {};
+    return workflows[Object.keys(workflows)[0]] ?? null;
+  }
+
+  /** Detected schemes for `platform`; for archives, apps first. */
+  function schemesFor(platform, kind) {
+    const all = suggestion?.schemes ?? [];
+    const matching = all.filter((scheme) => (scheme.platform ?? 'macos') === platform);
+    return kind === 'test' ? matching : [...matching.filter((s) => s.isApplication), ...matching.filter((s) => !s.isApplication)];
+  }
+
+  function firstScheme(platform, kind) {
+    const schemes = schemesFor(platform, kind);
+    if (kind === 'test') return (schemes.find((scheme) => scheme.isApplication && scheme.hasTests) ?? schemes.find((s) => s.hasTests) ?? schemes[0])?.name;
+    return schemes.find((scheme) => scheme.isApplication)?.name ?? schemes[0]?.name;
+  }
+
+  /** Platforms a scheme exists for (all of them before the repository is read), and the action's own. */
+  function availablePlatforms(currentPlatform) {
+    const known = schemePlatforms();
+    return PLATFORMS.map(([platform]) => platform).filter((platform) => !known || known.has(platform) || platform === currentPlatform);
+  }
+
+  /** Xcode versions the Macs report, newest first, with the Macs that have each. */
+  function xcodeVersions() {
+    const byVersion = new Map();
+    for (const machine of machines ?? []) {
+      for (const xcode of machine.report?.xcodes ?? []) {
+        if (!xcode.version) continue;
+        byVersion.set(xcode.version, unique([...(byVersion.get(xcode.version) ?? []), machine.name]));
+      }
+    }
+    return [...byVersion.entries()]
+      .sort(([a], [b]) => b.localeCompare(a, 'en', { numeric: true }))
+      .map(([version, names]) => ({ version, names }));
+  }
+
+  // MARK: Fields
+
+  /** A labelled field; `control` gets the label, `hint` and `error` describe it. */
+  function wfField({ label, control, hint, error, note }) {
+    const id = control.id || `wf-field-${++fieldCount}`;
+    const labelled = ['INPUT', 'SELECT', 'TEXTAREA'].includes(control.tagName);
+    if (labelled) control.id = id;
+    const hintNode = hint ? h('p', { class: 'wf-field-hint', id: `${id}-hint` }, hint) : null;
+    if (hintNode && labelled) control.setAttribute('aria-describedby', hintNode.id);
+    return h('div', { class: 'wf-field' },
+      labelled ? h('label', { class: 'wf-field-label', for: id }, label) : h('span', { class: 'wf-field-label' }, label),
+      control, note, error ? h('p', { class: 'wf-field-error' }, error) : null, hintNode);
+  }
+
+  function textInput(value, onInput, { placeholder, mono = false, invalid } = {}) {
+    const input = h('input', {
+      class: ['input', mono && 'mono'], type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
+      value, placeholder,
+      onInput: (event) => {
+        onInput(event.target.value);
+        if (invalid) input.setAttribute('aria-invalid', String(invalid()));
+        changed();
+      },
+    });
+    if (invalid?.()) input.setAttribute('aria-invalid', 'true');
+    return input;
+  }
+
+  /**
+   * A pop-up of `options` (`[value, label]`, or `groups` of them) plus "Other…", which reveals a text field for any
+   * value. A value not among the options shows as its own entry (`unknownLabel`), so nothing is lost.
+   */
+  function pickerWithOther({
+    label, value, options = [], groups: optionGroups, placeholder, hint, note, onChange, invalid, emptyLabel, unknownLabel,
+  }) {
+    const element = h('div', { class: 'wf-field' });
+    const all = optionGroups ?? [['', options]];
+    const known = all.flatMap(([, list]) => list.map(([optionValue]) => optionValue));
+    let other = false;
+    let text = value;
+    function draw(focus) {
+      const id = `wf-field-${++fieldCount}`;
+      const select = h('select', {
+        class: 'select', id,
+        onChange: () => {
+          if (select.value === OTHER) {
+            other = true;
+            draw('input');
+            return;
+          }
+          other = false;
+          value = select.value;
+          text = value;
+          onChange(value);
+          draw('select');
+          changed();
+        },
+      });
+      if (!value && !known.includes('') && emptyLabel) select.append(h('option', { value: '', disabled: true }, emptyLabel));
+      for (const [groupLabel, list] of all) {
+        const items = list.map(([optionValue, optionLabel]) => h('option', { value: optionValue }, optionLabel));
+        if (!items.length) continue;
+        if (groupLabel) select.append(h('optgroup', { label: groupLabel }, items));
+        else select.append(...items);
+      }
+      const isKnown = known.includes(value);
+      if (value && !isKnown && !other) select.append(h('option', { value }, unknownLabel ? unknownLabel(value) : value));
+      select.append(h('option', { value: OTHER }, 'Other…'));
+      select.value = other ? OTHER : value;
+      if (invalid?.()) select.setAttribute('aria-invalid', 'true');
+      const input = other ? h('input', {
+        class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', value: text, placeholder,
+        'aria-label': `${label}, other`,
+        onInput: (event) => {
+          text = event.target.value;
+          value = text;
+          onChange(text);
+          if (invalid) input.setAttribute('aria-invalid', String(invalid()));
+          changed();
+        },
+        onKeydown: (event) => {
+          if (event.key === 'Escape' && known.length) {
+            event.stopPropagation();
+            other = false;
+            draw('select');
+          }
+        },
+      }) : null;
+      if (input && invalid?.()) input.setAttribute('aria-invalid', 'true');
+      const hintNode = hint ? h('p', { class: 'wf-field-hint', id: `${id}-hint` }, hint) : null;
+      if (hintNode) select.setAttribute('aria-describedby', hintNode.id);
+      replaceChildren(element, h('label', { class: 'wf-field-label', for: id }, label), select, input, note, hintNode);
+      if (focus === 'input') input?.focus();
+      if (focus === 'select') select.focus();
+    }
+    draw();
+    return element;
+  }
+
+  renderEditor();
+  return element;
 }
 
-// MARK: Pieces
+// MARK: Helpers
 
-let chipsCount = 0;
+let fieldCount = 0;
 
-/**
- * A list of short names as removable chips with a text field to add more (Return or the Add button). Edits
- * `items` in place and calls `onChange()`.
- */
-function chipsEditor({ label, items, placeholder, list, onChange }) {
-  const id = `chips-${++chipsCount}`;
-  const chips = h('ul', { class: 'chips chips-editable', 'aria-label': label });
-  const input = h('input', {
-    id, class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
-    placeholder, list,
-    onKeydown: (event) => {
-      if (event.key === 'Enter' && !event.isComposing) {
-        event.preventDefault();
-        add();
-      } else if (event.key === 'Backspace' && input.value === '' && items.length) {
-        items.pop();
-        draw();
-        onChange();
-      }
-    },
-  });
+function sameItem(a, b) {
+  return a.kind === b.kind && (a.kind !== 'action' || a.index === b.index);
+}
 
-  function add() {
-    const value = input.value.trim();
-    if (!value) return;
-    if (!items.includes(value)) items.push(value);
-    input.value = '';
-    draw();
-    onChange();
-  }
+function itemKey(item) {
+  return item.kind === 'action' ? `action-${item.index}` : item.kind;
+}
 
-  function draw() {
-    replaceChildren(chips, items.map((item, index) => h('li', { class: 'chip chip-removable' },
-      h('span', null, item),
-      h('button', {
-        type: 'button', class: 'chip-remove', 'aria-label': `Remove ${item}`,
-        onClick: () => {
-          items.splice(index, 1);
-          draw();
-          onChange();
-          input.focus();
-        },
-      }, '×'))));
-    chips.hidden = items.length === 0;
-  }
+function unique(items) {
+  return items.filter((item, index) => items.indexOf(item) === index);
+}
 
-  draw();
-  const element = h('div', { class: 'field' },
-    h('div', { class: 'field-label-row' }, h('label', { class: 'field-label', for: id }, label)),
-    h('div', { class: 'chip-input-row' },
-      input,
-      h('button', { type: 'button', class: 'button button-secondary button-small', onClick: add }, 'Add')),
-    chips);
-  return { element };
+function listText(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }

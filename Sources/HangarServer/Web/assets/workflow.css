@@ -1,0 +1,686 @@
+/* The workflow editor and the new-workflow wizard (pages/workflow.js, pages/workflow-wizard.js). Every rule is
+   scoped to .wf-*, on top of the tokens and components of styles.css. */
+
+:root {
+  --wf-sidebar-width: 280px;
+  --wf-tile: 28px;
+  --wf-row-gap: 12px;
+  --wf-row-inset: 12px;
+  --wf-gray: #8e8e93;
+  --wf-indigo: #5856d6;
+  --wf-green: #34c759;
+  --wf-orange: #ff9500;
+  --wf-purple: #af52de;
+  --wf-blue: #007aff;
+  --wf-teal: #30b0c7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --wf-gray: #98989d;
+    --wf-indigo: #5e5ce6;
+    --wf-green: #30d158;
+    --wf-orange: #ff9f0a;
+    --wf-purple: #bf5af2;
+    --wf-blue: #0a84ff;
+    --wf-teal: #40c8e0;
+  }
+}
+
+/* MARK: Icons */
+
+/* A rounded colour tile with a white glyph, as in Settings. The glyph is centred by the grid. */
+.wf-tile {
+  --tone: var(--wf-gray);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: var(--wf-tile);
+  height: var(--wf-tile);
+  border-radius: 7px;
+  background: var(--tone);
+  color: #ffffff;
+}
+.wf-tile svg { width: 18px; height: 18px; }
+.wf-glyph {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.wf-tone-general { --tone: var(--wf-gray); }
+.wf-tone-environment { --tone: var(--wf-indigo); }
+.wf-tone-start { --tone: var(--wf-green); }
+.wf-tone-archive { --tone: var(--wf-orange); }
+.wf-tone-test { --tone: var(--wf-purple); }
+.wf-tone-testflight { --tone: var(--wf-blue); }
+.wf-tone-platform { --tone: var(--wf-teal); }
+
+/* A round icon button (the sidebar's "+"). */
+.wf-icon-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--fill);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+.wf-icon-button:hover { background: var(--fill-strong); }
+.wf-icon-button:disabled { opacity: 0.4; cursor: default; }
+.wf-icon-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+
+/* MARK: Banners */
+
+.wf-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 12px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font: var(--subhead);
+  letter-spacing: -0.24px;
+}
+.wf-banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.wf-banner-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
+.wf-banner-error { background: color-mix(in srgb, var(--failure) 12%, transparent); color: var(--failure); }
+.wf-banner-success { background: color-mix(in srgb, var(--success) 14%, transparent); }
+.wf-banner-error ul { margin: var(--space-half) 0 0; padding-left: 20px; }
+
+@media (max-width: 639.98px) {
+  .wf-banner { flex-direction: column; align-items: stretch; }
+  .wf-banner-actions .button { flex: 1; }
+}
+
+/* MARK: Page */
+
+.wf-body { display: grid; gap: var(--space-2); }
+/* The header's controls centred on the large title's first line (41 px), not on the subtitle. */
+.wf-page .page-header { align-items: flex-start; }
+.wf-page .page-actions { margin-top: 2.5px; }
+/* A plain button whose text lines up with the content edge, its hover pill reaching into the margin. */
+.wf-flush-start { justify-self: start; margin-inline-start: calc(-1 * var(--space-1)); }
+.wf-header-actions { display: flex; align-items: center; gap: var(--space-1); }
+.wf-switcher { width: auto; min-height: 36px; padding-inline: 12px 8px; font: var(--subhead); font-weight: 500; }
+
+/* MARK: Editor layout */
+
+.wf-editor {
+  display: grid;
+  grid-template-columns: var(--wf-sidebar-width) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+.wf-sidebar {
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
+}
+.wf-group { display: grid; gap: var(--space-1); }
+.wf-group-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  padding-inline: var(--wf-row-inset) 0;
+}
+.wf-group-title {
+  color: var(--secondary);
+  font: var(--footnote);
+  font-weight: 600;
+  letter-spacing: -0.08px;
+  text-transform: uppercase;
+}
+.wf-group-empty { padding: 0 var(--wf-row-inset); color: var(--secondary); font: var(--footnote); }
+
+.wf-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: var(--card);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card), inset 0 0 0 0.5px var(--card-border);
+  overflow: hidden;
+}
+.wf-rows > li { position: relative; }
+.wf-rows > li + li::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: calc(var(--wf-row-inset) + var(--wf-tile) + var(--wf-row-gap));
+  right: 0;
+  border-top: 0.5px solid var(--separator);
+  z-index: 1;
+}
+.wf-row {
+  display: flex;
+  align-items: center;
+  gap: var(--wf-row-gap);
+  width: 100%;
+  min-height: 52px;
+  padding: 8px var(--wf-row-inset);
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.wf-row:hover { background: var(--fill); }
+.wf-row:focus-visible { outline-offset: -3px; }
+.wf-row-text { flex: 1; min-width: 0; display: grid; }
+.wf-row-title { font: var(--body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-row-detail {
+  color: var(--secondary);
+  font: var(--footnote);
+  letter-spacing: -0.08px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-row-problem {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--failure);
+  color: #ffffff;
+  font: 700 13px/1 var(--font);
+}
+.wf-row-chevron { display: none; flex-shrink: 0; width: 8px; height: 14px; color: var(--tertiary); }
+.wf-row-chevron path { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* The selected row, as a source list selection. A row with a problem keeps its badge legible. */
+.wf-row[aria-current="true"] { background: var(--accent); color: var(--accent-text); }
+.wf-row[aria-current="true"] .wf-row-detail { color: color-mix(in srgb, var(--accent-text) 78%, transparent); }
+.wf-row[aria-current="true"] .wf-row-problem { background: #ffffff; color: var(--failure); }
+.wf-rows > li:has(.wf-row[aria-current="true"]) + li::before,
+.wf-rows > li:has(.wf-row[aria-current="true"])::before { border-color: transparent; }
+
+/* MARK: Menu */
+
+.wf-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  width: 300px;
+  max-height: min(70vh, 520px);
+  padding: 6px;
+  overflow-y: auto;
+  border-radius: 12px;
+  background: var(--card-raised);
+  box-shadow: var(--shadow-sheet), inset 0 0 0 0.5px var(--separator);
+  animation: wf-menu-in 160ms var(--ease-out) both;
+}
+@keyframes wf-menu-in { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
+.wf-menu-heading {
+  padding: 6px 10px 2px;
+  color: var(--secondary);
+  font: var(--footnote);
+  font-weight: 600;
+}
+.wf-menu-separator { height: 0.5px; margin: 6px 4px; background: var(--separator); }
+.wf-menu-item {
+  display: grid;
+  grid-template-columns: 20px auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  font: var(--subhead);
+  letter-spacing: -0.24px;
+  cursor: pointer;
+}
+.wf-menu-item svg { width: 20px; height: 20px; color: var(--accent); }
+.wf-menu-item-detail { justify-self: end; color: var(--secondary); font: var(--caption); text-align: right; }
+.wf-menu-up { top: auto; bottom: calc(100% + 6px); }
+/* The open menu rises above the save bar. */
+.wf-sidebar:has(.wf-menu) { z-index: 6; }
+.wf-menu-item:hover:not([aria-disabled="true"]), .wf-menu-item:focus-visible { background: var(--accent); color: var(--accent-text); outline: none; }
+.wf-menu-item:hover:not([aria-disabled="true"]) svg, .wf-menu-item:focus-visible svg { color: inherit; }
+.wf-menu-item:hover:not([aria-disabled="true"]) .wf-menu-item-detail, .wf-menu-item:focus-visible .wf-menu-item-detail { color: inherit; }
+.wf-menu-item[aria-disabled="true"] { color: var(--tertiary); cursor: default; }
+.wf-menu-item[aria-disabled="true"] svg { color: var(--tertiary); }
+.wf-menu-item[aria-disabled="true"]:focus-visible { background: var(--fill); color: var(--tertiary); }
+
+/* MARK: Detail pane */
+
+.wf-detail { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-3); }
+.wf-detail-header { display: flex; align-items: flex-start; gap: var(--space-2); }
+.wf-detail-header .wf-tile { --wf-tile: 40px; width: 40px; height: 40px; border-radius: 10px; }
+.wf-detail-header .wf-tile svg { width: 24px; height: 24px; }
+.wf-detail-heading { flex: 1; min-width: 0; display: grid; gap: 2px; align-self: center; }
+.wf-detail-title { font: var(--title-2); letter-spacing: 0.35px; overflow-wrap: anywhere; }
+/* Focus moves to the title when an item opens; it is a landmark, not a control. */
+.wf-detail-title:focus { outline: none; }
+.wf-detail-subtitle { color: var(--secondary); font: var(--subhead); letter-spacing: -0.24px; }
+/* Small plain buttons: their text, not their 14 px pill padding, meets the card's content edge. */
+.wf-detail-tools { display: flex; gap: var(--space-half); flex-shrink: 0; align-self: center; margin-inline-end: -14px; }
+.wf-back {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  justify-self: start;
+  margin-left: calc(-1 * var(--space-1));
+  padding: 4px var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--accent);
+  font: var(--body);
+  cursor: pointer;
+}
+.wf-back svg { width: 12px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
+
+/* "What this does", in plain words. */
+.wf-explain {
+  padding: 12px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  font: var(--callout);
+  letter-spacing: -0.32px;
+}
+.wf-explain strong { font-weight: 600; }
+
+.wf-form { display: grid; gap: var(--space-3); }
+.wf-field { display: grid; gap: var(--space-1); min-width: 0; }
+.wf-field-label { font: var(--subhead); font-weight: 600; letter-spacing: -0.24px; }
+.wf-field-hint { color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
+.wf-field-error { color: var(--failure); font: var(--footnote); letter-spacing: -0.08px; }
+.wf-field .select[aria-invalid="true"] { box-shadow: 0 0 0 2px var(--failure); }
+.wf-input-row { display: flex; align-items: center; gap: var(--space-1); }
+.wf-input-row .input { flex: 1; min-width: 0; }
+.wf-suffix { color: var(--secondary); font: var(--body); }
+.wf-number { max-width: 120px; }
+.wf-readonly {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  color: var(--secondary);
+  overflow-wrap: anywhere;
+}
+.wf-readonly a { overflow-wrap: anywhere; }
+
+/* A segmented control as wide as a form field. */
+.wf-segmented { display: flex; width: 100%; min-height: 36px; }
+.wf-segmented .segment { flex: 1; min-width: 0; padding-inline: 6px; }
+.wf-segmented .segment:disabled { color: var(--tertiary); cursor: default; }
+
+/* Radio cards: a choice and what it means. */
+.wf-choices { display: grid; gap: var(--space-1); margin: 0; padding: 0; border: 0; min-width: 0; }
+.wf-choice {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  box-shadow: inset 0 0 0 1.5px transparent;
+  transition: box-shadow 160ms ease, background-color 160ms ease;
+}
+.wf-choice-main {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.wf-choice:has(> .wf-choice-main .wf-radio:checked) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.wf-choice:has(> .wf-choice-main .wf-radio:disabled) .wf-choice-main { cursor: default; }
+.wf-choice:has(> .wf-choice-main .wf-radio:disabled) .wf-choice-title { color: var(--tertiary); }
+.wf-choice:has(> .wf-choice-main .wf-radio:focus-visible) { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.wf-radio {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--tertiary);
+  cursor: inherit;
+}
+.wf-radio:focus-visible { outline: none; }
+.wf-radio::after {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-text);
+  transform: scale(0);
+  transition: transform 160ms var(--ease-out);
+}
+.wf-radio:checked { background: var(--accent); box-shadow: none; }
+.wf-radio:checked::after { transform: scale(1); }
+/* The radio's 22 px box centred on the title's 22 px line. */
+.wf-choice-text { display: grid; gap: 2px; min-width: 0; }
+.wf-choice-title { font: var(--headline); letter-spacing: -0.41px; }
+.wf-choice-detail { color: var(--secondary); font: var(--subhead); letter-spacing: -0.24px; }
+.wf-choice-extra { min-width: 0; margin: calc(-1 * var(--space-half)) 14px 14px 48px; }
+
+/* A checklist (TestFlight groups, tools): rows with a checkbox, in one grouped box. */
+.wf-checklist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  overflow: hidden;
+}
+.wf-checklist > li { position: relative; }
+.wf-checklist > li + li::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 46px;
+  right: 0;
+  border-top: 0.5px solid var(--separator);
+}
+.wf-check {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.wf-check:has(input:disabled) { cursor: default; color: var(--tertiary); }
+.wf-check-text { display: grid; min-width: 0; }
+.wf-check-title { font: var(--body); overflow-wrap: anywhere; }
+.wf-check-detail { color: var(--secondary); font: var(--footnote); }
+.wf-check-tag { color: var(--secondary); font: var(--footnote); white-space: nowrap; }
+.wf-check-tag-warning { color: var(--failure); font-weight: 600; }
+.wf-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1.5px var(--tertiary);
+  cursor: inherit;
+}
+.wf-checkbox::after {
+  content: "";
+  width: 6px;
+  height: 11px;
+  margin-top: -2px;
+  border: solid var(--accent-text);
+  border-width: 0 2.2px 2.2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 140ms var(--ease-out);
+}
+.wf-checkbox:checked { background: var(--accent); box-shadow: none; }
+.wf-checkbox:checked::after { transform: rotate(45deg) scale(1); }
+.wf-checkbox:disabled { opacity: 0.5; }
+.wf-check:has(input:focus-visible) { outline: 3px solid var(--focus-ring); outline-offset: -3px; border-radius: var(--radius-sm); }
+.wf-checkbox:focus-visible { outline: none; }
+
+/* The "+ New Group" row and its inline form. */
+.wf-add-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: var(--body);
+  text-align: left;
+  cursor: pointer;
+}
+.wf-add-row:hover { background: var(--fill); }
+.wf-add-row:focus-visible { outline-offset: -3px; }
+.wf-add-row svg { justify-self: center; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; }
+.wf-new-group { display: grid; gap: var(--space-1); padding: 8px 12px 12px 46px; }
+.wf-new-group .input { background: var(--card); }
+.wf-new-group-actions { display: flex; justify-content: flex-end; gap: var(--space-1); }
+
+.wf-status-line { display: flex; align-items: center; gap: var(--space-1); color: var(--secondary); font: var(--footnote); }
+.wf-status-line .spinner { width: 16px; height: 16px; border-width: 2px; }
+.wf-note { color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
+.wf-note-warning { color: var(--text); }
+.wf-note-warning::before { content: "⚠︎ "; color: var(--warning); }
+
+/* Switch rows inside the editor, in one grouped box. */
+.wf-switches { display: grid; border-radius: var(--radius-sm); background: var(--fill); }
+.wf-switches .switch-field { padding: 12px; }
+.wf-switches .switch-field + .switch-field::before { left: 12px; }
+.wf-dependent-note { padding: 0 12px 12px; color: var(--secondary); font: var(--footnote); }
+
+/* Facts: label and value on one baseline. */
+.wf-facts { display: grid; margin: 0; border-radius: var(--radius-sm); background: var(--fill); }
+.wf-fact {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 11px 12px;
+}
+.wf-fact + .wf-fact::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; border-top: 0.5px solid var(--separator); }
+.wf-fact dt { color: var(--secondary); font: var(--subhead); letter-spacing: -0.24px; }
+.wf-fact dd { margin: 0; font: var(--subhead); letter-spacing: -0.24px; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+
+/* Start conditions: one live row, the rest to come. */
+.wf-conditions .wf-check:has(input:disabled) .wf-check-title { color: var(--tertiary); }
+
+/* MARK: Save bar */
+
+.wf-savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 calc(-1 * var(--gutter));
+  padding: 12px var(--gutter);
+  background: var(--header-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-top: 0.5px solid var(--separator);
+}
+.wf-savebar-status { flex: 1; min-width: 0; color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
+.wf-savebar-status.wf-has-problems { color: var(--failure); }
+.wf-savebar-actions { display: flex; align-items: center; gap: var(--space-1); flex-shrink: 0; }
+
+/* MARK: YAML sheet */
+
+.wf-yaml {
+  margin: 0;
+  max-height: 50vh;
+  padding: 12px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* MARK: Start */
+
+.wf-start { display: grid; justify-items: center; gap: var(--space-1); padding: var(--space-6) var(--space-3); text-align: center; }
+.wf-start .wf-tile { --wf-tile: 56px; width: 56px; height: 56px; border-radius: 14px; margin-bottom: var(--space-1); }
+.wf-start .wf-tile svg { width: 32px; height: 32px; }
+.wf-start-title { font: var(--title-3); letter-spacing: 0.38px; }
+.wf-start-message { max-width: 44ch; color: var(--secondary); font: var(--callout); letter-spacing: -0.32px; }
+.wf-start-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-1); margin-top: var(--space-2); }
+
+/* MARK: Wizard */
+
+.wf-wizard { display: grid; align-content: start; gap: var(--space-3); min-width: 0; }
+/* One height for every step, so the centred sheet doesn't jump between them. */
+@media (min-width: 640px) { .wf-wizard { min-height: 480px; } }
+.wf-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--secondary);
+  font: var(--footnote);
+  font-weight: 500;
+}
+.wf-step { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.wf-step + .wf-step::before { content: ""; width: 16px; height: 1px; margin-right: 2px; background: var(--separator); }
+.wf-step-number {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--fill);
+  font: 600 12px/1 var(--font);
+  font-variant-numeric: tabular-nums;
+}
+.wf-step-number svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.wf-step-current { color: var(--text); font-weight: 600; }
+.wf-step-current .wf-step-number { background: var(--accent); color: var(--accent-text); }
+.wf-step-done .wf-step-number { background: var(--success); color: #ffffff; }
+.wf-step-skipped { color: var(--tertiary); }
+.wf-wizard-intro { color: var(--secondary); font: var(--callout); letter-spacing: -0.32px; }
+.wf-wizard-loading { display: grid; justify-items: center; gap: var(--space-2); padding: var(--space-6) 0; color: var(--secondary); }
+
+/* One scheme: what it is, then what Hangar does with it. */
+.wf-targets { display: grid; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.wf-target {
+  display: grid;
+  grid-template-columns: var(--wf-tile) minmax(0, 1fr);
+  column-gap: var(--wf-row-gap);
+  row-gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--fill);
+}
+.wf-target-text { display: grid; min-width: 0; }
+.wf-target-title { font: var(--headline); letter-spacing: -0.41px; overflow-wrap: anywhere; }
+.wf-target-detail { color: var(--secondary); font: var(--footnote); }
+.wf-target-options { grid-column: 2; display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.wf-target-outcome { grid-column: 2; color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
+.wf-target-outcome.wf-off { color: var(--tertiary); }
+
+/* A toggle that reads as a labelled pill: "✓ Archive". */
+.wf-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 14px 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--separator);
+  font: var(--subhead);
+  font-weight: 500;
+  letter-spacing: -0.24px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+.wf-pill input {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--tertiary);
+  cursor: inherit;
+}
+.wf-pill input::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid currentColor;
+  border-width: 0 1.8px 1.8px 0;
+  transform: rotate(45deg) scale(0);
+}
+.wf-pill input:checked { box-shadow: none; }
+.wf-pill input:checked::after { transform: rotate(45deg) scale(1); }
+.wf-pill:has(input:checked) { background: var(--accent); color: var(--accent-text); box-shadow: none; }
+.wf-pill:has(input:disabled) { opacity: 0.45; cursor: default; }
+.wf-pill:has(input:focus-visible) { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.wf-pill input:focus-visible { outline: none; }
+
+.wf-more {
+  justify-self: start;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: var(--subhead);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+/* MARK: Narrow screens: the sidebar is the page; a row pushes its detail. */
+
+@media (max-width: 899.98px) {
+  .wf-editor { grid-template-columns: minmax(0, 1fr); }
+  .wf-editor[data-view="list"] .wf-detail { display: none; }
+  .wf-editor[data-view="detail"] .wf-sidebar { display: none; }
+  .wf-row-chevron { display: block; }
+  .wf-row[aria-current="true"] { background: none; color: inherit; }
+  .wf-row[aria-current="true"] .wf-row-detail { color: var(--secondary); }
+  .wf-row[aria-current="true"] .wf-row-problem { background: var(--failure); color: #ffffff; }
+  .wf-rows > li:has(.wf-row[aria-current="true"]) + li::before,
+  .wf-rows > li:has(.wf-row[aria-current="true"])::before { border-color: var(--separator); }
+  .wf-rows > li:first-child::before { border-color: transparent; }
+  .wf-back { display: inline-flex; }
+  .wf-detail { padding: var(--space-2); }
+}
+
+@media (max-width: 639.98px) {
+  .wf-savebar { bottom: calc(var(--tab-bar-height) + var(--safe-bottom)); }
+  .wf-page .page-heading { flex-basis: 100%; }
+  .wf-page .page-actions { width: 100%; margin-top: 0; }
+  .wf-header-actions { width: 100%; }
+  .wf-header-actions .wf-switcher { flex: 1; }
+  .wf-menu { right: 0; width: min(300px, calc(100vw - 2 * var(--gutter))); }
+  .wf-detail-header .wf-tile { width: 32px; height: 32px; border-radius: 8px; }
+  .wf-detail-header .wf-tile svg { width: 20px; height: 20px; }
+  /* The item's buttons go on their own line under the title, their text on the title's edge. */
+  .wf-detail-header { flex-wrap: wrap; row-gap: var(--space-1); }
+  .wf-detail-tools { flex-basis: calc(100% - 34px); margin-inline: 34px 0; }
+  .wf-target-options .wf-pill { flex: 1; justify-content: center; }
+  .wf-steps .wf-step-label { display: none; }
+  .wf-steps .wf-step-current .wf-step-label { display: inline; }
+}
+
+.wf-destructive { color: var(--failure); }
+.wf-detail-problems:empty { display: none; }
+.wf-switches .input, .wf-checklist .input { background: var(--card); }
