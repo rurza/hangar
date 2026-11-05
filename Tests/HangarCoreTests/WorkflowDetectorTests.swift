@@ -249,9 +249,10 @@ private let batFi = Fixture(
             WorkflowAction(scheme: "LegiloMobile", platform: .iOS, export: .appStoreConnect),
         ])
         #expect(suggestion.schemes == [
-            DetectedScheme(name: "Legilo", platform: .macOS, isApplication: true),
+            DetectedScheme(name: "Legilo", platform: .macOS, isApplication: true, hasTests: true),
             DetectedScheme(name: "LegiloMobile", platform: .iOS, isApplication: true),
         ])
+        #expect(suggestion.projects == ["Legilo.xcodeproj"])
         #expect(suggestion.commit == "abc123")
         #expect(suggestion.notes.contains { $0.contains("ci_post_clone.sh") && $0.contains("XcodeGen") })
         #expect(suggestion.notes.contains { $0.contains("project.yml") })
@@ -292,7 +293,7 @@ private let batFi = Fixture(
             WorkflowAction(scheme: "Companion", platform: .iOS, export: .appStoreConnect),
         ])
         #expect(suggestion.schemes == [
-            DetectedScheme(name: "BatFi", platform: .macOS, isApplication: true),
+            DetectedScheme(name: "BatFi", platform: .macOS, isApplication: true, hasTests: true),
             DetectedScheme(name: "BatFiKit", platform: .macOS, isApplication: false),
             DetectedScheme(name: "BatFiTests", platform: .macOS, isApplication: false),
             DetectedScheme(name: "Companion", platform: .iOS, isApplication: true),
@@ -453,7 +454,7 @@ private let batFi = Fixture(
             DetectedApp(
                 name: "Legilo", bundleIDs: ["software.micropixels.legilo"], platforms: [.macOS, .iOS],
                 schemes: [
-                    DetectedScheme(name: "Legilo", platform: .macOS, isApplication: true),
+                    DetectedScheme(name: "Legilo", platform: .macOS, isApplication: true, hasTests: true),
                     DetectedScheme(name: "LegiloMobile", platform: .iOS, isApplication: true),
                 ],
                 icon: DetectedIcon(path: "App/LegiloUI/legilo.icon", kind: .iconcomposer)),
@@ -604,6 +605,49 @@ private let batFi = Fixture(
         #expect(try WorkflowDetector.suggest(tree: fixture.tree, files: files, machines: []).notes.contains { $0.contains("builds 2 apps") })
         #expect(try !WorkflowDetector.suggest(tree: fixture.tree, files: files, machines: [], bundleIDs: ["com.a"]).notes.contains { $0.contains("builds 2 apps") })
         #expect(try WorkflowDetector.suggest(tree: fixture.tree, files: files, machines: [], bundleIDs: ["com.zzz"]).notes.contains { $0.contains("builds 2 apps") })
+    }
+
+    @Test func suggestionListsProjectsTestPlansAndWhatToTestFiles() throws {
+        let fixture = Fixture(
+            files: ["iOS/Winyl.xcodeproj/project.pbxproj": pbxproj(targets: [("T1", "Winyl", "application", "iphoneos", nil)])],
+            others: [
+                "iOS/Winyl.xcworkspace/contents.xcworkspacedata",
+                "iOS/Winyl.xcodeproj/xcshareddata/xcschemes/Winyl.xcscheme",
+                "iOS/Plans/Smoke.xctestplan", "iOS/Full.xctestplan", "Pods/Other/Pod.xctestplan",
+                "iOS/TestFlight/WhatToTest.en-US.txt", "iOS/TestFlight/WhatToTest.pl.txt", "iOS/TestFlight/notes.txt",
+                "TestFlight/WhatToTest.de.txt",
+            ])
+        let suggestion = try fixture.detect()
+        #expect(suggestion.projects == ["iOS/Winyl.xcworkspace", "iOS/Winyl.xcodeproj"])
+        #expect(suggestion.testPlans == ["Full", "Smoke"])
+        #expect(suggestion.whatToTestFiles == ["iOS/TestFlight/WhatToTest.en-US.txt", "iOS/TestFlight/WhatToTest.pl.txt"])
+    }
+
+    @Test func schemesWithTestsFromSchemeFilesAndTestTargetNames() throws {
+        let testable = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Scheme LastUpgradeVersion = "2700" version = "1.7">
+               <BuildAction><BuildActionEntries><BuildActionEntry><BuildableReference BlueprintName = "Pad"></BuildableReference></BuildActionEntry></BuildActionEntries></BuildAction>
+               <TestAction buildConfiguration = "Debug">
+                  <Testables><TestableReference skipped = "NO"><BuildableReference BlueprintName = "PadChecks"></BuildableReference></TestableReference></Testables>
+               </TestAction>
+            </Scheme>
+            """
+        let fixture = Fixture(
+            files: [
+                "App.xcodeproj/project.pbxproj": pbxproj(targets: [
+                    ("T1", "Phone", "application", "iphoneos", nil),
+                    ("T2", "Pad", "application", "iphoneos", nil),
+                    ("T3", "Watch", "application", "watchos", nil),
+                    ("T4", "PhoneUITests", "bundle.ui-testing", "iphoneos", nil),
+                    ("T5", "PadChecks", "bundle.unit-test", "iphoneos", nil),
+                ]),
+                "App.xcodeproj/xcshareddata/xcschemes/Tablet.xcscheme": testable,
+            ],
+            others: ["App.xcodeproj/xcshareddata/xcschemes/Phone.xcscheme", "App.xcodeproj/xcshareddata/xcschemes/Watch.xcscheme"])
+        let suggestion = try fixture.detect()
+        #expect(suggestion.schemes.map(\.name) == ["Phone", "Tablet", "Watch"])
+        #expect(suggestion.schemes.map(\.hasTests) == [true, true, false])
     }
 
     @Test func inspectListsEveryProject() throws {

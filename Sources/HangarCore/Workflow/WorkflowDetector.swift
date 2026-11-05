@@ -64,9 +64,18 @@ public enum WorkflowDetector {
             workspace: analysis.layout.kind == .workspace ? analysis.layout.container : nil,
             xcode: xcode, teamID: analysis.team, tools: analysis.tools, actions: analysis.actions)
         let file = WorkflowFile(version: 1, workflows: [workflowName: workflow])
+        let usable = tree.paths.filter(isUsable)
+        let testPlans = Set(usable.filter { $0.hasSuffix(".xctestplan") }.map { (($0 as NSString).lastPathComponent as NSString).deletingPathExtension })
+        let projectDirectory = analysis.layout.directory
+        let whatToTestPrefix = projectDirectory.isEmpty ? "TestFlight/WhatToTest." : "\(projectDirectory)/TestFlight/WhatToTest."
+        let whatToTestFiles = usable.filter {
+            $0.hasPrefix(whatToTestPrefix) && $0.hasSuffix(".txt") && $0.count > whatToTestPrefix.count + 4
+                && !$0.dropFirst(whatToTestPrefix.count).contains("/")
+        }
         return WorkflowSuggestion(
             commit: commit, yaml: WorkflowYAMLWriter.yaml(file), notes: notes, workflows: file,
-            schemes: analysis.schemes.sorted { $0.name < $1.name }, icon: analysis.icon, hasWorkflowFile: tree.hasWorkflowFile)
+            schemes: analysis.schemes.sorted { $0.name < $1.name }, icon: analysis.icon, hasWorkflowFile: tree.hasWorkflowFile,
+            projects: analysis.projects, testPlans: testPlans.sorted(), whatToTestFiles: whatToTestFiles.sorted())
     }
 
     /// The apps the repository builds, without App Store Connect matches (see `matchAppStoreConnect`).
@@ -78,9 +87,8 @@ public enum WorkflowDetector {
         if tree.truncated {
             notes.append("The repository is too large for GitHub to list in full, so some files may have been missed.")
         }
-        let others = analysis.layout.containers.filter { $0 != analysis.layout.container }.sorted()
         return RepositoryInspection(
-            commit: commit, apps: analysis.apps, projects: [analysis.layout.container] + others, notes: notes,
+            commit: commit, apps: analysis.apps, projects: analysis.projects, notes: notes,
             hasWorkflowFile: tree.hasWorkflowFile)
     }
 
@@ -162,6 +170,8 @@ extension WorkflowDetector {
         var settings: [String: String] = [:]
         var configFile: String?
         var isApplication: Bool? { type.map { $0.hasPrefix("application") } }
+        /// A unit or UI test bundle.
+        var isTests: Bool { type.map { $0.contains("unit-test") || $0.contains("ui-testing") } ?? false }
     }
 
     struct XcodeGenSpec {
@@ -170,6 +180,8 @@ extension WorkflowDetector {
         var targets: [Target]
         /// Declared schemes and their first build target.
         var schemes: [(name: String, target: String?)]
+        /// Declared schemes, and targets with a generated scheme, that list test targets.
+        var schemesWithTests: Set<String> = []
         var projectSettings: [String: String] = [:]
         /// The Release xcconfig, relative to project.yml.
         var projectConfigFile: String?
@@ -195,6 +207,11 @@ extension WorkflowDetector {
         var tools: [String] = []
         var icon: DetectedIcon?
         var apps: [DetectedApp] = []
+
+        /// Every workspace and project, the chosen one first.
+        var projects: [String] {
+            [layout.container] + layout.containers.filter { $0 != layout.container }.sorted()
+        }
 
         init(tree: RepositoryTree, files: [String: String]) throws(WorkflowDetectionError) {
             let paths = tree.paths.filter(WorkflowDetector.isUsable)
@@ -259,6 +276,7 @@ extension WorkflowDetector {
 
             // Schemes, each with the target it builds when known.
             var found: [(name: String, target: Target?)] = []
+            var withTests = spec?.schemesWithTests ?? []
             var platformsFromSpec = false
             if !layout.sharedSchemes.isEmpty {
                 var fetches = 0
@@ -267,6 +285,7 @@ extension WorkflowDetector {
                         found.append((scheme.name, match))
                     } else if let text = files[scheme.path] {
                         found.append((scheme.name, WorkflowDetector.blueprintName(text).flatMap(target(named:))))
+                        if text.contains("<TestableReference") { withTests.insert(scheme.name) }
                     } else {
                         if !targets.isEmpty && fetches < WorkflowDetector.maxSchemeFetches
                             && !WorkflowDetector.looksLikeNonApp(scheme.name)
@@ -298,9 +317,15 @@ extension WorkflowDetector {
                 found = [(guess, target(named: guess))]
             }
 
+            // Without a scheme file that says so, a test target named after the scheme or its target counts.
+            let testTargetNames = Set(targets.filter(\.isTests).map(\.name))
             schemes = found.map { scheme in
                 let isApplication = !WorkflowDetector.looksLikeNonApp(scheme.name) && (scheme.target?.isApplication ?? true)
-                return DetectedScheme(name: scheme.name, platform: scheme.target?.platform, isApplication: isApplication)
+                let names = [scheme.name, scheme.target?.name].compactMap { $0 }
+                let hasTests = withTests.contains(scheme.name)
+                    || names.contains { testTargetNames.contains("\($0)Tests") || testTargetNames.contains("\($0)UITests") }
+                return DetectedScheme(
+                    name: scheme.name, platform: scheme.target?.platform, isApplication: isApplication, hasTests: hasTests)
             }
             if let spec {
                 let specNames = Set(spec.targets.map(\.name))
@@ -633,14 +658,22 @@ extension WorkflowDetector {
             targets.append(target)
         }
         var schemes: [(name: String, target: String?)] = []
+        var schemesWithTests: Set<String> = []
         for (key, value) in root["schemes"]?.mapping ?? [:] {
             guard let name = key.string else { continue }
             let buildTargets = value.mapping?["build"]?.mapping?["targets"]
             let first = buildTargets?.mapping?.first?.key.string ?? buildTargets?.sequence?.first?.string
             schemes.append((name, first))
+            let testTargets = value.mapping?["test"]?.mapping?["targets"]
+            if !(testTargets?.sequence ?? []).isEmpty || !(testTargets?.mapping ?? [:]).isEmpty { schemesWithTests.insert(name) }
+        }
+        for (key, value) in root["targets"]?.mapping ?? [:] {
+            guard let name = key.string, let testTargets = value.mapping?["scheme"]?.mapping?["testTargets"]?.sequence else { continue }
+            if !testTargets.isEmpty { schemesWithTests.insert(name) }
         }
         return XcodeGenSpec(
             name: root["name"]?.string, team: projectSettings["DEVELOPMENT_TEAM"], targets: targets, schemes: schemes,
+            schemesWithTests: schemesWithTests,
             projectSettings: projectSettings, projectConfigFile: releaseConfigFile(root["configFiles"]),
             includes: (root["include"]?.sequence ?? root["include"].map { [$0] } ?? []).compactMap { $0.string ?? $0.mapping?["path"]?.string })
     }

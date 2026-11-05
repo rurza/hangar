@@ -32,11 +32,25 @@ public struct DetectedScheme: Codable, Equatable, Sendable {
     public var platform: Platform?
     /// It builds an app (not tests, a framework or an extension), so it can be archived and uploaded.
     public var isApplication: Bool
+    /// It has tests to run: its scheme lists test targets, or a test target is named after it (`<Name>Tests`).
+    public var hasTests: Bool
 
-    public init(name: String, platform: Platform?, isApplication: Bool) {
+    public init(name: String, platform: Platform?, isApplication: Bool, hasTests: Bool = false) {
         self.name = name
         self.platform = platform
         self.isApplication = isApplication
+        self.hasTests = hasTests
+    }
+
+    private enum CodingKeys: String, CodingKey { case name, platform, isApplication, hasTests }
+
+    /// A scheme from a server before `hasTests` reads it as false.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        platform = try container.decodeIfPresent(Platform.self, forKey: .platform)
+        isApplication = try container.decode(Bool.self, forKey: .isApplication)
+        hasTests = try container.decodeIfPresent(Bool.self, forKey: .hasTests) ?? false
     }
 }
 
@@ -72,10 +86,17 @@ public struct WorkflowSuggestion: Codable, Equatable, Sendable {
     public var icon: DetectedIcon?
     /// The repository has its own `.hangar.yml`, which builds use unless a workflow is defined in Hangar.
     public var hasWorkflowFile: Bool
+    /// Every workspace and project found, the one the workflow uses first.
+    public var projects: [String]
+    /// Names of the `.xctestplan` files in the repository, sorted.
+    public var testPlans: [String]
+    /// `TestFlight/WhatToTest.<locale>.txt` files next to the project, which the TestFlight post-action reads.
+    public var whatToTestFiles: [String]
 
     public init(
         commit: String, yaml: String, notes: [String], workflows: WorkflowFile, schemes: [DetectedScheme],
-        icon: DetectedIcon?, hasWorkflowFile: Bool = false
+        icon: DetectedIcon?, hasWorkflowFile: Bool = false, projects: [String] = [], testPlans: [String] = [],
+        whatToTestFiles: [String] = []
     ) {
         self.commit = commit
         self.yaml = yaml
@@ -84,9 +105,14 @@ public struct WorkflowSuggestion: Codable, Equatable, Sendable {
         self.schemes = schemes
         self.icon = icon
         self.hasWorkflowFile = hasWorkflowFile
+        self.projects = projects
+        self.testPlans = testPlans
+        self.whatToTestFiles = whatToTestFiles
     }
 
-    private enum CodingKeys: String, CodingKey { case commit, yaml, notes, workflows, schemes, icon, hasWorkflowFile }
+    private enum CodingKeys: String, CodingKey {
+        case commit, yaml, notes, workflows, schemes, icon, hasWorkflowFile, projects, testPlans, whatToTestFiles
+    }
 
     /// A response from a server before `hasWorkflowFile` reads it as false.
     public init(from decoder: any Decoder) throws {
@@ -98,6 +124,9 @@ public struct WorkflowSuggestion: Codable, Equatable, Sendable {
         schemes = try container.decode([DetectedScheme].self, forKey: .schemes)
         icon = try container.decodeIfPresent(DetectedIcon.self, forKey: .icon)
         hasWorkflowFile = try container.decodeIfPresent(Bool.self, forKey: .hasWorkflowFile) ?? false
+        projects = try container.decodeIfPresent([String].self, forKey: .projects) ?? []
+        testPlans = try container.decodeIfPresent([String].self, forKey: .testPlans) ?? []
+        whatToTestFiles = try container.decodeIfPresent([String].self, forKey: .whatToTestFiles) ?? []
     }
 }
 
