@@ -26,7 +26,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /variables` | | `200` `[VariableSummary]` (global scope) |
 | `PUT /variables/{name}` | `VariableInput` | `204` |
 | `DELETE /variables/{name}` | | `204` |
-| `GET /apps/{id}/workflow-source` | | `200` `WorkflowSourceStatus` `{stored, repositoryHasWorkflowFile?}`: whether a workflow is defined in Hangar and, without one, whether the repository has a `.hangar.yml` at its default branch (with the app's token). The repository's answer is cached for 10 minutes per app and forgotten when the app's workflow file is stored or deleted; `repositoryHasWorkflowFile` is absent when GitHub could not be asked (not cached) or a workflow is stored (not asked) |
+| `GET /apps/{id}/workflow-source?repository=` | `repository=1` asks the repository even when a workflow is stored | `200` `WorkflowSourceStatus` `{stored, repositoryHasWorkflowFile?}`: whether a workflow is defined in Hangar and, without one, whether the repository has a `.hangar.yml` at its default branch (with the app's token). The repository's answer is cached for 10 minutes per app and forgotten when the app's workflow file is stored or deleted; `repositoryHasWorkflowFile` is absent when GitHub could not be asked (not cached) or a workflow is stored (not asked) |
 | `GET /apps/{id}/workflow-file` | | `200` `StoredWorkflowFile` `{yaml, workflows, updatedAt}`; `404` `workflow_file_not_found` when the app has none |
 | `PUT /apps/{id}/workflow-file` | `PutWorkflowFileRequest` `{yaml}` | `200` `StoredWorkflowFile`; the YAML is parsed first and `400` `invalid_workflow_file` stores nothing (also above 64 KB) |
 | `DELETE /apps/{id}/workflow-file` | | `204`; the repository's `.hangar.yml` is used again |
