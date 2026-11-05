@@ -23,6 +23,8 @@ enum PreparationError: Error, Equatable, CustomStringConvertible {
     case appStoreConnectKeyMissing
     case noSimulator(platform: String, machine: String)
     case simulatorNotFound(name: String, platform: String, machine: String, available: [String])
+    case keychainNotReady(reason: String, machine: String)
+    case teamKeyRequired(machine: String)
 
     var description: String {
         switch self {
@@ -32,6 +34,10 @@ enum PreparationError: Error, Equatable, CustomStringConvertible {
             "No \(platform) simulator available on \(machine); install one in Xcode › Settings › Components"
         case .simulatorNotFound(let name, let platform, let machine, let available):
             "No \(platform) simulator named “\(name)” on \(machine); available: \(available.joined(separator: ", "))"
+        case .keychainNotReady(let reason, let machine): "The CI keychain on \(machine) is not ready: \(reason)"
+        case .teamKeyRequired(let machine):
+            "Signing on \(machine) needs a team App Store Connect key (with an issuer ID): its worker runs without an "
+                + "Xcode account. Add the issuer ID in Settings."
         }
     }
 }

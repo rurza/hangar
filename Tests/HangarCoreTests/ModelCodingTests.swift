@@ -129,7 +129,19 @@ struct ModelCodingTests {
         #expect(report.signingIdentities == [])
         #expect(report.xcodeAccountSignedIn == nil)
         #expect(report.runningUser == nil)
+        #expect(report.headless == nil)
+        #expect(report.keychainProblem == nil)
         #expect(report.chip == "M4")
+    }
+
+    @Test func machineReportHeadlessDetailsRoundTrip() throws {
+        let report = MachineReport(
+            macOSVersion: "26.1", xcodes: [], chip: "M4", performanceCores: 10, memoryGB: 16, freeDiskGB: 100,
+            onACPower: true, tools: [:], canSignWithoutPrompt: false, runningJobIDs: [], runningUser: "hangar",
+            headless: true, keychainProblem: "the CI keychain does not unlock with its stored password")
+        let data = try JSONCoding.encoder.encode(report)
+        #expect(try JSONCoding.decoder.decode(MachineReport.self, from: data) == report)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""headless":true"#))
     }
 
     @Test func machineReportRunningUserRoundTrips() throws {

@@ -1,13 +1,6 @@
 import Darwin
 import Foundation
-
-/// A value that must never be printed: the `hangar` account's password. Its descriptions are redacted.
-public struct SensitiveText: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
-    public let value: String
-    public init(_ value: String) { self.value = value }
-    public var description: String { "<redacted>" }
-    public var debugDescription: String { "<redacted>" }
-}
+import HangarCore
 
 /// One command `hangar-worker isolate` runs. Every account, file and launchd change goes through this type, so a test
 /// can assert the whole sequence and `--dry-run` can print it without running it.

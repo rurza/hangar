@@ -26,11 +26,11 @@ import Testing
 
     static func doctor(
         _ runner: any ProcessRunner, tools: [String] = [], clock: any Clock<Duration> = ContinuousClock(),
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init, keychain: CIKeychain? = nil
     ) -> Doctor {
         Doctor(
             runner: runner, locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: "/nonexistent"),
-            knownTools: tools, dataDirectory: NSTemporaryDirectory(), clock: clock, now: now)
+            knownTools: tools, dataDirectory: NSTemporaryDirectory(), clock: clock, now: now, keychain: keychain)
     }
 
     static func isSimctl(_ command: ProcessCommand) -> Bool { command.arguments.starts(with: ["simctl"]) }
@@ -174,6 +174,58 @@ import Testing
         runner.script({ $0.executable.hasSuffix("security") }, lines: [Self.identityLine])
         runner.script({ $0.executable.hasSuffix("codesign") }, lines: ["errSecInternalComponent"], exitCode: 1)
         #expect(await Self.doctor(runner).report(runningJobIDs: []).canSignWithoutPrompt == false)
+    }
+
+    // MARK: Headless
+
+    static func isFindIdentity(_ command: ProcessCommand) -> Bool { command.arguments.first == "find-identity" }
+
+    @Test func aHeadlessWorkerWithAReadyKeychainCanSignBeforeItsFirstArchiveAndHasNoXcodeAccount() async throws {
+        let keychain = try CIKeychainTests.Fixture()
+        defer { keychain.cleanUp() }
+        let runner = Self.scriptedRunner()
+        runner.script(Self.isFindIdentity, lines: ["     0 valid identities found"])
+        let report = await Self.doctor(runner, keychain: keychain.keychain).report(runningJobIDs: [])
+        #expect(report.headless == true)
+        #expect(report.canSignWithoutPrompt, "the first archive creates the identity, so the machine must get it")
+        #expect(report.keychainProblem == nil)
+        #expect(report.xcodeAccountSignedIn == false)
+        #expect(!runner.commands.contains { $0.executable.hasSuffix("defaults") })
+        // Unlocked before the identities are listed.
+        let unlock = try #require(runner.commands.firstIndex { $0.standardInput?.value.hasPrefix("unlock-keychain") == true })
+        let list = try #require(runner.commands.firstIndex(where: Self.isFindIdentity))
+        #expect(unlock < list)
+    }
+
+    @Test func aHeadlessWorkerWhoseKeychainDoesNotUnlockCannotSignAndSaysWhy() async throws {
+        let keychain = try CIKeychainTests.Fixture()
+        defer { keychain.cleanUp() }
+        let runner = Self.scriptedRunner()
+        runner.script({ $0.standardInput?.value.hasPrefix("unlock-keychain") == true }, lines: [], exitCode: 51)
+        let report = await Self.doctor(runner, keychain: keychain.keychain).report(runningJobIDs: [])
+        #expect(!report.canSignWithoutPrompt)
+        #expect(report.keychainProblem == CIKeychainError.wrongPassword.description)
+    }
+
+    @Test func aHeadlessCodesignFailureSetsThePartitionListAndTriesAgain() async throws {
+        let keychain = try CIKeychainTests.Fixture()
+        defer { keychain.cleanUp() }
+        let runner = Self.scriptedRunner()
+        runner.script(Self.isFindIdentity, lines: [Self.identityLine])
+        runner.script({ $0.executable.hasSuffix("codesign") }, lines: ["errSecInternalComponent"], exitCode: 1)
+        let report = await Self.doctor(runner, keychain: keychain.keychain).report(runningJobIDs: [])
+        #expect(!report.canSignWithoutPrompt)
+        #expect(report.keychainProblem?.hasPrefix("codesign cannot use the Apple Development key") == true)
+        let commands = runner.commands
+        let signs = commands.indices.filter { commands[$0].executable.hasSuffix("codesign") }
+        let allow = try #require(commands.firstIndex { $0.standardInput?.value.hasPrefix("set-key-partition-list") == true })
+        #expect(signs.count == 2 && signs[0] < allow && allow < signs[1])
+    }
+
+    @Test func aWorkerInALoginSessionIsNotHeadless() async {
+        let report = await Self.doctor(Self.scriptedRunner()).report(runningJobIDs: [])
+        #expect(report.headless == nil)
+        #expect(report.keychainProblem == nil)
     }
 
     @Test func canSignFalseWhenCodesignTimesOut() async {

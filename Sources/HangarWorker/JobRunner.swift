@@ -13,7 +13,8 @@ import Synchronization
 ///
 /// The job's environment is prepared inside the `checkout` step, before any git command: Xcode is picked, a test's
 /// simulator chosen, the CI environment merged with the job's variables, as-file variables written, and for an
-/// archive the App Store Connect key checked.
+/// archive the App Store Connect key checked. A headless worker (one with a `CIKeychain`) unlocks its keychain first,
+/// and lets codesign use any key the archive, export or test step created, whether that step succeeded or not.
 /// When that fails, `checkout` reports `failed` and the failure reason is the preparation error alone.
 ///
 /// Secrets never leave the machine unmasked: every line goes through `JobLog`, which masks each secret value and the
@@ -34,6 +35,8 @@ public struct JobRunner: Sendable {
     private let machineName: String
     private let clock: any Clock<Duration>
     private let appStoreConnectFactory: AppStoreConnectFactory
+    /// Set when the worker runs headless; nil in a login session, where the login keychain signs.
+    private let keychain: CIKeychain?
     private let logger = Logger(label: "app.hangar.worker.job")
 
     public init(
@@ -43,8 +46,10 @@ public struct JobRunner: Sendable {
         clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
-        }
+        },
+        keychain: CIKeychain? = nil
     ) {
+        self.keychain = keychain
         self.connection = connection
         self.runner = runner
         self.locator = locator
@@ -216,14 +221,22 @@ public struct JobRunner: Sendable {
         }
     }
 
-    /// Picks Xcode, assembles the environment, writes as-file variables and checks the App Store Connect key: the key
-    /// ID and key are required, the issuer ID only for a team key, which is the only kind xcodebuild accepts.
+    /// Unlocks a headless worker's keychain, picks Xcode, assembles the environment, writes as-file variables and
+    /// checks the App Store Connect key: the key ID and key are required, the issuer ID only for a team key, which is
+    /// the only kind xcodebuild accepts. Headless, an archive needs that team key: there is no Xcode account to fall
+    /// back on (the scheduler already keeps such jobs off this Mac; this is the check for an older server).
     private func prepare(
         _ assignment: JobAssignment, layout: WorkspaceLayout, materializer: SecretsMaterializer,
         log: @escaping @Sendable (String) -> Void
     ) async throws -> Prepared {
         let workflow = assignment.workflow
         let action = assignment.job.action
+        if let keychain {
+            do { try await keychain.prepare(runner: runner) } catch {
+                throw PreparationError.keychainNotReady(reason: String(describing: error), machine: machineName)
+            }
+            log("unlocked the CI keychain (\(keychain.path))")
+        }
         guard let xcode = XcodeVersion.best(try await locator.installed(), requested: workflow.xcode) else {
             throw PreparationError.xcodeNotInstalled(workflow.xcode)
         }
@@ -261,7 +274,10 @@ public struct JobRunner: Sendable {
             && Self.nonEmpty(merged.env["HANGAR_ASC_KEY_PATH"]) != nil
         if action.kind == .archive, !keyConfigured { throw PreparationError.appStoreConnectKeyMissing }
         let key = ASCKeyArguments(environment: merged.env)
-        if key == nil, action.kind == .archive { log("No team API key; xcodebuild signs with the Xcode account on this Mac.") }
+        if key == nil, action.kind == .archive {
+            if keychain != nil { throw PreparationError.teamKeyRequired(machine: machineName) }
+            log("No team API key; xcodebuild signs with the Xcode account on this Mac.")
+        }
         let secretNames = Set(assignment.environment.filter(\.isSecret).map(\.name))
         return Prepared(
             environment: merged.env, xcodebuildEnvironment: merged.env.filter { !secretNames.contains($0.key) },
@@ -321,23 +337,27 @@ public struct JobRunner: Sendable {
                 hooks: hooks, scripts: scripts)
             return summary?.masked(by: masker.mask).outputs ?? [:]
         }
-        await pipeline.step(StepName.archive, .xcodebuild) { [runner] in
-            try await ArchiveStep(runner: runner).run(
-                workflow: workflow, action: action, repository: layout.repository, layout: layout,
-                developerDir: prepared.developerDir, key: prepared.key, environment: prepared.xcodebuildEnvironment,
-                gitHubToken: environment["HANGAR_GITHUB_TOKEN"], log: log.lines(StepName.archive))
+        await pipeline.step(StepName.archive, .xcodebuild) { [self] in
+            try await allowingCodesign(log: log.lines(StepName.archive)) {
+                try await ArchiveStep(runner: runner).run(
+                    workflow: workflow, action: action, repository: layout.repository, layout: layout,
+                    developerDir: prepared.developerDir, key: prepared.key, environment: prepared.xcodebuildEnvironment,
+                    gitHubToken: environment["HANGAR_GITHUB_TOKEN"], log: log.lines(StepName.archive))
+            }
         }
         await pipeline.step(StepName.stamp) {
             try BuildNumberStamper().stamp(
                 archivePath: archivePath, buildNumber: assignment.buildNumber, log: log.lines(StepName.stamp))
         }
         guard let export = action.export else { preconditionFailure("the parser requires an archive's export") }
-        let exported = await pipeline.step(StepName.export, .xcodebuild) { [runner] in
-            try await ExportStep(runner: runner).run(
-                archivePath: archivePath, method: export, destination: "export", exportPath: layout.export,
-                jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
-                key: prepared.key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
-                log: log.lines(StepName.export))
+        let exported = await pipeline.step(StepName.export, .xcodebuild) { [self] in
+            try await allowingCodesign(log: log.lines(StepName.export)) {
+                try await ExportStep(runner: runner).run(
+                    archivePath: archivePath, method: export, destination: "export", exportPath: layout.export,
+                    jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
+                    key: prepared.key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
+                    log: log.lines(StepName.export))
+            }
         }
         let additions = CIEnvironment.postXcodebuildAdditions(
             exitCode: pipeline.xcodebuildExitCode ?? 0, action: action,
@@ -387,12 +407,14 @@ public struct JobRunner: Sendable {
     ) async -> TestSummary? {
         let action = assignment.job.action
         let summary = Captured<TestSummary?>(nil)
-        await pipeline.step(StepName.test, .xcodebuild) { [runner] in
-            let run = try await TestStep(runner: runner).run(
-                workflow: assignment.workflow, action: action, repository: layout.repository, layout: layout,
-                developerDir: prepared.developerDir, destination: destination, key: prepared.key,
-                environment: prepared.xcodebuildEnvironment, gitHubToken: prepared.environment["HANGAR_GITHUB_TOKEN"],
-                log: log.lines(StepName.test))
+        await pipeline.step(StepName.test, .xcodebuild) { [self] in
+            let run = try await allowingCodesign(log: log.lines(StepName.test)) {
+                try await TestStep(runner: runner).run(
+                    workflow: assignment.workflow, action: action, repository: layout.repository, layout: layout,
+                    developerDir: prepared.developerDir, destination: destination, key: prepared.key,
+                    environment: prepared.xcodebuildEnvironment, gitHubToken: prepared.environment["HANGAR_GITHUB_TOKEN"],
+                    log: log.lines(StepName.test))
+            }
             summary.set(run.summary)
             try run.check()
         }
@@ -405,6 +427,24 @@ public struct JobRunner: Sendable {
                 log: log.lines(StepName.postXcodebuild))
         }
         return summary.get()
+    }
+
+    /// Runs `body`, an xcodebuild step with `-allowProvisioningUpdates`, which may add a signing key to the default
+    /// keychain. Headless, the keychain's partition list is then set again so codesign can use that key without a
+    /// prompt; also after a failure, so a key the failed run created works for the next one. A failure to set it is a
+    /// warning: the step's own result stands.
+    private func allowingCodesign<Value: Sendable>(
+        log: @escaping @Sendable (String) -> Void, _ body: () async throws -> Value
+    ) async throws -> Value {
+        guard let keychain else { return try await body() }
+        let result: Result<Value, any Error>
+        do { result = .success(try await body()) } catch { result = .failure(error) }
+        if !Task.isCancelled {
+            do { try await keychain.allowCodesign(runner: runner) } catch {
+                log("warning: could not let codesign use new signing keys: \(error)")
+            }
+        }
+        return try result.get()
     }
 
     /// Credentials from the reserved variables; the private key is read from the file `HANGAR_ASC_KEY_PATH` names,

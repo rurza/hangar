@@ -9,16 +9,20 @@ public struct ProcessCommand: Sendable, Equatable {
     public var currentDirectory: String?
     /// Sends stderr to /dev/null, for tools whose stdout is parsed (JSON from `simctl` or `xcresulttool`).
     public var discardsStandardError: Bool
+    /// Written to the child's standard input, which is then closed; nil gives it /dev/null. For a password a tool
+    /// would otherwise take on its command line (`security -i`).
+    public var standardInput: SensitiveText?
 
     public init(
         executable: String, arguments: [String], environment: [String: String] = [:], currentDirectory: String? = nil,
-        discardsStandardError: Bool = false
+        discardsStandardError: Bool = false, standardInput: SensitiveText? = nil
     ) {
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
         self.currentDirectory = currentDirectory
         self.discardsStandardError = discardsStandardError
+        self.standardInput = standardInput
     }
 }
 
@@ -106,7 +110,8 @@ extension LiveProcessRunner {
             let pipe = Pipe()
             process.standardOutput = pipe
             process.standardError = command.discardsStandardError ? FileHandle.nullDevice : pipe
-            process.standardInput = FileHandle.nullDevice
+            let input = command.standardInput.map { _ in Pipe() }
+            process.standardInput = input ?? FileHandle.nullDevice
             let handle = pipe.fileHandleForReading
 
             state.withLock {
@@ -131,6 +136,12 @@ extension LiveProcessRunner {
                 }
                 continuation?.resume(throwing: error)
                 return
+            }
+            if let input, let text = command.standardInput {
+                // Small (a password line), so it fits the pipe's buffer and the write does not wait for the child.
+                let writer = input.fileHandleForWriting
+                try? writer.write(contentsOf: Data(text.value.utf8))
+                try? writer.close()
             }
             // Cancellation may have arrived before the process existed.
             if state.withLock({ $0.cancelled }) { cancel() }

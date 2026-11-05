@@ -1,4 +1,5 @@
 import Foundation
+import HangarCore
 import OpenDirectory
 import Security
 
@@ -80,7 +81,8 @@ public struct OpenDirectoryPasswordVerifier: AccountPasswordVerifier {
 }
 
 /// Five groups of four lowercase letters and digits, without look-alikes (0/o, 1/l/i): about 100 bits, and easy
-/// to type once at the login window. From the system's cryptographic generator.
+/// to type in an emergency. From the system's cryptographic generator. Also the CI keychain's password, which
+/// `security -i` then takes without quoting.
 public struct RandomPasswordGenerator: PasswordGenerating {
     public static let alphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
     public static let groups = 5

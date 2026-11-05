@@ -43,12 +43,16 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             let locator = XcodeLocator(runner: runner)
             let connection = HTTPServerConnection(baseURL: configuration.serverURL, token: configuration.token)
             let work = configuration.resolvedWorkDirectory
+            // Headless (the hangar user's LaunchDaemon, set up by isolate): signs with its own CI keychain.
+            let keychain = CIKeychain.installed()
             let loop = WorkerLoop(
                 configuration: configuration, connection: connection,
-                doctor: HangarWorker.Doctor(runner: runner, locator: locator, dataDirectory: work),
-                jobRunner: JobRunner(connection: connection, runner: runner, locator: locator, dataDirectory: work))
+                doctor: HangarWorker.Doctor(runner: runner, locator: locator, dataDirectory: work, keychain: keychain),
+                jobRunner: JobRunner(
+                    connection: connection, runner: runner, locator: locator, dataDirectory: work, keychain: keychain))
             logger.info("worker started", metadata: [
                 "server": "\(configuration.serverURL)", "version": "\(JobRunner.workerVersion)", "work": "\(work)",
+                "keychain": "\(keychain?.path ?? "login")",
             ])
             let signals = Self.stopOnSignals(loop)
             await loop.run()
@@ -77,7 +81,8 @@ struct HangarWorkerCommand: AsyncParsableCommand {
 
         func run() async throws {
             let runner = LiveProcessRunner()
-            let doctor = HangarWorker.Doctor(runner: runner, locator: XcodeLocator(runner: runner))
+            let doctor = HangarWorker.Doctor(
+                runner: runner, locator: XcodeLocator(runner: runner), keychain: CIKeychain.installed())
             let encoder = JSONCoding.encoder
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(await doctor.report(runningJobIDs: []))
@@ -157,11 +162,13 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             discussion: """
                 Run it in Terminal as an administrator, without sudo; it asks for your password when it needs sudo. \
                 It creates the hangar user with a generated password (shown once and saved in your login keychain \
-                as app.hangar.worker-account), copies the worker, its configuration (the same machine token) and \
-                its build cache into that user, locks the user's home to 0700 and installs its launch agent. Then it \
-                waits for you to log in as hangar once with fast user switching, confirms the worker runs and \
-                reaches the server as hangar, and removes this user's agent and configuration. Neither Hangar nor \
-                the worker keeps the password. Running it again picks up where it stopped.
+                as app.hangar.worker-account; nobody logs in as hangar, so it is only for emergencies), copies the \
+                worker, its configuration (the same machine token) and its build cache into that user, locks the \
+                user's home to 0700, creates hangar's CI keychain (its password in a 0600 file in that home) and \
+                installs the worker as a LaunchDaemon that runs as hangar from boot, with no login. It confirms the \
+                worker runs and reaches the server as hangar, then removes this user's agent and configuration. A \
+                hangar user set up by an older version (a launch agent and a login) is moved to the LaunchDaemon. \
+                Running it again picks up where it stopped.
                 """)
 
         @Flag(help: "Print the steps instead of doing them. Nothing runs with sudo.")
@@ -174,8 +181,6 @@ struct HangarWorkerCommand: AsyncParsableCommand {
         var serverData: String?
         @Flag(help: "Give an existing hangar user a new generated password.")
         var resetPassword = false
-        @Flag(help: "Do not wait for the graphical login; run this again afterwards to finish.")
-        var noWait = false
 
         func run() async throws {
             let probe = TerminalRunner()
@@ -191,7 +196,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 invoker: invoker,
                 options: IsolationOptions(
                     dryRun: dryRun, sourceConfig: config, binary: binary, serverData: serverData,
-                    resetPassword: resetPassword, noWait: noWait),
+                    resetPassword: resetPassword),
                 dependencies: .init(
                     runner: dryRun ? DryRunRunner(print: say) : TerminalRunner(),
                     passwords: LoginKeychainPasswordStore(), verifier: OpenDirectoryPasswordVerifier(),
