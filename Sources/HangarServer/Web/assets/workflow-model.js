@@ -44,7 +44,7 @@ function blankTestFlight() {
 
 function scratchWorkflow(name) {
   return {
-    key: ++nextKey, name, kind: 'project', path: '', xcode: '', team: '', tools: [], actions: [blankAction()],
+    key: ++nextKey, name, kind: 'project', path: '', xcode: '', team: '', tools: [], branches: null, actions: [blankAction()],
     testflightOn: true, testflight: blankTestFlight(), testflightIndex: 0, otherPostActions: [],
   };
 }
@@ -62,6 +62,8 @@ function fromWorkflow(name, workflow) {
     xcode: workflow.xcode ?? '',
     team: workflow.teamID ?? '',
     tools: [...(workflow.tools ?? [])],
+    // Manual start's source branches: null without `start` (any branch), 'any', or a list of names and patterns.
+    branches: startBranches(workflow.start),
     actions: (workflow.actions ?? []).map((action) => {
       const kind = action.kind === 'test' ? 'test' : 'archive';
       return {
@@ -89,11 +91,25 @@ function fromWorkflow(name, workflow) {
   };
 }
 
+function startBranches(start) {
+  if (!start) return null;
+  const branches = start.manual?.branches;
+  return Array.isArray(branches) ? [...branches] : 'any';
+}
+
+/** The first exact branch name (no `*`) of the model's source branches, or null. */
+function firstExactBranch(model) {
+  return Array.isArray(model.branches) ? model.branches.find((name) => !name.includes('*')) ?? null : null;
+}
+
 function toWorkflow(model) {
   const workflow = { [model.kind]: model.path.trim(), xcode: model.xcode.trim() };
   const team = model.team.trim();
   if (team) workflow.teamID = team;
   workflow.tools = [...model.tools];
+  if (model.branches !== null && model.branches !== undefined) {
+    workflow.start = { manual: { branches: Array.isArray(model.branches) ? [...model.branches] : 'any' } };
+  }
   workflow.actions = model.actions.map(actionToJSON);
   const postActions = [...model.otherPostActions];
   if (model.testflightOn) {
@@ -260,12 +276,13 @@ function plainText(pieces) {
  * known, the app's TestFlight group names.
  */
 function itemProblems(model, context = {}) {
-  const result = { general: [], environment: [], actions: model.actions.map(() => []), testflight: [], workflow: [] };
+  const result = { general: [], environment: [], start: [], actions: model.actions.map(() => []), testflight: [], workflow: [] };
   const name = model.name.trim();
   if (!name) result.general.push('Name the workflow.');
   else if ((context.workflowNames ?? []).includes(name)) result.general.push(`Another workflow is named “${name}”.`);
   if (!model.path.trim()) result.general.push(`Choose the ${model.kind === 'workspace' ? 'workspace' : 'project'} to build.`);
   if (!model.xcode.trim()) result.environment.push('Choose an Xcode version.');
+  result.start = Array.isArray(model.branches) && model.branches.length === 0 ? ['Add a branch, or choose Any Branch.'] : [];
   if (model.actions.length === 0) result.workflow.push('Add an action: an archive or a test.');
   model.actions.forEach((action, index) => {
     const list = result.actions[index];
@@ -290,7 +307,7 @@ function itemProblems(model, context = {}) {
 
 /** Every sentence of `itemProblems`, in sidebar order. */
 function allProblems(found) {
-  return [...found.workflow, ...found.general, ...found.environment, ...found.actions.flat(), ...found.testflight];
+  return [...found.workflow, ...found.general, ...found.environment, ...found.start, ...found.actions.flat(), ...found.testflight];
 }
 
 // MARK: The new-workflow wizard
@@ -300,8 +317,9 @@ function allProblems(found) {
  * tools; `choices` are `[{scheme, platform, archive, test}]`; `distribution` is `testflight`, `developer-id` or
  * `keep`; `groups` the TestFlight group names. Tests come first: they report quickest.
  */
-function wizardModel({ name, base, choices, distribution, groups = [] }) {
+function wizardModel({ name, base, choices, distribution, groups = [], branches = null }) {
   const model = fromWorkflow(name, { ...(base ?? {}), actions: [], postActions: [] });
+  model.branches = branches === null ? null : Array.isArray(branches) ? [...branches] : 'any';
   for (const choice of choices) {
     if (!choice.test) continue;
     model.actions.push({ ...blankAction('test'), scheme: choice.scheme, platform: choice.platform });
@@ -324,4 +342,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformName, problems, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };
+export { ACTION_KINDS, firstExactBranch, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformName, problems, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };

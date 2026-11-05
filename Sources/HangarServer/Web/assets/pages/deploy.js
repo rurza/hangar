@@ -6,7 +6,7 @@
 import { api, events, seg } from '../api.js';
 import { navigate } from '../router.js';
 import { h, replaceChildren, sheet, spinner } from '../ui.js';
-import { listText, workflowSteps } from '../workflow-summary.js';
+import { allowsBranch, listText, suggestedBranch, workflowSteps } from '../workflow-summary.js';
 
 const REF_DEBOUNCE_MS = 500;
 const CHECK_INTERVAL_MS = 15_000;
@@ -42,6 +42,8 @@ export function openDeploySheet(app) {
   let checkTimer = null;
   let branchesLoading = true;
   let branchesHint = null; // why the branches could not be listed; stays the field's hint
+  let repository = null; // RepositoryBranches: every branch, the default first
+  let refTyped = false; // the user typed the ref: the workflow's branch no longer replaces it
 
   // MARK: Fields
 
@@ -51,7 +53,7 @@ export function openDeploySheet(app) {
     class: 'input mono', type: 'text', id: 'deploy-ref', autocomplete: 'off', spellcheck: 'false',
     autocapitalize: 'off', placeholder: 'Loading branches…', list: 'deploy-branches',
     'aria-describedby': 'deploy-ref-hint',
-    onInput: () => scheduleWorkflows(),
+    onInput: () => { refTyped = true; scheduleWorkflows(); },
   });
   const refField = h('div', { class: 'field' },
     h('label', { class: 'field-label', for: 'deploy-ref' }, 'Branch'),
@@ -61,7 +63,7 @@ export function openDeploySheet(app) {
 
   const workflowSelect = h('select', {
     class: 'input select', id: 'deploy-workflow', 'aria-describedby': 'deploy-workflow-hint',
-    onChange: () => { check = null; renderWorkflowDetails(); renderWhere(); scheduleCheck(0); },
+    onChange: () => { check = null; renderWorkflowDetails(); renderWhere(); scheduleCheck(0); followWorkflowBranch(); },
   });
   const workflowHint = h('p', { class: 'field-hint', id: 'deploy-workflow-hint' });
   const workflowField = h('div', { class: 'field' },
@@ -119,8 +121,9 @@ export function openDeploySheet(app) {
       setRefError(null);
     }
     branchesLoading = false;
+    repository = branches;
     refInput.placeholder = 'main';
-    replaceChildren(branchList, (branches?.branches ?? []).map((name) => h('option', { value: name })));
+    renderBranchList();
     // Only when nothing was typed meanwhile.
     if (refInput.value.trim() === '') {
       refInput.value = branches?.defaultBranch ?? branches?.branches?.[0] ?? '';
@@ -128,6 +131,36 @@ export function openDeploySheet(app) {
       else { renderWorkflows(); update(); }
     }
     if (document.activeElement === handle.element || document.activeElement === document.body) refInput.focus();
+  }
+
+  /** The branch list offers only the selected workflow's branches (all of them for any branch), the default first. */
+  function renderBranchList() {
+    const workflow = selectedWorkflow();
+    const names = (repository?.branches ?? []).filter((name) => !workflow || allowsBranch(workflow, name));
+    replaceChildren(branchList, names.map((name) => h('option', { value: name })));
+  }
+
+  /**
+   * Until the user types a ref, it follows the selected workflow: its first exact branch, else the repository's
+   * default. A typed branch the workflow doesn't list gets a warning, not a block (tags and SHAs get none).
+   */
+  function followWorkflowBranch() {
+    const workflow = selectedWorkflow();
+    renderBranchList();
+    if (!workflow) return;
+    const ref = refInput.value.trim();
+    const wanted = suggestedBranch(workflow) ?? repository?.defaultBranch;
+    if (!refTyped && wanted && wanted !== ref) {
+      refInput.value = wanted;
+      scheduleWorkflows();
+      return;
+    }
+    if (!refError) {
+      const known = (repository?.branches ?? []).includes(ref);
+      const outside = known && !allowsBranch(workflow, ref);
+      refHint.textContent = outside ? `${ref} isn’t in this workflow’s branches.` : branchesHint ?? REF_HINT;
+      refHint.classList.toggle('field-warning', outside);
+    }
   }
 
   // MARK: Workflows at the ref
@@ -168,6 +201,7 @@ export function openDeploySheet(app) {
     workflowsLoading = false;
     renderWorkflows();
     scheduleCheck(0);
+    followWorkflowBranch();
   }
 
   function setRefError(message, invalid = Boolean(message)) {

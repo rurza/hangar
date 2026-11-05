@@ -289,6 +289,67 @@ private func yaml(project: String = "project: A.xcodeproj", actions: String = "-
         #expect(try WorkflowFileParser.parse(text) == file)
     }
 
+    @Test func manualStartListsSourceBranches() throws {
+        let start = { (text: String) in yaml(project: "project: A.xcodeproj\n    start: \(text)") }
+        let parsed = try WorkflowFileParser.parse(start(#"{ manual: { branches: [main, "release/*"] } }"#)).workflows["testflight"]
+        #expect(parsed?.start == WorkflowStart(branches: .patterns(["main", "release/*"])))
+        #expect(parsed?.suggestedBranch == "main")
+        #expect(try WorkflowFileParser.parse(start("{ manual: { branches: any } }")).workflows["testflight"]?.sourceBranches == .any)
+        // Without start: any branch, and Deploy suggests the repository's default.
+        let plain = try WorkflowFileParser.parse(yaml()).workflows["testflight"]
+        #expect(plain?.start == nil && plain?.sourceBranches == .any && plain?.suggestedBranch == nil)
+        #expect(try WorkflowFileParser.parse(start(#"{ manual: { branches: ["release/*"] } }"#)).workflows["testflight"]?.suggestedBranch == nil)
+    }
+
+    @Test(arguments: [
+        ("{ branch-changes: { branches: [main] } }", "Only manual start is supported for now"),
+        ("{ manual: { branches: [] } }", "is empty"),
+        ("{ manual: { branches: main } }", "must be 'any' or a list"),
+        ("{ manual: { branches: [main], files: any } }", "unknown key 'files'"),
+        ("[manual]", "must be a map"),
+    ])
+    func rejectsOtherStarts(start: String, message: String) {
+        do {
+            _ = try WorkflowFileParser.parse(yaml(project: "project: A.xcodeproj\n    start: \(start)"))
+            Issue.record("accepted \(start)")
+        } catch {
+            #expect(error.description.contains(message), "\(error)")
+        }
+    }
+
+    @Test func writerEmitsTheStartAndRoundTrips() throws {
+        var file = try WorkflowFileParser.parse(yaml())
+        file.workflows["testflight"]?.start = WorkflowStart(branches: .patterns(["main", "release/*", "yes", "2024"]))
+        let text = WorkflowYAMLWriter.yaml(file)
+        #expect(text.contains(#"    start: { manual: { branches: [main, "release/*", "yes", "2024"] } }"#), "\(text)")
+        #expect(try WorkflowFileParser.parse(text) == file)
+        file.workflows["testflight"]?.start = WorkflowStart(branches: .any)
+        #expect(try WorkflowFileParser.parse(WorkflowYAMLWriter.yaml(file)) == file)
+        // JSON: {"manual": {"branches": "any" | [...]}}, left out when unset.
+        let json = String(decoding: try JSONEncoder().encode(file.workflows["testflight"]!.start!), as: UTF8.self)
+        #expect(json == #"{"manual":{"branches":"any"}}"#)
+        #expect(try JSONDecoder().decode(WorkflowFile.self, from: try JSONEncoder().encode(file)) == file)
+        file.workflows["testflight"]?.start = nil
+        #expect(!String(decoding: try JSONEncoder().encode(file), as: UTF8.self).contains("start"))
+    }
+
+    @Test(arguments: [
+        ("main", "main", true), ("main", "main2", false), ("main", "Main", false),
+        ("release/*", "release/2.0", true), ("release/*", "release/2.0/hotfix", false), ("release/*", "release/", true),
+        ("release/**", "release/2.0/hotfix", true), ("v*", "v1.2.3", true), ("v*", "av1", false),
+        ("*", "feature/x", false), ("**", "feature/x", true), ("*-beta", "2.0-beta", true), ("a*b*c", "aXbYc", true),
+    ])
+    func patternMatching(pattern: String, name: String, matches: Bool) {
+        #expect(RefPattern.matches(pattern, name) == matches)
+    }
+
+    @Test func patternListsMatchAnyOfThem() {
+        #expect(RefPatterns.any.matches("anything"))
+        #expect(RefPatterns.patterns(["main", "release/*"]).matches("release/3"))
+        #expect(!RefPatterns.patterns(["main", "release/*"]).matches("develop"))
+        #expect(RefPatterns.patterns(["release/*", "main", "dev"]).exactNames == ["main", "dev"])
+    }
+
     @Test func stepNamesFollowTheKind() {
         #expect(StepName.sequence(for: WorkflowAction(scheme: "A", platform: .iOS, export: .appStoreConnect), postActions: ["testflight"]) == [
             "checkout", "post-clone", "pre-xcodebuild", "archive", "stamp", "export", "post-xcodebuild",

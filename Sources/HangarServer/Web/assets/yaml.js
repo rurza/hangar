@@ -2,7 +2,7 @@
 // `WorkflowFile`: `{version, workflows: {name: {project | workspace, xcode, teamID, tools, actions, postActions}}}`,
 // with `postActions` as `[{name, settings, requiresApproval}]` and `actions` as archives
 // `{kind: 'archive', scheme, platform, export}` (no `kind` also means an archive) or tests
-// `{kind: 'test', scheme, platform, destination?, testPlan?}`.
+// `{kind: 'test', scheme, platform, destination?, testPlan?}`, and `start` as `{manual: {branches: 'any' | [...]}}`.
 //
 // This file has no imports and ends with a single `export` line, so the round-trip test can load it in JXA
 // (`osascript -l JavaScript`) after stripping that line.
@@ -121,6 +121,12 @@ function workflowLines(name, workflow) {
   if (workflow.teamID !== undefined && workflow.teamID !== null) lines.push(`    team: ${quoted(workflow.teamID)}`);
   const tools = workflow.tools ?? [];
   if (tools.length) lines.push(`    tools: [${tools.map(string).join(', ')}]`);
+  // Manual start's source branches: `any`, or names and patterns.
+  if (workflow.start) {
+    const branches = workflow.start.manual?.branches ?? 'any';
+    const list = Array.isArray(branches) ? `[${branches.map(string).join(', ')}]` : 'any';
+    lines.push(`    start: { manual: { branches: ${list} } }`);
+  }
   lines.push('    actions:');
   for (const action of workflow.actions ?? []) lines.push(`      - ${actionLine(action)}`);
   const postActions = workflow.postActions ?? [];

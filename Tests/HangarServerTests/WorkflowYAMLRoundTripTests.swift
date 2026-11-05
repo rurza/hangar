@@ -69,12 +69,24 @@ import Testing
             postActions: [PostActionSpec(name: "testflight")]),
     ])
 
+    static let withStart = WorkflowFile(version: 1, workflows: [
+        "release": Workflow(
+            project: "Legilo.xcodeproj", xcode: "27.2",
+            actions: [WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect)],
+            start: WorkflowStart(branches: .patterns(["main", "release/*", "yes", "2024", "feature: x"]))),
+        "any": Workflow(
+            project: "Legilo.xcodeproj", xcode: "27.2",
+            actions: [WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect)],
+            start: WorkflowStart(branches: .any)),
+    ])
+
     @Test(arguments: [
         ("legilo", legilo),
         ("workspace in a subdirectory", workspaceInSubdirectory),
         ("testflight settings", testFlightSettings),
         ("strings needing quotes", needsQuotes),
         ("test actions", withTests),
+        ("manual start branches", withStart),
     ])
     func roundTrip(name: String, file: WorkflowFile) throws {
         let yaml = try Self.workflowToYAML(file)
@@ -95,6 +107,7 @@ import Testing
         ("testflight settings", testFlightSettings),
         ("strings needing quotes", needsQuotes),
         ("test actions", withTests),
+        ("manual start branches", withStart),
     ])
     func roundTripThroughTheForm(name: String, file: WorkflowFile) throws {
         let yaml = try Self.runJXA(file, "workflowToYAML(fileFromModels(modelsFromFile(input)))")
@@ -167,6 +180,27 @@ import Testing
             """), "\(yaml)")
         // Destinations and plans are quoted as the Swift writer quotes them, so both write the same file.
         #expect(yaml == WorkflowYAMLWriter.yaml(Self.withTests))
+    }
+
+    /// The JS and Swift writers write the start the same way.
+    @Test func startMatchesTheSwiftWriter() throws {
+        let yaml = try Self.workflowToYAML(Self.withStart)
+        #expect(yaml.contains(#"    start: { manual: { branches: [main, "release/*", "yes", "2024", "feature: x"] } }"#), "\(yaml)")
+        #expect(yaml.contains("    start: { manual: { branches: any } }"), "\(yaml)")
+        // The Swift writer sorts workflows by name; compare each workflow's text.
+        let swift = WorkflowYAMLWriter.yaml(Self.withStart)
+        for line in yaml.split(separator: "\n") where line.contains("start:") { #expect(swift.contains(line)) }
+    }
+
+    /// Summaries lead with the source branches, and the model knows the branch Deploy suggests.
+    @Test func summaryLeadsWithTheBranches() throws {
+        let output = try Self.runJXA(
+            json: String(decoding: try JSONEncoder().encode(Self.withStart), as: UTF8.self), files: Self.editorFiles,
+            """
+            [workflowSummary(input.workflows.release), workflowSummary(input.workflows.any),
+              firstExactBranch(modelsFromFile(input).find((m) => m.name === 'release'))].join(' | ')
+            """)
+        #expect(output == "main, release/*, yes, 2024, feature: x · Archives Legilo (macOS) · Download only | Archives Legilo (macOS) · Download only | main")
     }
 
     /// Switching an action's kind in the form keeps only the fields of the new kind.
@@ -281,7 +315,7 @@ import Testing
               return JSON.stringify(found);
             })()
             """)
-        #expect(output == #"{"general":["Another workflow is named “ci”."],"environment":["Choose an Xcode version."],"#
+        #expect(output == #"{"general":["Another workflow is named “ci”."],"environment":["Choose an Xcode version."],"start":[],"#
             + #""actions":[[],["Choose a scheme."],[],[],[],["TestFlight uploads every archive, and a Developer ID archive can’t go to TestFlight."]],"#
             + #""testflight":["The timeout is a whole number of minutes.","App Store Connect has no group named “Typo”."],"workflow":[]}"#)
     }

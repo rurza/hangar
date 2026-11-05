@@ -12,6 +12,7 @@ workflows:
     xcode: "27.2"                    # prefix match against installed Xcodes
     team: YL78V8PY6H                 # optional
     tools: [brew]                    # optional; names the worker must report
+    start: { manual: { branches: [main, "release/*"] } }   # optional; default: any branch
     actions:
       - { scheme: Legilo, platform: macos, export: app-store-connect }
       - { scheme: LegiloMobile, platform: ios, export: app-store-connect }
@@ -35,8 +36,22 @@ workflows:
 | `xcode` | yes | Quoted string, prefix-matched against installed Xcodes (`"27.2"`; unquoted `27.10` would become 27.1, so numbers are rejected). |
 | `team` | no | Apple developer team ID (quote it; numeric values are rejected). |
 | `tools` | no | Tool names the worker must report (for example `brew`). Default: none. |
+| `start` | no | How the workflow starts. Only manual start (Deploy in Hangar, `hangar deploy`, a skill) exists: `start: { manual: { branches: [main, "release/*"] } }` or `branches: any`. Without `start`, any branch. Anything else under `start` is refused with "Only manual start is supported for now". See [Start](#start). |
 | `actions` | yes | One or more archive or test actions. Each becomes one job of the build. |
 | `post-actions` | no | Steps run after each archive action succeeds, in order. Test actions have none. Default: none. |
+
+### Start
+
+`start.manual.branches` lists the branches a build may start from, like Xcode Cloud's Manual Start source branch: `any`, or a non-empty list of names and patterns. Deploy suggests the first exact name in the list (else the repository's default branch), offers only matching branches, and warns, without refusing, when you type a branch that doesn't match. A tag or a commit SHA can always be typed.
+
+Patterns (`RefPattern` in HangarCore, shared with the web UI's `branchMatches`):
+
+- A name without `*` matches exactly that branch; case matters.
+- `*` matches any characters within one level, not `/`: `release/*` matches `release/2.0`, not `release/2.0/hotfix`.
+- `**` matches across levels: `release/**` matches both, `**` matches every branch.
+- The whole name must match; nothing else is special.
+
+In JSON (the API) a workflow carries `"start": {"manual": {"branches": "any" | ["main", "release/*"]}}`, or no `start`.
 
 ### Action
 

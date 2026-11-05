@@ -71,10 +71,45 @@ function workflowSteps(workflow) {
   return steps;
 }
 
-/** One line for a list: "Archives Legilo (macOS) and LegiloMobile (iOS) · TestFlight: Internal". */
+/**
+ * Whether branch `name` matches `pattern`, as HangarCore's RefPattern: no `*` means that exact name; `*` matches
+ * within one path level (`release/*`), `**` across levels; the whole name must match.
+ */
+function branchMatches(pattern, name) {
+  const source = String(pattern).split(/(\*\*|\*)/).map((part) => {
+    if (part === '**') return '.*';
+    if (part === '*') return '[^/]*';
+    return part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }).join('');
+  return new RegExp(`^${source}$`).test(String(name));
+}
+
+/** Whether a manual build of `workflow` may start from branch `name` (any branch without a list). */
+function allowsBranch(workflow, name) {
+  const patterns = sourceBranches(workflow);
+  return patterns.length === 0 || patterns.some((pattern) => branchMatches(pattern, name));
+}
+
+/** The branch Deploy suggests: the first exact name (no `*`) of the workflow's branches, else null. */
+function suggestedBranch(workflow) {
+  return sourceBranches(workflow).find((name) => !name.includes('*')) ?? null;
+}
+
+/** The branches a manual build starts from, as a list of names and patterns; empty for any branch. */
+function sourceBranches(workflow) {
+  const branches = workflow?.start?.manual?.branches;
+  return Array.isArray(branches) ? branches : [];
+}
+
+/**
+ * One line for a list: "main · Archives Legilo (macOS) and LegiloMobile (iOS) · TestFlight: Internal", led by the
+ * source branches when the workflow names them.
+ */
 function workflowSummary(workflow) {
   const actions = workflow?.actions ?? [];
   const parts = [];
+  const branches = sourceBranches(workflow);
+  if (branches.length) parts.push(branches.join(', '));
   const tests = actions.filter(isTest);
   const archives = actions.filter((action) => !isTest(action));
   if (tests.length) parts.push(`Tests ${listText(tests.map(actionText))}`);
@@ -90,4 +125,4 @@ function workflowSummary(workflow) {
   return parts.join(' · ');
 }
 
-export { listText, platformName, workflowSteps, workflowSummary };
+export { allowsBranch, branchMatches, listText, platformName, sourceBranches, suggestedBranch, workflowSteps, workflowSummary };

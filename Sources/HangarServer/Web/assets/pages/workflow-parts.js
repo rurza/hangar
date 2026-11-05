@@ -102,6 +102,40 @@ export function checkRow({ title, detail, tag, tagWarning, checked, disabled, on
       tag ? h('span', { class: ['wf-check-tag', tagWarning && 'wf-check-tag-warning'] }, tag) : null));
 }
 
+/** A segmented control of `options` (`[value, label]`) as radios; arrow keys move the choice. `onChange(value)`. */
+export function segmented({ label, value, options, onChange }) {
+  const buttons = options.map(([optionValue, text]) => h('button', {
+    type: 'button', class: 'segment', role: 'radio', 'aria-checked': String(optionValue === value),
+    tabindex: optionValue === value ? '0' : '-1', dataset: { value: optionValue },
+    onClick: () => { if (optionValue !== value) onChange(optionValue); },
+  }, text));
+  const control = h('div', { class: 'segmented wf-segmented', role: 'radiogroup', 'aria-label': label }, buttons);
+  control.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const index = buttons.indexOf(document.activeElement);
+    if (index < 0) return;
+    event.preventDefault();
+    onChange(buttons[(index + (event.key === 'ArrowRight' ? 1 : buttons.length - 1)) % buttons.length].dataset.value);
+  });
+  return control;
+}
+
+/** The repository's branches (`GET /apps/{id}/branches`), loaded once: `{ defaultBranch, branches }`, or null. */
+export function branchesStore(base) {
+  let pending = null;
+  return {
+    state: undefined,
+    load() {
+      if (this.state !== undefined) return Promise.resolve(this.state);
+      pending ??= api.get(`${base}/branches`).then(
+        (result) => { this.state = result ?? null; return this.state; },
+        () => { this.state = null; return null; },
+      );
+      return pending;
+    },
+  };
+}
+
 // MARK: TestFlight groups
 
 /**

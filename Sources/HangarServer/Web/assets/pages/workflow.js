@@ -12,11 +12,11 @@ import {
 import { workflowToYAML } from '../yaml.js';
 import {
   PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels,
-  itemProblems, modelsFromFile, platformName, scratchWorkflow, testDestinationText, toWorkflow, uniqueName,
+  firstExactBranch, itemProblems, modelsFromFile, platformName, scratchWorkflow, testDestinationText, toWorkflow, uniqueName,
 } from '../workflow-model.js';
 import { workflowSummary } from '../workflow-summary.js';
 import {
-  betaGroupsStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, plusGlyph, tile,
+  betaGroupsStore, branchesStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, plusGlyph, segmented, tile,
 } from './workflow-parts.js';
 import { openWorkflowWizard } from './workflow-wizard.js';
 import { openDeploySheet } from './deploy.js';
@@ -67,6 +67,7 @@ function workflowEditor({ app, stored: initial, context }) {
   let suggestion = null; // WorkflowSuggestion once loaded
   let suggestionPromise = null;
   const groups = betaGroupsStore(base);
+  const branches = branchesStore(base);
 
   // MARK: Data
 
@@ -249,6 +250,7 @@ function workflowEditor({ app, stored: initial, context }) {
       app,
       loadSuggestion,
       groups,
+      branches,
       takenNames: models.map((other) => other.name.trim()),
       onBlank: () => {
         const name = uniqueName('Default', models.map((other) => other.name.trim()));
@@ -419,7 +421,11 @@ function workflowEditor({ app, stored: initial, context }) {
           detail: target.xcode.trim() ? `Xcode ${target.xcode.trim()}` : 'No Xcode version', problems: found.environment,
         }),
       ]),
-      group('Start Conditions', [row({ kind: 'start' }, { icon: 'start', tone: 'start', title: 'Manual Start', detail: 'Deploy button, CLI or a skill' })]),
+      group('Start Conditions', [row({ kind: 'start' }, {
+        icon: 'start', tone: 'start', title: 'Manual Start',
+        detail: Array.isArray(target.branches) ? target.branches.join(', ') || 'No branch' : 'Any branch',
+        problems: found.start,
+      })]),
       group('Actions', actionRows, addMenu('Add Action', actionMenuItems()), found.workflow[0] ?? 'No actions'),
       group('Post-Actions', postRows, addMenu('Add Post-Action', postActionMenuItems()), 'None'));
     if (focused) sidebar.querySelector(`[data-item="${focused}"]`)?.focus();
@@ -590,7 +596,7 @@ function workflowEditor({ app, stored: initial, context }) {
     let content;
     if (selection.kind === 'general') content = generalPane(target);
     else if (selection.kind === 'environment') content = environmentPane(target);
-    else if (selection.kind === 'start') content = startPane();
+    else if (selection.kind === 'start') content = startPane(target);
     else if (selection.kind === 'testflight') content = testFlightPane(target);
     else content = actionPane(target, selection.index);
     replaceChildren(detail,
@@ -746,17 +752,79 @@ function workflowEditor({ app, stored: initial, context }) {
 
   // MARK: Start conditions
 
-  function startPane() {
-    const later = (title) => checkRow({ title, tag: 'Coming later', checked: false, disabled: true });
+  /** Manual start, the only start condition: who can start it, and from which branches. */
+  function startPane(target) {
+    const known = branches.state; // undefined while loading, null when unknown
+    const defaultBranch = known?.defaultBranch ?? null;
+    const custom = Array.isArray(target.branches);
+    const element = h('div', { class: 'wf-form' });
+    function draw(focus) {
+      const list = custom ? target.branches : [];
+      const suggested = firstExactBranch(target) ?? defaultBranch;
+      const kind = segmented({
+        label: 'Source branch', value: Array.isArray(target.branches) ? 'custom' : 'any',
+        options: [['any', 'Any Branch'], ['custom', 'Custom Branches']],
+        onChange: (value) => {
+          target.branches = value === 'any' ? 'any' : [defaultBranch ?? 'main'];
+          renderDetail();
+          changed();
+          detail.querySelector(`.wf-segmented [data-value="${value}"]`)?.focus();
+        },
+      });
+      const rows = list.map((name, index) => h('li', { class: 'wf-pattern' },
+        h('span', { class: 'wf-pattern-name mono' }, name),
+        name === defaultBranch ? h('span', { class: 'wf-check-tag' }, 'default') : name.includes('*') ? h('span', { class: 'wf-check-tag' }, 'pattern') : null,
+        h('button', {
+          type: 'button', class: 'button button-plain button-small wf-destructive', 'aria-label': `Remove ${name}`,
+          onClick: () => { target.branches.splice(index, 1); draw('add'); changed(); },
+        }, 'Remove')));
+      // Add: a branch of the repository (the default first), or Other… for a pattern such as release/*.
+      const options = (known?.branches ?? []).filter((name) => !list.includes(name));
+      let adder;
+      const add = (value) => {
+        const name = value.trim();
+        if (!name || list.includes(name)) return;
+        target.branches.push(name);
+        draw('add');
+        changed();
+      };
+      if (custom) {
+        const select = h('select', { class: 'select', 'aria-label': 'Add a branch' },
+          h('option', { value: '' }, known === undefined ? 'Loading branches…' : 'Add a branch…'),
+          options.map((name) => h('option', { value: name }, name === defaultBranch ? `${name} (default)` : name)),
+          h('option', { value: OTHER }, 'Other: a name or pattern…'));
+        const input = h('input', {
+          class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', hidden: true,
+          placeholder: 'release/*', 'aria-label': 'Branch name or pattern',
+          onKeydown: (event) => {
+            if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); add(input.value); }
+            if (event.key === 'Escape') { event.stopPropagation(); input.hidden = true; select.value = ''; select.focus(); }
+          },
+        });
+        select.addEventListener('change', () => {
+          if (select.value === OTHER) { input.hidden = false; input.focus(); return; }
+          add(select.value);
+        });
+        adder = h('div', { class: 'wf-field' }, select, input,
+          h('p', { class: 'wf-field-hint' }, '* matches within one level (release/*), ** across levels. Return adds a typed name.'));
+      }
+      replaceChildren(element,
+        explain(suggested
+          ? ['Start builds from Hangar, the CLI or a skill. Deploy starts from ', { strong: suggested },
+            custom && list.length > 1 ? ' unless you pick another of these branches.' : custom ? '.' : ' (the default branch) unless you pick another.']
+          : ['Start builds from Hangar, the CLI or a skill, from any branch you pick.']),
+        wfField({ label: 'Source branch', control: kind }),
+        custom ? h('div', { class: 'wf-field' },
+          h('span', { class: 'wf-field-label', id: 'wf-branches-label' }, 'Branches'),
+          rows.length ? h('ul', { class: 'wf-checklist', 'aria-labelledby': 'wf-branches-label' }, rows) : null,
+          adder) : null);
+      if (focus === 'add') element.querySelector('select[aria-label="Add a branch"]')?.focus();
+    }
+    draw();
+    if (known === undefined) branches.load().then(() => { if (selection.kind === 'start' && element.isConnected) renderDetail(); });
     return {
-      header: header({ icon: 'start', title: 'Start Conditions', subtitle: 'When this workflow runs.' }),
-      body: h('div', { class: 'wf-form' },
-        h('ul', { class: 'wf-checklist wf-conditions', 'aria-label': 'Start conditions' },
-          checkRow({
-            title: 'Manual Start', detail: 'From Hangar’s Deploy button, the hangar CLI or a skill.', checked: true, disabled: true,
-          }),
-          later('Branch Changes'), later('Pull Request Changes'), later('Tag Changes'), later('On a Schedule')),
-        h('p', { class: 'wf-note' }, 'Every build starts by hand for now.')),
+      header: header({ icon: 'start', tone: 'start', title: 'Manual Start', subtitle: 'The only start condition: builds start when you deploy.' }),
+      body: element,
     };
   }
 
@@ -1113,6 +1181,7 @@ function workflowEditor({ app, stored: initial, context }) {
   function firstProblemItem(found) {
     if (found.workflow.length || found.general.length) return { kind: 'general' };
     if (found.environment.length) return { kind: 'environment' };
+    if (found.start.length) return { kind: 'start' };
     const index = found.actions.findIndex((list) => list.length);
     if (index >= 0) return { kind: 'action', index };
     return { kind: 'testflight' };

@@ -10,6 +10,7 @@ import {
 import { workflowSteps } from '../workflow-summary.js';
 import { choiceCards, groupPicker, tile } from './workflow-parts.js';
 
+const OTHER_ANY = '\u0000any';
 const STEPS = [['build', 'What to Build'], ['distribute', 'Where Builds Go'], ['review', 'Review']];
 
 /**
@@ -17,7 +18,7 @@ const STEPS = [['build', 'What to Build'], ['distribute', 'Where Builds Go'], ['
  * `takenNames` are the names of the app's other workflows. `onCreate(model)` saves the new workflow (a thrown
  * error is shown in the sheet). `onBlank()`, when detection fails, starts from an empty workflow instead.
  */
-export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [], onCreate, onBlank }) {
+export function openWorkflowWizard({ app, loadSuggestion, groups, branches, takenNames = [], onCreate, onBlank }) {
   const state = {
     step: 'build',
     suggestion: null,
@@ -29,7 +30,13 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
     groupsTouched: false,
     name: uniqueName('Default', takenNames),
     touched: false,
+    sourceBranches: undefined, // manual start's branches: the default branch once known; 'any'; null when unknown
+    changingBranch: false,
   };
+  branches.load().then((known) => {
+    if (state.sourceBranches === undefined) state.sourceBranches = known?.defaultBranch ? [known.defaultBranch] : null;
+    if (state.step === 'review' && handle.element.isConnected) render();
+  });
   const steps = h('ol', { class: 'wf-steps', 'aria-label': 'Steps' });
   const content = h('div', { class: 'wf-wizard-content wf-form' });
   const handle = sheet({
@@ -254,6 +261,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
     return wizardModel({
       name: state.name.trim(), base, choices: chosen(), distribution: archived().length ? state.distribution : 'keep',
       groups: state.distribution === 'testflight' ? state.groups : [],
+      branches: state.sourceBranches ?? null,
     });
   }
 
@@ -263,12 +271,40 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', value: state.name,
       onInput: (event) => { state.name = event.target.value; nameInput.removeAttribute('aria-invalid'); },
     });
+    // The source branch: the default branch, with Change for another one or any branch. Nothing else is asked.
+    const known = branches.state;
+    const branchValue = state.sourceBranches === undefined ? 'Loading…'
+      : Array.isArray(state.sourceBranches) ? state.sourceBranches.join(', ') : 'Any branch';
+    let branchControl;
+    if (state.changingBranch && known) {
+      const select = h('select', {
+        class: 'select wf-branch-select', 'aria-label': 'Source branch',
+        onChange: () => {
+          state.sourceBranches = select.value === OTHER_ANY ? 'any' : [select.value];
+          state.changingBranch = false;
+          state.touched = true;
+          render();
+          content.querySelector('.wf-change')?.focus();
+        },
+      },
+      h('option', { value: OTHER_ANY }, 'Any branch'),
+      known.branches.map((name) => h('option', { value: name }, name === known.defaultBranch ? `${name} (default)` : name)));
+      select.value = Array.isArray(state.sourceBranches) ? state.sourceBranches[0] : OTHER_ANY;
+      branchControl = select;
+      queueMicrotask(() => select.focus());
+    } else {
+      branchControl = h('span', { class: 'wf-fact-value' }, branchValue, known
+        ? h('button', { type: 'button', class: 'link-button wf-change', onClick: () => { state.changingBranch = true; render(); } }, 'Change')
+        : null);
+    }
     const facts = [
+      ['Source branch', branchControl],
       [draft.kind === 'workspace' ? 'Workspace' : 'Project', draft.path || '—'],
       ['Xcode', draft.xcode || '—'],
       ['Team', draft.team || 'From the project'],
       ...(draft.tools.length ? [['Tools', draft.tools.join(', ')]] : []),
     ];
+    const deployFrom = Array.isArray(state.sourceBranches) ? state.sourceBranches[0] : known?.defaultBranch;
     replaceChildren(content,
       // The same steps the Deploy sheet and the app page show for this workflow.
       h('ul', { class: 'wf-explain wf-steps-list', 'aria-label': 'What each deploy does' },
@@ -276,7 +312,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, takenNames = [
       field({ label: 'Name', control: nameInput }),
       h('div', { class: 'wf-field' },
         h('dl', { class: 'wf-facts' }, facts.map(([label, value]) => h('div', { class: 'wf-fact' }, h('dt', null, label), h('dd', null, value)))),
-        h('p', { class: 'wf-field-hint' }, 'Found in the repository. Change these and more in the editor once the workflow exists.')));
+        h('p', { class: 'wf-field-hint' }, `${deployFrom ? `Deploy starts from ${deployFrom}. ` : ''}Found in the repository; change these and more in the editor once the workflow exists.`)));
     const back = archived().length ? 'distribute' : 'build';
     handle.setActions([
       cancel,

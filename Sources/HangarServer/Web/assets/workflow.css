@@ -723,3 +723,15 @@
 .wf-detail-problems:empty { display: none; }
 .wf-switches .input, .wf-checklist .input { background: var(--card); }
 .wf-steps-list { display: grid; gap: var(--space-half); margin: 0; padding-left: 32px; }
+
+/* A segmented control as wide as a form field. */
+.wf-segmented { display: flex; width: 100%; min-height: 36px; }
+.wf-segmented .segment { flex: 1; min-width: 0; padding-inline: 6px; }
+
+/* Manual start's branch list: name, a tag, Remove. */
+.wf-pattern { display: flex; align-items: center; gap: var(--space-1); min-height: 44px; padding: 4px 12px; }
+.wf-pattern-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
+.wf-checklist > .wf-pattern + .wf-pattern::before { left: 12px; }
+.wf-pattern .button { margin-inline-end: -14px; }
+.wf-fact-value { display: inline-flex; align-items: baseline; gap: var(--space-1); }
+.wf-fact .wf-branch-select { width: auto; min-height: 36px; max-width: 100%; }

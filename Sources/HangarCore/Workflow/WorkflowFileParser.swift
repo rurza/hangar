@@ -33,7 +33,7 @@ public enum WorkflowFileParser {
     private static func workflow(named name: String, from value: JSONValue) throws(WorkflowFileError) -> Workflow {
         guard case .object(let map) = value else { throw .invalidYAML("workflow '\(name)' must be a map") }
         try rejectUnknownKeys(
-            map, allowed: ["project", "workspace", "xcode", "team", "tools", "actions", "post-actions"],
+            map, allowed: ["project", "workspace", "xcode", "team", "tools", "actions", "post-actions", "start"],
             context: "workflow '\(name)'")
 
         let project = try optionalString(map["project"], key: "project", workflow: name)
@@ -61,10 +61,45 @@ public enum WorkflowFileParser {
                 postActions.append(spec)
             }
         }
+        let start = try map["start"].map { raw throws(WorkflowFileError) in try workflowStart(raw, workflow: name) }
         return Workflow(
             project: project, workspace: workspace, xcode: xcode, teamID: team,
-            tools: tools, actions: actions, postActions: postActions
+            tools: tools, actions: actions, postActions: postActions, start: start
         )
+    }
+
+    /// `start: { manual: { branches: any | [names or patterns] } }`. Only manual start exists for now.
+    private static func workflowStart(_ value: JSONValue, workflow: String) throws(WorkflowFileError) -> WorkflowStart {
+        let context = "workflow '\(workflow)': start"
+        guard case .object(let map) = value else {
+            throw .invalidYAML("\(context) must be a map, e.g. start: { manual: { branches: [main] } }")
+        }
+        if let other = map.keys.filter({ $0 != "manual" }).sorted().first {
+            throw .invalidYAML("\(context): '\(other)' is not supported. Only manual start is supported for now")
+        }
+        let fields: [String: JSONValue]
+        switch map["manual"] {
+        case .object(let object)?: fields = object
+        case .null?, nil: fields = [:]
+        default: throw .invalidYAML("\(context): 'manual' must be a map, e.g. manual: { branches: [main] }")
+        }
+        try rejectUnknownKeys(fields, allowed: ["branches"], context: "\(context) manual")
+        var branches = RefPatterns.any
+        switch fields["branches"] {
+        case nil, .string("any")?: break
+        case .array(let items)?:
+            let names = try items.map { item throws(WorkflowFileError) in
+                guard case .string(let text) = item, !text.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    throw .invalidYAML("\(context) manual: 'branches' must list branch names or patterns as strings")
+                }
+                return text
+            }
+            guard !names.isEmpty else { throw .invalidYAML("\(context) manual: 'branches' is empty; use 'any' or list a branch") }
+            branches = .patterns(names)
+        default:
+            throw .invalidYAML("\(context) manual: 'branches' must be 'any' or a list, e.g. branches: [main, \"release/*\"]")
+        }
+        return WorkflowStart(branches: branches)
     }
 
     /// `- { scheme, platform, export }` (an archive), `- archive: { scheme, platform, export }` or

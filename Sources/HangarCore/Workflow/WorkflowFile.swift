@@ -123,10 +123,12 @@ public struct Workflow: Codable, Equatable, Sendable {
     /// Archive and test actions, in file order; post-actions apply to archive actions only.
     public var actions: [WorkflowAction]
     public var postActions: [PostActionSpec]
+    /// How it starts (`start:` in the file); nil: by hand, from any branch.
+    public var start: WorkflowStart?
 
     public init(
         project: String? = nil, workspace: String? = nil, xcode: String, teamID: String? = nil,
-        tools: [String] = [], actions: [WorkflowAction], postActions: [PostActionSpec] = []
+        tools: [String] = [], actions: [WorkflowAction], postActions: [PostActionSpec] = [], start: WorkflowStart? = nil
     ) {
         self.project = project
         self.workspace = workspace
@@ -135,6 +137,7 @@ public struct Workflow: Codable, Equatable, Sendable {
         self.tools = tools
         self.actions = actions
         self.postActions = postActions
+        self.start = start
     }
 
     /// Path of the project or workspace, relative to the repository root.

@@ -13,6 +13,13 @@ public enum WorkflowYAMLWriter {
             lines.append("    xcode: \(quoted(workflow.xcode))")
             if let team = workflow.teamID { lines.append("    team: \(quoted(team))") }
             if !workflow.tools.isEmpty { lines.append("    tools: [\(workflow.tools.map(scalar).joined(separator: ", "))]") }
+            if let start = workflow.start {
+                switch start.manual.branches {
+                case .any: lines.append("    start: { manual: { branches: any } }")
+                case .patterns(let names):
+                    lines.append("    start: { manual: { branches: [\(names.map(scalar).joined(separator: ", "))] } }")
+                }
+            }
             lines.append("    actions:")
             for action in workflow.actions { lines.append("      - " + Self.action(action)) }
             if !workflow.postActions.isEmpty {
