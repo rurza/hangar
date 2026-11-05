@@ -114,6 +114,43 @@ private let clock = Date(timeIntervalSince1970: 1_800_000_000)
         #expect(pinned.machines.map(\.name) == ["old"])
     }
 
+    @Test func checksAtACommitAskTheRepositoryOnceThenNever() async throws {
+        let fixture = try fixture()
+        _ = try addMachine(fixture, "mini", report: report())
+        let commit = fixture.host.state.withLock { $0.commit }
+        for _ in 0..<3 {
+            #expect(try await check(fixture, "workflow=testflight&commit=\(commit)").canDeploy)
+        }
+        let state = fixture.host.state.withLock { $0 }
+        #expect(state.refs.isEmpty)  // never resolved: the sheet passes the commit it already has
+        #expect(state.reads == [WorkflowFile.path])  // read once, then cached per commit
+    }
+
+    @Test func aStoredWorkflowNeedsNoRepositoryAtAll() async throws {
+        let fixture = try fixture()
+        let yaml = fixture.host.state.withLock { $0.files[WorkflowFile.path]! }
+        try fixture.server.workflowFiles.set(appID: try #require(try fixture.server.apps.find(slugOrID: "legilo")).id, yaml: yaml)
+        let commit = fixture.host.state.withLock { $0.commit }
+        _ = try await check(fixture, "workflow=testflight&commit=\(commit)")
+        _ = try await check(fixture, "workflow=testflight&commit=\(commit)")
+        let state = fixture.host.state.withLock { $0 }
+        #expect(state.refs.isEmpty && state.reads.isEmpty)
+    }
+
+    @Test func aMalformedCommitIsRefused() async throws {
+        let fixture = try fixture()
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/deploy-check?workflow=testflight&commit=main", method: .get) { response throws in
+                #expect(response.status == .badRequest)
+            }
+        }
+    }
+
+    @Test func actionsAreLabelledLikeTheWorkflowAction() {
+        let action = WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect)
+        #expect(HangarServerApp.label(action) == "\(action.kindLabel) · Legilo")
+    }
+
     @Test func anUnknownWorkflowIsAnError() async throws {
         let fixture = try fixture()
         try await fixture.test { client in

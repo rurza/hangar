@@ -18,7 +18,17 @@ extension HangarServerApp {
                 guard let machine = try machines.find(nameOrID: String(key)) else { throw DeployError.machineNotFound(String(key)) }
                 pinned = machine
             }
-            let (_, file, _) = try await withAppToken(app) { _ in try await buildService.workflows(app: app, ref: ref) }
+            // With `commit` (the one `/workflows` resolved for the sheet), GitHub is not asked to resolve the ref, and the
+            // repository's file comes from the per-commit cache: a sheet checking every 15 s costs no GitHub calls.
+            let file: WorkflowFile
+            if let commit = query.get("commit"), !commit.isEmpty {
+                guard (7...40).contains(commit.count), commit.allSatisfy(\.isHexDigit) else {
+                    throw APIError(code: "invalid_request", message: "'commit' must be a commit SHA.")
+                }
+                file = try await withAppToken(app) { _ in try await buildService.workflowFile(app: app, commit: String(commit), cached: true).file }
+            } else {
+                file = try await withAppToken(app) { _ in try await buildService.workflows(app: app, ref: ref).file }
+            }
             guard let workflow = file.workflows[name] else {
                 throw DeployError.workflowNotFound(name: name, available: file.workflows.keys.sorted())
             }
@@ -76,7 +86,5 @@ extension HangarServerApp {
     }
 
     /// "Archive – macOS · Legilo", as the web UI labels an action.
-    static func label(_ action: WorkflowAction) -> String {
-        "\(action.kind == .test ? "Test" : "Archive") – \(action.platform.ciName) · \(action.scheme)"
-    }
+    static func label(_ action: WorkflowAction) -> String { "\(action.kindLabel) · \(action.scheme)" }
 }

@@ -27,12 +27,15 @@ public struct BuildService: Sendable {
     let events: EventBus
     let scheduler: SchedulerLoop
     let cancelRequests: CancelRequests
+    /// Repository workflow files parsed per commit (stored workflows are read from the database every time).
+    let repositoryFiles: WorkflowFileCache
 
     public init(
         apps: AppRepository, builds: BuildRepository, machines: MachineRepository, variables: VariableRepository,
         workflowFiles: WorkflowFileRepository, numbers: BuildNumberService, sourceHost: any SourceHost, events: EventBus, scheduler: SchedulerLoop,
-        cancelRequests: CancelRequests
+        cancelRequests: CancelRequests, repositoryFiles: WorkflowFileCache = WorkflowFileCache()
     ) {
+        self.repositoryFiles = repositoryFiles
         self.apps = apps
         self.builds = builds
         self.machines = machines
@@ -107,23 +110,35 @@ public struct BuildService: Sendable {
     /// The workflow file for the commit `ref` resolves to: the one defined in Hangar if there is one, otherwise
     /// `.hangar.yml` at that commit. The commit is resolved either way, so a build always records one.
     public func workflows(app: App, ref: String) async throws -> (commit: String, file: WorkflowFile, source: WorkflowSource) {
-        let token = try variables.resolvedEntries(appID: app.id).first { $0.name == Self.tokenVariable }?.value
         let commit: String
-        do { commit = try await sourceHost.resolveCommit(repoURL: app.repoURL, ref: ref, token: token) } catch SourceHostError.refNotFound {
+        do { commit = try await sourceHost.resolveCommit(repoURL: app.repoURL, ref: ref, token: try token(app)) } catch SourceHostError.refNotFound {
             throw DeployError.refNotFound(ref)
         }
-        let text: String
-        let source: WorkflowSource
-        if let stored = try workflowFiles.get(appID: app.id) {
-            (text, source) = (stored.yaml, .hangar)
-        } else {
-            guard let repositoryText = try await sourceHost.readFile(
+        let (file, source) = try await workflowFile(app: app, commit: commit)
+        return (commit, file, source)
+    }
+
+    /// The workflow file builds of `commit` use: the one defined in Hangar if there is one, otherwise `.hangar.yml` at
+    /// that commit. With `cached` (the deploy dry run, asked every few seconds) the repository's file is kept per
+    /// commit, which never changes; a deploy itself always reads it.
+    public func workflowFile(app: App, commit: String, cached: Bool = false) async throws -> (file: WorkflowFile, source: WorkflowSource) {
+        if let stored = try workflowFiles.get(appID: app.id) { return (try Self.parse(stored.yaml), .hangar) }
+        let token = try token(app)
+        let read = {
+            guard let text = try await sourceHost.readFile(
                 repoURL: app.repoURL, commit: commit, path: WorkflowFile.path, token: token)
             else { throw DeployError.workflowFileMissing(commit: commit) }
-            (text, source) = (repositoryText, .repository)
+            return try Self.parse(text)
         }
-        do { return (commit, try WorkflowFileParser.parse(text), source) } catch {
-            throw DeployError.workflowFile(error)
-        }
+        let file = cached ? try await repositoryFiles.file(appID: app.id, commit: commit, load: read) : try await read()
+        return (file, .repository)
+    }
+
+    private func token(_ app: App) throws -> String? {
+        try variables.resolvedEntries(appID: app.id).first { $0.name == Self.tokenVariable }?.value
+    }
+
+    private static func parse(_ text: String) throws -> WorkflowFile {
+        do { return try WorkflowFileParser.parse(text) } catch { throw DeployError.workflowFile(error) }
     }
 }
