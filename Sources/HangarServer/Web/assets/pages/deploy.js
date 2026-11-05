@@ -36,7 +36,8 @@ export function openDeploySheet(app) {
   let report = null; // NumbersReport
   let numberError = null;
   let check = null; // DeployCheck for the ref and workflow on screen, null until it answers
-  let checkError = null;
+  let checkError = null; // the last refresh failed; `check` (if any) is the last good verdict
+  let machineCount = null; // from /machines on open, so "no Mac yet" never waits for a workflow
   let checkRequest = null; // AbortController of the check in flight
   let checkTimer = null;
   let branchesLoading = true;
@@ -246,14 +247,18 @@ export function openDeploySheet(app) {
     }
     const controller = new AbortController();
     checkRequest = controller;
+    // The commit /workflows resolved: the server then asks GitHub nothing, however often the sheet checks.
     const query = new URLSearchParams({ workflow: workflowSelect.value, ref });
+    if (workflows?.commit) query.set('commit', workflows.commit);
     try {
       const answer = await api.get(`${base}/deploy-check?${query}`, { signal: controller.signal });
       if (checkRequest !== controller) return;
       check = answer;
+      machineCount = answer.machines.length;
       checkError = null;
     } catch (error) {
       if (checkRequest !== controller || error.code === 'aborted') return;
+      // A failed refresh keeps the last good verdict; only without one does Deploy wait for an answer.
       checkError = error.message;
     }
     checkRequest = null;
@@ -276,6 +281,9 @@ export function openDeploySheet(app) {
 
   /** Why no machine can run the deploy (with what to do), or null. Read from the server's answer only. */
   function machineBlocker() {
+    if (!check && machineCount === 0) {
+      return { text: 'No Mac can run builds yet. Add one, then deploy.', link: ['Add a Mac', '/machines?add=1'] };
+    }
     if (!check) return null;
     if (check.machines.length === 0) {
       return { text: 'No Mac can run builds yet. Add one, then deploy.', link: ['Add a Mac', '/machines?add=1'] };
@@ -312,7 +320,14 @@ export function openDeploySheet(app) {
     const automaticDetail = able.length === 0 ? 'The first free Mac that can build it.'
       : able.length === 1 ? `Runs on ${able[0].name}, the Mac that can build it.`
         : `The first free of ${listText(able.map((machine) => machine.name))}.`;
-    if (check && machines.length === 0) {
+    const noMachines = check ? machines.length === 0 : machineCount === 0;
+    // Nothing to judge yet: no branch, no workflow, or the branch failed. Say so instead of spinning.
+    const waitingFor = !check && !checkError && !noMachines
+      ? (workflowsLoading || branchesLoading ? null
+        : !refInput.value.trim() ? 'Pick a branch to see which Mac can run it.'
+          : refError || !selectedWorkflow() ? 'Which Mac can run it shows once there is a workflow to deploy.' : null)
+      : null;
+    if (noMachines) {
       replaceChildren(whereOptions);
       whereOptions.hidden = true;
     } else {
@@ -326,8 +341,11 @@ export function openDeploySheet(app) {
           const dot = !machine.online ? 'offline' : machine.problems.length ? 'warning' : 'online';
           return option(machine.id, machine.name, detail, dot);
         }),
-        !check && !checkError ? h('p', { class: 'field-hint where-loading' }, spinner('Checking the machines'), 'Checking the machines…') : null,
-        checkError ? h('p', { class: 'field-hint field-error' }, `The machines could not be checked: ${checkError}`) : null);
+        waitingFor ? h('p', { class: 'field-hint' }, waitingFor) : null,
+        !check && !checkError && !waitingFor ? h('p', { class: 'field-hint where-loading' }, spinner('Checking the machines'), 'Checking the machines…') : null,
+        checkError ? h('p', { class: ['field-hint', !check && 'field-error'] }, check
+          ? `Couldn’t refresh (${checkError}); showing the last check.`
+          : `The machines could not be checked: ${checkError}`) : null);
       if (!whereOptions.querySelector('input:checked')) whereOptions.querySelector('input').checked = true;
     }
     renderNotice();
@@ -387,10 +405,9 @@ export function openDeploySheet(app) {
     if (!workflow) return 'There is no workflow to deploy.';
     const gated = (workflow.postActions ?? []).find((spec) => spec.requiresApproval);
     if (gated) return `The post-action “${gated.name}” needs approval, which Hangar does not support yet.`;
-    if (checkError) return 'Hangar could not check which Mac can run it (see above).';
+    if (machineBlocker()) return 'No Mac can run this build now (see Where), so Deploy stays off and no build number is used.';
+    if (checkError && !check) return 'Hangar could not check which Mac can run it (see above).';
     if (!check) return 'Checking which Mac can run it…';
-    const machine = machineBlocker();
-    if (machine) return 'No Mac can run this build now (see Where), so Deploy stays off and no build number is used.';
     if (numberError) return 'Hangar cannot pick a build number (see above).';
     if (!report) return 'Waiting for the build number…';
     return null;
@@ -440,7 +457,17 @@ export function openDeploySheet(app) {
   }
 
   // Machines come and go: ask again on every machine event, and on a tick so a Mac that went quiet is noticed.
-  const stopEvents = events((event) => { if (event.type === 'machine') scheduleCheck(); }, { onReconnect: () => scheduleCheck() });
+  // Heartbeats don't trigger a check (the tick covers them); a Mac that is new to the sheet does.
+  const stopEvents = events((event) => {
+    if (event.type !== 'machine' || !event.machine) return;
+    const known = check ? check.machines.some((machine) => machine.id.toLowerCase() === String(event.machine.id).toLowerCase()) : machineCount > 0;
+    if (!known) scheduleCheck();
+  }, { onReconnect: () => scheduleCheck() });
+  api.get('/machines', { signal: lifetime.signal }).then((list) => {
+    machineCount = list.length;
+    renderWhere();
+    update();
+  }, () => {});
   const ticker = setInterval(() => scheduleCheck(0), CHECK_INTERVAL_MS);
 
   renderWorkflows();
