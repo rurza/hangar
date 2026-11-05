@@ -45,7 +45,7 @@ public struct SetupStatus: Codable, Equatable, Sendable {
 public struct InstalledWorker: Codable, Equatable, Sendable {
     /// From the worker configuration; nil when there is none or it cannot be read.
     public var serverURL: String?
-    /// `app.hangar.worker` is loaded in this user's launchd session.
+    /// `app.hangar.worker` is loaded: this user's agent, or the `hangar` user's LaunchDaemon.
     public var agentLoaded: Bool
 
     public init(serverURL: String?, agentLoaded: Bool) {

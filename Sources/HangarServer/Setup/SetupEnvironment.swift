@@ -84,9 +84,10 @@ public struct SetupEnvironment: Sendable {
             .appendingPathComponent("Library/Application Support/Hangar/worker/config.json").path
     }
 
-    /// A worker already set up here: its configuration file exists, or its launchd agent is loaded for this user
-    /// (not asked under `HANGAR_NO_LAUNCHD=1`, where the script leaves launchd alone). Nil when neither. A
-    /// `launchctl print` that does not answer within `probeTimeout` counts as no agent, so the page never hangs.
+    /// A worker already set up here: its configuration file exists, or its launchd job is loaded, as this user's
+    /// agent or as the isolated `hangar` user's LaunchDaemon (not asked under `HANGAR_NO_LAUNCHD=1`, where the script
+    /// leaves launchd alone). Nil when none. A `launchctl print` that does not answer within `probeTimeout` counts as
+    /// no job, so the page never hangs.
     func installedWorker(probeTimeout: Duration = .seconds(5)) async -> InstalledWorker? {
         var serverURL: String?
         let hasConfig = FileManager.default.fileExists(atPath: workerConfigPath)
@@ -97,7 +98,9 @@ public struct SetupEnvironment: Sendable {
         }
         var loaded = false
         if environment["HANGAR_NO_LAUNCHD"] != "1" {
-            loaded = await output("/bin/launchctl", ["print", "gui/\(getuid())/app.hangar.worker"], timeout: probeTimeout) != nil
+            for domain in ["gui/\(getuid())", "system"] where !loaded {
+                loaded = await output("/bin/launchctl", ["print", "\(domain)/app.hangar.worker"], timeout: probeTimeout) != nil
+            }
         }
         guard hasConfig || loaded else { return nil }
         return InstalledWorker(serverURL: serverURL, agentLoaded: loaded)

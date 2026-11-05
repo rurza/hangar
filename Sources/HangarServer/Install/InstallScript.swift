@@ -44,10 +44,10 @@ enum InstallScript {
         #
         # Run it in Terminal as an administrator. Builds then run as a separate, unprivileged macOS user named
         # hangar: `hangar-worker isolate` creates it with a generated password (shown once and saved in your login
-        # keychain as app.hangar.worker-account; sudo asks for your password), installs the worker there and waits
-        # for you to log in as hangar once with fast user switching. An enrolled worker running as you moves with
-        # its enrollment and build cache. Run as hangar itself, or with HANGAR_AS_CURRENT_USER=1, or as a standard
-        # (non-admin) account, it installs for the current user instead: no sudo. Either way it downloads
+        # keychain as app.hangar.worker-account; sudo asks for your password), installs the worker there with its
+        # own signing keychain, and runs it as a LaunchDaemon: from boot, with nobody logged in as hangar. An
+        # enrolled worker running as you moves with its enrollment and build cache. With HANGAR_AS_CURRENT_USER=1,
+        # or as a standard (non-admin) account, it installs for the current user instead: no sudo. Either way it downloads
         # hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac, enrolls this Mac,
         # writes the worker configuration and starts the agent. No checkout, no Swift build.
         #
@@ -267,7 +267,8 @@ enum InstallScript {
         }
 
         # The install as an administrator: hangar-worker isolate creates the hangar user (with a generated password
-        # it shows once and keeps in your login keychain), moves or installs the worker there and waits for one login.
+        # it shows once and keeps in your login keychain), moves or installs the worker there and starts it as a
+        # LaunchDaemon, which needs no login.
         install_isolated() {
             me=$(id -un)
             say "Builds run as a separate, unprivileged macOS user named hangar, so a build cannot read $me's files."
@@ -338,6 +339,11 @@ enum InstallScript {
             if wants_isolation; then
                 install_isolated
                 return 0
+            fi
+            # hangar's worker is a LaunchDaemon (set up by isolate); a launch agent beside it would be a second worker
+            # with the same token.
+            if [ "$(id -un)" = hangar ] && launchctl print system/app.hangar.worker >/dev/null 2>&1; then
+                die "hangar's worker runs as a LaunchDaemon. Run this command as an administrator to update it."
             fi
             [ "$(id -un)" = hangar ] || [ "${HANGAR_AS_CURRENT_USER:-}" = 1 ] || [ "${HANGAR_NO_LAUNCHD:-}" = 1 ] \
                 || say "$(id -un) is not an administrator, so the worker is installed for $(id -un) and builds run as $(id -un)."

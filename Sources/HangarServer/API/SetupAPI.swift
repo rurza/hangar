@@ -221,7 +221,7 @@ extension HangarServerApp {
             let message = if let serverURL = existing.serverURL {
                 "A worker is already set up on this Mac (for \(serverURL)); to update it, run the install command again: curl -fsSL \(serverURL)/install | sh"
             } else {
-                "A worker is already set up on this Mac (\(existing.agentLoaded ? "its launchd agent is loaded" : "its configuration exists")), so Hangar leaves it alone. Check it with hangar-worker doctor on this Mac."
+                "A worker is already set up on this Mac (\(existing.agentLoaded ? "it is loaded in launchd" : "its configuration exists")), so Hangar leaves it alone. Check it with hangar-worker doctor on this Mac."
             }
             throw APIError(code: "worker_already_installed", message: message)
         }

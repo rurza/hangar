@@ -55,7 +55,12 @@ import Testing
                     esac
                     exit 0
                     """#,
-                "launchctl": "#!/bin/sh\necho \"launchctl $*\" >>\"$STUB_LOG\"\n[ \"$1\" != print ]\n",
+                // `print` fails (nothing loaded) unless STUB_DAEMON=1 loads the hangar user's LaunchDaemon.
+                "launchctl": #"""
+                    #!/bin/sh
+                    echo "launchctl $*" >>"$STUB_LOG"
+                    [ "$1" != print ] || { [ "${STUB_DAEMON:-}" = 1 ] && [ "$2" = system/app.hangar.worker ]; }
+                    """#,
                 "id": #"""
                     #!/bin/sh
                     case $1 in
@@ -174,6 +179,16 @@ import Testing
         #expect(result.status == 0, "\(result.output)")
         #expect(!result.log.contains { $0.hasPrefix("worker isolate") || $0.hasPrefix("sudo") })
         #expect(result.log.contains { $0.hasPrefix("launchctl bootstrap gui/501 ") })
+    }
+
+    /// isolate made hangar's worker a LaunchDaemon; an agent beside it would be a second worker with the same token.
+    @Test func theHangarUserDoesNotGetAnAgentBesideItsDaemon() throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        let result = try sandbox.run(["STUB_USER": "hangar", "STUB_GROUPS": "staff everyone", "STUB_DAEMON": "1"])
+        #expect(result.status != 0)
+        #expect(result.output.contains("runs as a LaunchDaemon"), "\(result.output)")
+        #expect(!result.log.contains { $0.hasPrefix("launchctl bootstrap") || $0.hasPrefix("worker setup") })
     }
 
     /// The SHA-256 check guards every install: a binary that is not the announced one never reaches isolate (and so

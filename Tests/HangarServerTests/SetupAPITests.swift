@@ -621,6 +621,19 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         #expect(probe.arguments == ["print", "gui/\(getuid())/app.hangar.worker"])
     }
 
+    @Test func theHangarUsersLaunchDaemonCountsAsAnInstalledWorker() async throws {
+        let keys = try KeyHome()
+        let runner = RecordingProcessRunner()
+        runner.script(
+            { $0.executable == "/bin/launchctl" && $0.arguments == ["print", "system/app.hangar.worker"] },
+            lines: ["system/app.hangar.worker = {", "state = running"])
+        let environment = setupEnvironment(keys, runner: runner)
+        #expect(await environment.installedWorker() == InstalledWorker(serverURL: nil, agentLoaded: true))
+        #expect(runner.commands.map(\.arguments) == [
+            ["print", "gui/\(getuid())/app.hangar.worker"], ["print", "system/app.hangar.worker"],
+        ])
+    }
+
     @Test func aHungLaunchctlProbeTimesOut() async throws {
         let keys = try KeyHome()
         let runner = RecordingProcessRunner()
