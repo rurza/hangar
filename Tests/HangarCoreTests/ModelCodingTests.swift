@@ -76,6 +76,27 @@ struct ModelCodingTests {
         #expect(!Machine(id: UUID(), name: "n", createdAt: Self.when).isOnline(now: Self.when))
     }
 
+    @Test func machineReportFromAnOlderWorkerHasNoSigningDetails() throws {
+        let json = #"""
+            {"macOSVersion":"26.1","xcodes":[],"chip":"M4","performanceCores":10,"memoryGB":16,"freeDiskGB":100,
+             "onACPower":true,"tools":{},"canSignWithoutPrompt":false,"runningJobIDs":[]}
+            """#
+        let report = try JSONCoding.decoder.decode(MachineReport.self, from: Data(json.utf8))
+        #expect(report.signingIdentities == [])
+        #expect(report.xcodeAccountSignedIn == nil)
+        #expect(report.chip == "M4")
+    }
+
+    @Test func machineReportSigningDetailsRoundTrip() throws {
+        let report = MachineReport(
+            macOSVersion: "26.1", xcodes: [], chip: "M4", performanceCores: 10, memoryGB: 16, freeDiskGB: 100,
+            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [],
+            signingIdentities: ["Apple Development: Adam (TEAM)"], xcodeAccountSignedIn: true)
+        let data = try JSONCoding.encoder.encode(report)
+        #expect(try JSONCoding.decoder.decode(MachineReport.self, from: data) == report)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""xcodeAccountSignedIn":true"#))
+    }
+
     @Test func slugRule() {
         #expect(App.slug(for: "Legilo") == "legilo")
         #expect(App.slug(for: "  My  App!! v2 ") == "my-app-v2")

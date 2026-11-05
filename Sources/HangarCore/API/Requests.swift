@@ -197,23 +197,30 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
     /// True when the server has a `hangar-worker` binary to hand out at `GET /install/hangar-worker`, so the
     /// one-command install (`curl …/install | sh`) works.
     public var workerInstallAvailable: Bool
+    /// The GitHub token's account and where it came from; nil without a token.
+    public var github: GitHubStatus?
 
-    public init(version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool, workerInstallAvailable: Bool = false) {
+    public init(
+        version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool, workerInstallAvailable: Bool = false,
+        github: GitHubStatus? = nil
+    ) {
         self.version = version
         self.appStoreConnect = appStoreConnect
         self.githubTokenSet = githubTokenSet
         self.workerInstallAvailable = workerInstallAvailable
+        self.github = github
     }
 
-    private enum CodingKeys: String, CodingKey { case version, appStoreConnect, githubTokenSet, workerInstallAvailable }
+    private enum CodingKeys: String, CodingKey { case version, appStoreConnect, githubTokenSet, workerInstallAvailable, github }
 
-    /// An older server sends no `workerInstallAvailable`: read as false.
+    /// An older server sends no `workerInstallAvailable` (read as false) and no `github`.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(String.self, forKey: .version)
         appStoreConnect = try container.decodeIfPresent(ASCKeyStatus.self, forKey: .appStoreConnect)
         githubTokenSet = try container.decode(Bool.self, forKey: .githubTokenSet)
         workerInstallAvailable = try container.decodeIfPresent(Bool.self, forKey: .workerInstallAvailable) ?? false
+        github = try container.decodeIfPresent(GitHubStatus.self, forKey: .github)
     }
 }
 

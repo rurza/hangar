@@ -23,11 +23,18 @@ public struct MachineReport: Codable, Equatable, Sendable {
     public var tools: [String: String]
     public var canSignWithoutPrompt: Bool
     public var runningJobIDs: [UUID]
+    /// The names of the valid code signing identities in the worker user's keychain (`security find-identity -v
+    /// -p codesigning`), e.g. "Apple Distribution: Acme (TEAM123456)"; no hashes. Empty from an older worker.
+    public var signingIdentities: [String]
+    /// Whether Xcode on the worker has an Apple account signed in (Xcode › Settings › Accounts); nil when unknown,
+    /// e.g. from an older worker.
+    public var xcodeAccountSignedIn: Bool?
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
-        canSignWithoutPrompt: Bool, runningJobIDs: [UUID]
+        canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
+        xcodeAccountSignedIn: Bool? = nil
     ) {
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
@@ -39,6 +46,30 @@ public struct MachineReport: Codable, Equatable, Sendable {
         self.tools = tools
         self.canSignWithoutPrompt = canSignWithoutPrompt
         self.runningJobIDs = runningJobIDs
+        self.signingIdentities = signingIdentities
+        self.xcodeAccountSignedIn = xcodeAccountSignedIn
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
+        case runningJobIDs, signingIdentities, xcodeAccountSignedIn
+    }
+
+    /// An older worker sends neither `signingIdentities` nor `xcodeAccountSignedIn`: read as none and unknown.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        macOSVersion = try container.decode(String.self, forKey: .macOSVersion)
+        xcodes = try container.decode([InstalledXcode].self, forKey: .xcodes)
+        chip = try container.decode(String.self, forKey: .chip)
+        performanceCores = try container.decode(Int.self, forKey: .performanceCores)
+        memoryGB = try container.decode(Int.self, forKey: .memoryGB)
+        freeDiskGB = try container.decode(Double.self, forKey: .freeDiskGB)
+        onACPower = try container.decode(Bool.self, forKey: .onACPower)
+        tools = try container.decode([String: String].self, forKey: .tools)
+        canSignWithoutPrompt = try container.decode(Bool.self, forKey: .canSignWithoutPrompt)
+        runningJobIDs = try container.decode([UUID].self, forKey: .runningJobIDs)
+        signingIdentities = try container.decodeIfPresent([String].self, forKey: .signingIdentities) ?? []
+        xcodeAccountSignedIn = try container.decodeIfPresent(Bool.self, forKey: .xcodeAccountSignedIn)
     }
 }
 

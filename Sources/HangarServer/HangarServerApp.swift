@@ -39,11 +39,20 @@ public struct HangarServerApp: Sendable {
     /// Whether each app's repository has a `.hangar.yml`, for the app page and the workflow editor.
     public let repositoryWorkflowFiles: RepositoryWorkflowFileCache
     let appStoreConnectFactory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
+    /// What the first-run setup reads from and runs on this Mac.
+    let setup: SetupEnvironment
+    /// Server-wide settings that are not variables.
+    let serverSettings: ServerSettingsRepository
+    /// Whose the GitHub token is.
+    let githubAccounts: GitHubAccounts
+    let localHostName = LocalHostName()
+    /// "Use This Mac for Builds".
+    let localWorkerSetup = LocalWorkerSetup()
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
     /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
     /// carries the public iTunes lookup that finds icons App Store Connect has none for; `githubTransport` the
-    /// repository list.
+    /// repository list and the token's account. `setup` is this Mac as the first-run setup sees it.
     public init(
         configuration: ServerConfiguration, database: Database,
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient,
@@ -51,7 +60,7 @@ public struct HangarServerApp: Sendable {
         numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil,
         iconTransport: any HTTPTransport = URLSessionTransport(),
         githubTransport: any HTTPTransport = URLSessionTransport(),
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init, setup: SetupEnvironment = .live()
     ) throws {
         self.configuration = configuration
         self.database = database
@@ -88,6 +97,9 @@ public struct HangarServerApp: Sendable {
         githubRepositories = GitHubRepositories(transport: githubTransport, now: now)
         repositoryDetector = RepositoryDetector(sourceHost: sourceHost, clock: clock, now: now)
         repositoryWorkflowFiles = RepositoryWorkflowFileCache(now: now)
+        self.setup = setup
+        serverSettings = ServerSettingsRepository(database: database)
+        githubAccounts = GitHubAccounts(transport: githubTransport, now: now)
     }
 
     /// Starts resolving icons for every app without one (at start-up); returns at once.

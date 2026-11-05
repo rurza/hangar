@@ -7,6 +7,7 @@ import {
 } from '../ui.js';
 import { openAddAppSheet } from './add-app.js';
 import { openDeploySheet } from './deploy.js';
+import { setupIncomplete, setupSkipped } from './setup.js';
 
 // MARK: App icon
 
@@ -90,13 +91,19 @@ export async function appsPage(params, context) {
     });
   }
 
+  let setupLeft = false; // with no apps: setup still has a step to do
+
   function render() {
     if (apps.length === 0) {
       replaceChildren(content, emptyState({
         icon: h('span', { class: 'empty-plus' }, '+'),
         title: 'No Apps Yet',
-        message: 'Pick its GitHub repository: Hangar finds the app in it and in App Store Connect.',
-        action: button('Add App', { kind: 'primary', onClick: addApp }),
+        message: setupLeft
+          ? 'Finish setting up Hangar first: App Store Connect, GitHub and a Mac to build on.'
+          : 'Pick its GitHub repository: Hangar finds the app in it and in App Store Connect.',
+        action: setupLeft
+          ? h('a', { href: '/setup', 'data-link': true, class: 'button button-primary' }, 'Finish Setup')
+          : button('Add App', { kind: 'primary', onClick: addApp }),
       }));
       return;
     }
@@ -122,7 +129,20 @@ export async function appsPage(params, context) {
   }
 
   await load();
+  if (apps.length === 0) {
+    // A new server: the setup page instead of an empty page, unless it was skipped in this tab.
+    const status = await api.get('/setup', { signal: context.signal }).catch(() => null);
+    setupLeft = Boolean(status && setupIncomplete(status));
+    if (setupLeft && !setupSkipped()) {
+      navigate('/setup', { replace: true });
+      return h('div');
+    }
+  }
   render();
+  if (context.query.get('add') === '1') {
+    history.replaceState(null, '', '/');
+    addApp();
+  }
   recheckIconSoon(apps, context, () => load().then(render));
 
   context.onCleanup(events((event) => {

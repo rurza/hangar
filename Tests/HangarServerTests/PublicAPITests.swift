@@ -49,7 +49,7 @@ struct APIFixture {
         },
         now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = [],
         iconTransport: any HTTPTransport = StubTransport(), workerBinaryPath: String? = nil, port: Int = 8787,
-        githubTransport: any HTTPTransport = StubTransport()
+        githubTransport: any HTTPTransport = StubTransport(), setup: SetupEnvironment? = nil
     ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
         let database = try HangarServer.Database(path: ":memory:")
@@ -60,7 +60,15 @@ struct APIFixture {
                 workerBinaryPath: workerBinaryPath), database: database,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
             numberSources: sources.map { sources in { @Sendable in sources } }, iconTransport: iconTransport, githubTransport: githubTransport,
-            now: now)
+            now: now, setup: setup ?? Self.inertSetup(directory))
+    }
+
+    /// Nothing of this Mac: an empty home, no tools (every command exits 0 silently), an installer that does nothing.
+    static func inertSetup(_ directory: URL) -> SetupEnvironment {
+        SetupEnvironment(
+            homeDirectory: directory.appendingPathComponent("home").path, currentDirectory: directory.path,
+            environment: ["PATH": "/usr/bin:/bin"], runner: RecordingProcessRunner(), installer: FakeInstaller(),
+            isLocalPeer: { _ in true })
     }
 
     func test(_ body: @Sendable (any TestClientProtocol) async throws -> Void) async throws {

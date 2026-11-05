@@ -13,7 +13,8 @@ extension HangarServerApp {
                     version: HangarVersion.current,
                     appStoreConnect: credentials.map { ASCKeyStatus(keyID: $0.keyID, issuerID: $0.issuerID) },
                     githubTokenSet: try variables.value(global: "HANGAR_GITHUB_TOKEN") != nil,
-                    workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil))
+                    workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil,
+                    github: try await githubStatus()))
         }
         api.get("asc/apps") { _, _ in
             guard let client = try appStoreConnectClient() else {

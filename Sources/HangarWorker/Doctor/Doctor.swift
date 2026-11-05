@@ -26,7 +26,9 @@ public struct Doctor: Sendable {
     }
 
     public func report(runningJobIDs: [UUID]) async -> MachineReport {
-        async let canSign = canSignWithoutPrompt()
+        let identities = await signingIdentities()
+        async let canSign = canSignWithoutPrompt(identities: identities)
+        async let xcodeAccount = xcodeAccountSignedIn()
         let bytes = Int(await sysctl("hw.memsize")) ?? 0
         return MachineReport(
             macOSVersion: await output("/usr/bin/sw_vers", ["-productVersion"]) ?? "",
@@ -38,7 +40,9 @@ public struct Doctor: Sendable {
             onACPower: await onACPower(),
             tools: await tools(),
             canSignWithoutPrompt: await canSign,
-            runningJobIDs: runningJobIDs)
+            runningJobIDs: runningJobIDs,
+            signingIdentities: Self.uniqueNames(identities),
+            xcodeAccountSignedIn: await xcodeAccount)
     }
 
     // MARK: Probes
@@ -87,8 +91,8 @@ public struct Doctor: Sendable {
 
     /// Signs a throwaway copy of `/bin/ls` with the first Apple Development identity. A keychain prompt makes
     /// codesign hang, so the attempt is raced against `signTimeout`.
-    private func canSignWithoutPrompt() async -> Bool {
-        guard let hash = await developmentIdentityHash() else { return false }
+    private func canSignWithoutPrompt(identities: [SigningIdentity]) async -> Bool {
+        guard let hash = identities.first(where: { $0.name.hasPrefix("Apple Development") })?.hash else { return false }
         let target = NSTemporaryDirectory() + "hangar-doctor-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: target) }
         do { try FileManager.default.copyItem(atPath: "/bin/ls", toPath: target) } catch { return false }
@@ -109,14 +113,52 @@ public struct Doctor: Sendable {
         }
     }
 
-    /// SHA-1 of the first "Apple Development" identity; sign by hash so several identities are unambiguous.
-    private func developmentIdentityHash() async -> String? {
-        guard let text = await output("/usr/bin/security", ["find-identity", "-v", "-p", "codesigning"]) else {
-            return nil
+    struct SigningIdentity: Equatable {
+        var hash: String
+        var name: String
+    }
+
+    /// The valid code signing identities, in `security find-identity` order; empty when it fails.
+    private func signingIdentities() async -> [SigningIdentity] {
+        let command = ProcessCommand(
+            executable: "/usr/bin/security", arguments: ["find-identity", "-v", "-p", "codesigning"],
+            environment: Self.environment)
+        guard let outcome = await bounded(command), outcome.exitCode == 0 else { return [] }
+        let text = outcome.output
+        return text.split(separator: "\n").compactMap { line in
+            line.firstMatch(of: /\)\s+([0-9A-Fa-f]{40})\s+"(.+)"/).map { SigningIdentity(hash: String($0.1), name: String($0.2)) }
         }
-        for line in text.split(separator: "\n") where line.contains("Apple Development") {
-            if let match = line.firstMatch(of: /\)\s+([0-9A-Fa-f]{40})\s/) { return String(match.1) }
+    }
+
+    /// The identity names without repeats (two certificates may share a name), first occurrence first.
+    static func uniqueNames(_ identities: [SigningIdentity]) -> [String] {
+        var seen = Set<String>()
+        return identities.map(\.name).filter { seen.insert($0).inserted }
+    }
+
+    /// Whether Xcode lists an Apple account (`DVTDeveloperAccountManagerAppleIDLists` names an identifier). nil
+    /// when `defaults` cannot run at all.
+    private func xcodeAccountSignedIn() async -> Bool? {
+        let command = ProcessCommand(
+            executable: "/usr/bin/defaults", arguments: ["read", "com.apple.dt.Xcode", "DVTDeveloperAccountManagerAppleIDLists"],
+            environment: Self.environment)
+        guard let outcome = await bounded(command) else { return nil }
+        return outcome.exitCode == 0 && outcome.output.contains("identifier")
+    }
+
+    /// `command`'s outcome, nil when it cannot run or takes longer than `signTimeout` (a locked keychain or a
+    /// stuck preferences daemon must not stall every report).
+    private func bounded(_ command: ProcessCommand) async -> ProcessOutcome? {
+        let runner = runner, clock = clock, timeout = signTimeout
+        return await withTaskGroup(of: ProcessOutcome?.self) { group in
+            group.addTask { try? await runner.run(command, onLine: { _ in }) }
+            group.addTask {
+                try? await clock.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
-        return nil
     }
 }
