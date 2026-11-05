@@ -1,9 +1,10 @@
-// The Settings page: the App Store Connect key, the GitHub token, global variables and About. The key and the
-// token are write-only: the page shows whether they are set, never their values, and never pre-fills them.
+// The Settings page: the App Store Connect key, the GitHub token, agent tokens, global variables and About. The key
+// and the token are write-only: the page shows whether they are set, never their values, and never pre-fills them.
 
 import { api } from '../api.js';
 import { button, card, confirm, field, h, page, replaceChildren, section, toast } from '../ui.js';
 import { variablesEditor } from './variables.js';
+import { agentTokensEditor } from './agent-tokens.js';
 import {
   ASC_KEYS_URL, appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, issuerField, keyDropZone, problem, withBusy,
 } from './setup.js';
@@ -57,6 +58,11 @@ export async function settingsPage(params, context) {
       footer: 'Hangar reads your app repositories and their private Swift packages with it.',
     }, github.element),
     advanced(),
+    section({
+      title: 'Agent Access',
+      footer: 'Tokens let AI agents such as Claude Code use Hangar through hangar mcp. Each token is limited to its '
+        + 'scope and can be revoked at any time.',
+    }, agentTokensEditor({ signal })),
     section({
       title: 'Global Variables',
       footer: 'Every job of every app gets these. An app variable with the same name replaces one of these.',
