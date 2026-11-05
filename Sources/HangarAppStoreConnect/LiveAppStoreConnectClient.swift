@@ -110,7 +110,11 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
     public func betaGroups(appID: String) async throws -> [ASCBetaGroup] {
         let query = [URLQueryItem(name: "filter[app]", value: appID), URLQueryItem(name: "limit", value: "200")]
         return try await pages(Wire.BetaGroups.self, path: "/v1/betaGroups", query: query).flatMap { page in
-            page.data.map { ASCBetaGroup(id: $0.id, name: $0.attributes.name, isInternal: $0.attributes.isInternalGroup ?? false) }
+            page.data.map { item in
+                ASCBetaGroup(
+                    id: item.id, name: item.attributes.name, isInternal: item.attributes.isInternalGroup ?? false,
+                    receivesEveryBuild: item.attributes.hasAccessToAllBuilds ?? false)
+            }
         }
     }
 
@@ -122,7 +126,9 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
             "relationships": .object(["app": .object(["data": .object(["type": .string("apps"), "id": .string(appID)])])]),
         ])])
         let one = try decode(One.self, from: try await request("POST", url: try url(path: "/v1/betaGroups"), body: body))
-        return ASCBetaGroup(id: one.data.id, name: one.data.attributes.name, isInternal: one.data.attributes.isInternalGroup ?? isInternal)
+        return ASCBetaGroup(
+            id: one.data.id, name: one.data.attributes.name, isInternal: one.data.attributes.isInternalGroup ?? isInternal,
+            receivesEveryBuild: one.data.attributes.hasAccessToAllBuilds ?? false)
     }
 
     public func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {
@@ -338,6 +344,7 @@ private enum Wire {
             struct Attributes: Decodable {
                 var name: String
                 var isInternalGroup: Bool?
+                var hasAccessToAllBuilds: Bool?
             }
             var id: String
             var attributes: Attributes

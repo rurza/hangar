@@ -137,7 +137,11 @@ struct LiveClientDecodingTests {
     @Test func betaGroupsDecodes() async throws {
         let transport = StubTransport(responses: [try respond("beta-groups")])
         let groups = try await makeClient(transport).betaGroups(appID: "app1")
-        #expect(groups == [ASCBetaGroup(id: "g1", name: "Team", isInternal: true), ASCBetaGroup(id: "g2", name: "Public", isInternal: false)])
+        #expect(groups == [
+            ASCBetaGroup(id: "g1", name: "Team", isInternal: true),
+            ASCBetaGroup(id: "g2", name: "Public", isInternal: false),
+            ASCBetaGroup(id: "g3", name: "Internal", isInternal: true, receivesEveryBuild: true),
+        ])
     }
 
     @Test func createBetaGroupPostsInternalGroupForTheApp() async throws {

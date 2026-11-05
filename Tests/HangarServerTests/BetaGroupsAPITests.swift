@@ -13,7 +13,7 @@ import Testing
     private static let groupsPage = """
         {"data":[
          {"type":"betaGroups","id":"g2","attributes":{"name":"Public","isInternalGroup":false}},
-         {"type":"betaGroups","id":"g1","attributes":{"name":"Internal Testers","isInternalGroup":true}},
+         {"type":"betaGroups","id":"g1","attributes":{"name":"Internal Testers","isInternalGroup":true,"hasAccessToAllBuilds":true}},
          {"type":"betaGroups","id":"g3","attributes":{"name":"Designers","isInternalGroup":true}}
         ]}
         """
@@ -44,7 +44,7 @@ import Testing
                 #expect(response.status == .ok)
                 #expect(try decode([BetaGroup].self, response) == [
                     BetaGroup(id: "g3", name: "Designers", isInternal: true),
-                    BetaGroup(id: "g1", name: "Internal Testers", isInternal: true),
+                    BetaGroup(id: "g1", name: "Internal Testers", isInternal: true, receivesEveryBuild: true),
                     BetaGroup(id: "g2", name: "Public", isInternal: false),
                 ])
             }

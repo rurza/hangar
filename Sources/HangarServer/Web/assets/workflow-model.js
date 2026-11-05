@@ -306,6 +306,36 @@ function itemProblems(model, context = {}) {
   return result;
 }
 
+// MARK: TestFlight groups
+
+/**
+ * How the group picker shows `group` (`{name, isInternal, receivesEveryBuild}`) given the `selected` names:
+ * `{ automatic, checked, disabled, tag, detail }`. A group that gets every build automatically (App Store
+ * Connect's "access to all builds") cannot be given a build by hand, so it shows ticked and greyed out; when an older
+ * workflow still names it, it stays clickable so it can be taken out.
+ */
+function groupRow(group, selected, { internalOnly = false } = {}) {
+  const named = selected.includes(group.name);
+  if (group.receivesEveryBuild) {
+    return {
+      automatic: true, checked: true, disabled: !named, tag: 'Automatic',
+      detail: named ? 'Gets every build automatically, so the workflow doesn’t need to add it.' : 'Gets every build automatically.',
+    };
+  }
+  return { automatic: false, checked: named, disabled: false, tag: internalOnly ? null : group.isInternal ? 'Internal' : 'External', detail: null };
+}
+
+/** The group the wizard picks for you: the one internal group that does not already get every build, or null. */
+function defaultGroup(groups) {
+  const manual = (groups ?? []).filter((group) => group.isInternal && !group.receivesEveryBuild);
+  return manual.length === 1 ? manual[0].name : null;
+}
+
+/** Names of `groups` that get every build automatically, in their order. */
+function automaticGroupNames(groups) {
+  return (groups ?? []).filter((group) => group.receivesEveryBuild).map((group) => group.name);
+}
+
 /** Every sentence of `itemProblems`, in sidebar order. */
 function allProblems(found) {
   return [...found.workflow, ...found.general, ...found.environment, ...found.start, ...found.actions.flat(), ...found.testflight];
@@ -400,4 +430,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };
+export { ACTION_KINDS, automaticGroupNames, defaultGroup, groupRow, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };

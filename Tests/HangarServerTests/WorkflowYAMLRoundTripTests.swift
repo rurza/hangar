@@ -393,6 +393,32 @@ import Testing
             """)
     }
 
+    /// A group that gets every build automatically is shown ticked and greyed out, never picked for you, and can only be
+    /// taken out of a workflow that still names it.
+    @Test func automaticGroupsAreNotManualTargets() throws {
+        let groups = """
+            [{"id":"g1","name":"Internal","isInternal":true,"receivesEveryBuild":true},
+             {"id":"g2","name":"QA","isInternal":true,"receivesEveryBuild":false},
+             {"id":"g3","name":"Public","isInternal":false}]
+            """
+        let output = try Self.runJXA(json: groups, """
+            [JSON.stringify(input.map((group) => groupRow(group, []))),
+             JSON.stringify(groupRow(input[0], ['Internal'])),
+             String(defaultGroup(input)), String(defaultGroup([input[0]])),
+             automaticGroupNames(input).join(',')].join('\\n')
+            """)
+        let lines = output.components(separatedBy: "\n")
+        #expect(lines.count == 5)
+        guard lines.count == 5 else { return }
+        #expect(lines[0] == #"[{"automatic":true,"checked":true,"disabled":true,"tag":"Automatic","detail":"Gets every build automatically."},"#
+            + #"{"automatic":false,"checked":false,"disabled":false,"tag":"Internal","detail":null},"#
+            + #"{"automatic":false,"checked":false,"disabled":false,"tag":"External","detail":null}]"#)
+        #expect(lines[1].contains(#""disabled":false"#) && lines[1].contains("doesn’t need to add it"))
+        #expect(lines[2] == "QA")
+        #expect(lines[3] == "null")
+        #expect(lines[4] == "Internal")
+    }
+
     /// The detector's notes are filed under the field each concerns; advice the editor gives another way is dropped.
     @Test func detectionNotesAreFiledByField() throws {
         let notes = """

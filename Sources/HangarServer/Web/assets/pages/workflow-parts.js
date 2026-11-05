@@ -3,6 +3,7 @@
 
 import { api, ApiError } from '../api.js';
 import { h, plusIcon, replaceChildren, spinner, svg } from '../ui.js';
+import { automaticGroupNames, groupRow } from '../workflow-model.js';
 
 // MARK: Glyphs
 
@@ -215,10 +216,14 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       onChange?.();
     };
     const rows = [
-      ...known.map((group) => checkRow({
-        title: group.name, tag: internalOnly ? null : group.isInternal ? 'Internal' : 'External', checked: selected.includes(group.name), disabled,
-        onChange: (on) => toggle(group.name, on),
-      })),
+      ...known.map((group) => {
+        const row = groupRow(group, selected, { internalOnly });
+        return checkRow({
+          title: group.name, detail: row.detail, tag: row.tag, checked: row.checked, disabled: disabled || row.disabled,
+          // An automatic group is only ever taken out of the workflow: it gets each build anyway.
+          onChange: (on) => { toggle(group.name, row.automatic ? false : on); if (row.automatic) draw(); },
+        });
+      }),
       // A name in the workflow that App Store Connect does not have: shown, so it can be unticked.
       ...missing.map((name) => checkRow({
         title: name, tag: 'Not in App Store Connect', tagWarning: true, checked: true, disabled,
@@ -227,6 +232,7 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
     ];
     const list = h('ul', { class: 'wf-checklist', 'aria-label': 'TestFlight groups' }, rows, addRow());
     const selectedExternal = known.filter((group) => !group.isInternal && selected.includes(group.name));
+    const automatic = automaticGroupNames(known);
     let hint;
     if (!(known.length || missing.length)) {
       hint = 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.';
@@ -237,6 +243,9 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       hint = 'Internal groups contain people on your App Store Connect team.';
     } else {
       hint = 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
+    }
+    if (automatic.length) {
+      hint += ` ${automatic.join(', ')} ${automatic.length === 1 ? 'gets' : 'get'} every build automatically (set in App Store Connect).`;
     }
     replaceChildren(element, list, h('p', { class: 'wf-field-hint' }, hint));
   }
