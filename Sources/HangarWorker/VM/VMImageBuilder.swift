@@ -160,21 +160,26 @@ public struct VMImageBuilder: Sendable {
         // 2. builder: a standard user, no sudo, logged in automatically so the saved state holds its GUI session.
         let user = Self.buildUser
         try await step("create the build user \(user) (not an administrator) with automatic login") {
+            // sysadminctl -autologin records the user but leaves the image's /etc/kcpassword (admin's) in place, so
+            // the login window fails; the file is written here instead.
+            let password = passwords.generate()
             try await ssh.require(
                 "create \(user)", user: "admin", host: address,
                 """
-                read -r p && \
-                (id \(user) >/dev/null 2>&1 || sudo -n sysadminctl -addUser \(user) -fullName Builder -password "$p" -home /Users/\(user) 2>&1) && \
-                sudo -n createhomedir -c -u \(user) >/dev/null && \
-                sudo -n sysadminctl -autologin set -userName \(user) -password "$p" 2>&1 && \
-                (sudo -n dseditgroup -o edit -a \(user) -t user com.apple.access_ssh 2>/dev/null || true) && \
-                sudo -n mkdir -p -m 0700 /Users/\(user)/.ssh && \
-                printf '%s\\n' \(GuestSSH.quote(publicKey)) | sudo -n tee /Users/\(user)/.ssh/authorized_keys >/dev/null && \
-                sudo -n chmod 0600 /Users/\(user)/.ssh/authorized_keys && \
-                sudo -n chown -R \(user):staff /Users/\(user)/.ssh && \
+                read -r p && read -r k && \\
+                (id \(user) >/dev/null 2>&1 || sudo -n sysadminctl -addUser \(user) -fullName Builder -password "$p" -home /Users/\(user) 2>&1) && \\
+                sudo -n createhomedir -c -u \(user) >/dev/null && \\
+                printf '%s' "$k" | base64 -d | sudo -n tee /etc/kcpassword >/dev/null && \\
+                sudo -n chown root:wheel /etc/kcpassword && sudo -n chmod 0600 /etc/kcpassword && \\
+                sudo -n defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser \(user) && \\
+                (sudo -n dseditgroup -o edit -a \(user) -t user com.apple.access_ssh 2>/dev/null || true) && \\
+                sudo -n mkdir -p -m 0700 /Users/\(user)/.ssh && \\
+                printf '%s\\n' \(GuestSSH.quote(publicKey)) | sudo -n tee /Users/\(user)/.ssh/authorized_keys >/dev/null && \\
+                sudo -n chmod 0600 /Users/\(user)/.ssh/authorized_keys && \\
+                sudo -n chown -R \(user):staff /Users/\(user)/.ssh && \\
                 ! dseditgroup -o checkmember -m \(user) admin >/dev/null
                 """,
-                input: SensitiveText(passwords.generate().value + "\n"))
+                input: SensitiveText(password.value + "\n" + Self.kcpassword(password.value).base64EncodedString() + "\n"))
         }
         // 3. Homebrew, owned by builder, as on Xcode Cloud.
         try await step("install Homebrew into /opt/homebrew, owned by \(user)") {
@@ -272,6 +277,15 @@ public struct VMImageBuilder: Sendable {
     // MARK: Plumbing
 
     static let askpass = "#!/bin/sh\necho \(vanillaPassword)\n"
+
+    /// `/etc/kcpassword`, which the login window reads for automatic login: the password, a zero, padding to a
+    /// multiple of 12 bytes, XORed with Apple's fixed 11-byte key.
+    static func kcpassword(_ password: String) -> Data {
+        let key: [UInt8] = [0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F]
+        var bytes = Array(password.utf8) + [0]
+        while bytes.count % 12 != 0 { bytes.append(0) }
+        return Data(bytes.enumerated().map { $0.element ^ key[$0.offset % key.count] })
+    }
 
     private func keySSH(_ partial: VMImageDirectory) -> GuestSSH {
         GuestSSH(runner: host.runner, privateKey: host.storage.privateKey, hostKeys: .record(knownHosts: partial.knownHosts))
