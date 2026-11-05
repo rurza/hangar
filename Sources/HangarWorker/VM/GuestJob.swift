@@ -71,8 +71,13 @@ public struct GuestJobRunner: Sendable {
         self.home = home
     }
 
-    /// The data directory in the guest: no spaces, as Xcode Cloud scripts expect.
-    public var dataDirectory: String { home + "/hangar" }
+    /// The data directory in the guest: the image's workspace volume (Xcode Cloud's `/Volumes/workspace`), which holds
+    /// the disk's room for jobs; else in the home. No spaces, as Xcode Cloud scripts expect.
+    public var dataDirectory: String {
+        FileManager.default.isWritableFile(atPath: Self.workspaceVolume) ? Self.workspaceVolume + "/hangar" : home + "/hangar"
+    }
+
+    public static let workspaceVolume = "/Volumes/workspace"
 
     /// Runs the job described by `bundle`. `cancelled` and `stopReason` come from the host's control lines.
     public func run(

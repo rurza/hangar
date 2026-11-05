@@ -172,16 +172,22 @@ public struct VMImageBuilder: Sendable {
                 "read -r p && sudo -n dscl . -passwd /Users/admin \(Self.vanillaPassword) \"$p\" && printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo -n tee /etc/ssh/sshd_config.d/100-hangar.conf >/dev/null",
                 input: SensitiveText(passwords.generate().value + "\n"))
         }
-        // The disk file grew before boot; the APFS container takes the new space (the vanilla image has no recovery
-        // partition behind it). A job's DerivedData and archive need room the vanilla image's 50 GB does not leave.
-        try await step("grow the system volume to the disk's size") {
+        // The disk file grew before boot. The recovery partition sits right after the system container and SIP will not
+        // let it go, so the new space becomes its own APFS volume, /Volumes/workspace (Xcode Cloud's path), where a
+        // job's checkout, DerivedData and TMPDIR go.
+        try await step("add the workspace volume in the disk's free space") {
             try await ssh.require(
-                "grow the APFS container", user: "admin", host: address,
+                "add /Volumes/workspace", user: "admin", host: address,
                 """
-                store=$(diskutil info / | awk -F': *' '/APFS Physical Store/ {print $2}') && \\
-                (yes | sudo -n diskutil repairDisk disk0 >/dev/null 2>&1 || true) && \\
-                sudo -n diskutil apfs resizeContainer "$store" 0 >/dev/null && \\
-                df -h / | tail -1
+                if ! diskutil info /Volumes/workspace >/dev/null 2>&1; then \\
+                  disk=$(diskutil info / | awk -F': *' '/APFS Physical Store/ {print $2}' | sed -E 's/s[0-9]+$//') && \\
+                  (yes | sudo -n diskutil repairDisk "$disk" >/dev/null 2>&1 || true) && \\
+                  last=$(diskutil list "$disk" | awk '/^ *[0-9]+:/ {id=$NF} END {print id}') && \\
+                  sudo -n diskutil addPartition "$last" APFS workspace 0 >/dev/null; \\
+                fi && \\
+                sudo -n diskutil enableOwnership /Volumes/workspace >/dev/null && \\
+                sudo -n chown \(Self.buildUser):staff /Volumes/workspace && \\
+                df -h /Volumes/workspace | tail -1
                 """, onLine: progress)
         }
         // 2. builder: a standard user, no sudo, logged in automatically so the saved state holds its GUI session.
