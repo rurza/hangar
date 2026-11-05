@@ -28,7 +28,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /health` | | `200` `{"ok": true, "version": "0.7.4"}` |
+| `GET /health` | | `200` `{"ok": true, "version": "0.8.0"}` |
 | `GET /apps` | | `200` `[App]`; apps without `iconURL` get one resolved in the background (at most one attempt per app per hour), shown on a later request |
 | `POST /apps` | `CreateAppRequest` | `201` `App`; `400` `invalid_input` when `iconURL` is not an https URL with a host; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
 | `GET /apps/{id}` | | `200` `App` |
@@ -54,6 +54,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `POST /builds/{id}/cancel` | | `200` `Build` |
 | `GET /jobs/{id}` | | `200` `Job` |
 | `GET /jobs/{id}/log?step=&tail=` | both optional | `200` `[LogEntry]`: the step's entries, then the last `tail` of them |
+| `GET /jobs/{id}/log?format=text&step=&tail=` | | `200` `text/plain` attachment, one `<time> [<step>] <line>` per entry |
 | `GET /jobs/{id}/log?follow=1&step=` | | SSE stream, see below |
 | `GET /jobs/{id}/artifacts` | | `200` `[ArtifactInfo]` `{name, sizeBytes}`, sorted by name |
 | `GET /jobs/{id}/artifacts/{name}` | | `200` the file, `application/octet-stream`, `Content-Disposition: attachment` |
@@ -89,6 +90,8 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 ### Jobs
 
 A `Job`'s `action` is the workflow action it runs: `{kind: "archive", scheme, platform, export}` or `{kind: "test", scheme, platform, destination?, testPlan?}` (an action without `kind`, stored before test actions existed, is an archive). A deploy creates one job per action of either kind; they share the build's number. A test job's `steps` are `checkout`, `post-clone`, `pre-xcodebuild`, `test`, `post-xcodebuild`, `upload-artifacts` and `cleanup`.
+
+The `archive`, `test` and `export` steps' logs are condensed by the worker: each xcodebuild task is one line starting with `▸ ` ("▸ Compile LegiloKit (arm64)", "▸ Sign Legilo.app"), its invocation is dropped, and everything the tools printed is kept. The log exactly as xcodebuild printed it (masked like every line) is the job's `full-log.txt` artifact, uploaded when the condensed log leaves something out.
 
 #### Test outputs
 

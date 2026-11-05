@@ -190,6 +190,25 @@ import Testing
         #expect(result.out == "[Legilo] 08:00:00 [archive] Compiling\n")
     }
 
+    @Test func logsCondenseXcodebuildUnlessRaw() async throws {
+        let lines = [
+            "Ld /x/Legilo.app/Legilo normal arm64 (in target 'Legilo' from project 'Legilo')",
+            "    /usr/bin/clang -Xlinker -reproducible -o /x/Legilo.app/Legilo",
+        ]
+        let entries = lines.map { LogEntry(t: H.t0, step: "archive", line: $0) }
+        let condensed = await H(responses: [try H.json(H.job(status: .failed)), try H.json(entries)])
+            .run(["logs", H.jobID.uuidString])
+        #expect(condensed.exitCode == 0)
+        #expect(condensed.out == "08:00:00 [archive] ▸ Link Legilo (arm64)\n")
+
+        // No full log kept: the stored lines as they are.
+        let raw = await H(responses: [try H.json(H.job(status: .failed)), try H.json([ArtifactInfo]()), try H.json(entries)])
+            .run(["logs", H.jobID.uuidString, "--raw"])
+        #expect(raw.exitCode == 0)
+        #expect(raw.out == lines.map { "08:00:00 [archive] \($0)\n" }.joined())
+        #expect(await H(responses: []).run(["logs", H.jobID.uuidString, "--raw", "--follow"]).exitCode != 0)
+    }
+
     @Test func statusExitCodeFollowsTheBuild() async throws {
         let cancelled = H.build(H.job(status: .cancelled))
         let result = await H(responses: [try H.json(cancelled), try H.json([H.app]), try H.json([Machine]())])

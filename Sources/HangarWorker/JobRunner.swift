@@ -78,7 +78,7 @@ public struct JobRunner: Sendable {
         let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID,
             temporaryRoot: temporaryRoot)
         let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
-        let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock)
+        let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock, fullLogPath: layout.fullLog)
         let materializer = SecretsMaterializer(directory: layout.secrets)
 
         do {
@@ -144,7 +144,18 @@ public struct JobRunner: Sendable {
             let collection = try await ArtifactCollector(runner: runner)
                 .collect(layout: layout, scheme: assignment.job.action.scheme, log: lines)
             var failures = collection.failures
-            for artifact in collection.artifacts {
+            var artifacts = collection.artifacts
+            // The log as xcodebuild printed it, when the server's is condensed: a copy, as lines keep coming.
+            let fullLog = layout.jobDirectory + "/artifacts/" + JobLog.fullLogArtifactName
+            do {
+                if try log.copyFullLog(to: fullLog) {
+                    artifacts.append((JobLog.fullLogArtifactName, URL(fileURLWithPath: fullLog)))
+                }
+            } catch {
+                lines("error: could not copy the full log: \(error)")
+                failures.append("could not copy the full log: \(error)")
+            }
+            for artifact in artifacts {
                 lines("uploading \(artifact.name)")
                 do {
                     try await connection.uploadArtifact(jobID: jobID, name: artifact.name, fileURL: artifact.url)

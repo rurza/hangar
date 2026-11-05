@@ -23,7 +23,7 @@ If either is missing, say so and stop.
 - Recent builds: `hangar builds [--app <app>] [--limit <n>] --json`, to find a build id.
 - Why a job is queued: the job's `queueNote` in `hangar status`. For machine context run `hangar machines list` (or `--json`: `name`, `lastSeenAt`, `report.runningJobIDs`, `report.xcodes`).
 - Why a build failed: find the failed job and step in `hangar status <id> --json`, then `hangar logs <id> --step <failed step> --tail 80`. `<id>` can be a job id or a build id; use the job id when a build has several jobs.
-- Whole log: `hangar logs <id>` (add `--tail <n>` to limit).
+- Whole log: `hangar logs <id>` (add `--tail <n>` to limit). xcodebuild's output is condensed to one `▸` line per build task with every error and warning kept; add `--raw` only when the compiler invocations themselves matter.
 
 ## Reporting
 

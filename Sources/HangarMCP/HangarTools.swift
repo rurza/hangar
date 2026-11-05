@@ -521,20 +521,25 @@ public struct HangarTools: Sendable {
                 The end of a job's log, as `[step] line`, at most 1000 lines and 64 KB. Give `job_id`, or `build_id` \
                 (its only job, else its first failed job). `step` narrows it to one step (checkout, post-clone, \
                 pre-xcodebuild, archive, test, stamp, export, post-xcodebuild, post-action:testflight, \
-                upload-artifacts, cleanup). Secrets are masked by the server.
+                upload-artifacts, cleanup). xcodebuild's output is condensed like Xcode's build log: each build \
+                task is one `▸` line ("▸ Compile LegiloKit (arm64)") and every error, warning and note is kept \
+                with its source excerpt. `raw: true` gives the lines exactly as xcodebuild printed them (compiler \
+                invocations included) when the job kept its full log. Secrets are masked.
                 """,
             inputSchema: Schema.object([
                 "job_id": Schema.string("The job's UUID, from get_build."),
                 "build_id": Schema.string("The build's UUID, when the job is not known."),
                 "step": Schema.string("Only this step."),
                 "tail": Schema.integer("Lines from the end. Default 200.", minimum: 1, maximum: Self.maxLogLines),
+                "raw": Schema.boolean("Default false. true: xcodebuild's output uncondensed, invocations included."),
             ]),
             hints: .read
         ) { arguments in
             let job = try await resolveJob(arguments)
             let step = try arguments.optionalString("step")
             let tail = try arguments.int("tail", default: 200, in: 1...Self.maxLogLines)
-            let entries = try await api.log(jobID: job.id, step: step, tail: tail)
+            let raw = try arguments.bool("raw", default: false)
+            let (entries, source) = try await api.readableLog(jobID: job.id, step: step, tail: tail, raw: raw)
             var lines = entries.map { "[\($0.step)] \($0.line)" }
             var bytes = 0
             var kept: [String] = []
@@ -549,6 +554,7 @@ public struct HangarTools: Sendable {
                 "Job \(job.id.uuidString) (\(Views.label(job.action)), \(job.status.rawValue))"
                 + (step.map { ", step \($0)" } ?? "") + ": last \(lines.count) line(s)"
                 + (truncated ? ", cut to 64 KB" : "")
+                + Self.sourceNote(source)
             return ToolOutput(text: ([header, ""] + (lines.isEmpty ? ["(no log lines)"] : lines)).joined(separator: "\n"))
         }
     }
@@ -701,6 +707,15 @@ extension HangarTools {
         return parts.isEmpty ? spec.name : "\(spec.name) (\(parts.joined(separator: "; ")))"
     }
 
+    /// What the header of `get_build_log` adds about the lines' source.
+    static func sourceNote(_ source: LogSource) -> String {
+        switch source {
+        case .condensed: ", xcodebuild condensed (raw: true for every line)"
+        case .full: ", uncondensed (from the job's full-log.txt)"
+        case .stored: ", as stored (this job kept no full log)"
+        }
+    }
+
     func appSlugs() async -> [UUID: String] {
         guard let apps = try? await api.apps() else { return [:] }
         return Dictionary(apps.map { ($0.id, $0.slug) }, uniquingKeysWith: { first, _ in first })
@@ -717,7 +732,7 @@ extension HangarTools {
         if excerpts {
             for job in build.jobs where job.status == .failed {
                 let step = job.steps.first { $0.status == .failed }?.name
-                if let entries = try? await api.log(jobID: job.id, step: step, tail: Self.excerptLines) {
+                if let (entries, _) = try? await api.readableLog(jobID: job.id, step: step, tail: Self.excerptLines) {
                     logs[job.id] = entries.map { "[\($0.step)] \($0.line)" }
                 }
             }

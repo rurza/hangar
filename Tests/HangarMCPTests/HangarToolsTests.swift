@@ -199,7 +199,8 @@ import Testing
         #expect(result["failureCause"] == .string("Archive – iOS · Legilo failed at archive: archive: xcodebuild exited with 65"))
         #expect(result["app"] == .string("legilo"))
         #expect(result["finished"] == .bool(true))
-        #expect(transport.requests("GET", "jobs/\(build.jobs[0].id.uuidString)/log").first?.query == "step=archive&tail=30")
+        // The whole step, so condensing never starts inside a task; the excerpt is its end.
+        #expect(transport.requests("GET", "jobs/\(build.jobs[0].id.uuidString)/log").first?.query == "step=archive")
         guard case .array(let jobs)? = result["jobs"], case .object(let job) = jobs[0] else { Issue.record("no jobs"); return }
         #expect(job["machine"] == .string("mini"))
         #expect(job["failedStep"] == .string("archive"))
@@ -219,10 +220,52 @@ import Testing
         transport.on("GET jobs/\(jobID.uuidString)/log", json: (0..<200).map { LogEntry(t: Fixtures.t0, step: "archive", line: "\($0) \(long)") })
         let output = try await Fixtures.call("get_build_log", tools, ["build_id": .string(build.id.uuidString), "tail": 5000])
         #expect(!output.isError)
-        #expect(transport.requests("GET", "jobs/\(jobID.uuidString)/log").first?.query == "tail=1000")
+        #expect(transport.requests("GET", "jobs/\(jobID.uuidString)/log").count == 1)
         #expect(output.text.utf8.count <= HangarTools.maxLogBytes + 200)
         #expect(output.text.contains("cut to 64 KB"))
         #expect(output.text.hasSuffix("199 \(long)"))
+    }
+
+    @Test func buildLogCondensesXcodebuildByDefaultAndGivesTheFullLogWhenRaw() async throws {
+        let build = Fixtures.build(status: .failed, jobStatus: .failed, failedStep: "archive")
+        let jobID = build.jobs[0].id
+        transport.on("GET builds/\(build.id.uuidString)", json: build)
+        // A job logged before workers condensed: the tool condenses it.
+        let stored = [
+            "SwiftDriver Sync normal arm64 com.apple.xcode.tools.swift.compiler (in target 'Sync' from project 'Legilo')",
+            "    builtin-SwiftDriver -- swiftc -module-name Sync /r/A.swift /r/B.swift",
+            "/r/A.swift:3:8: error: no such module 'Missing'",
+            "",
+            "** ARCHIVE FAILED **",
+        ].map { LogEntry(t: Fixtures.t0, step: "archive", line: $0) }
+        transport.on("GET jobs/\(jobID.uuidString)/log", json: stored)
+        let condensed = try await Fixtures.call("get_build_log", tools, ["build_id": .string(build.id.uuidString)])
+        #expect(!condensed.isError, "\(condensed.text)")
+        #expect(condensed.text.contains("xcodebuild condensed (raw: true for every line)"))
+        #expect(condensed.text.hasSuffix("""
+            [archive] ▸ Compile Sync (arm64)
+            [archive] /r/A.swift:3:8: error: no such module 'Missing'
+            [archive] ** ARCHIVE FAILED **
+            """))
+
+        transport.on("GET jobs/\(jobID.uuidString)/artifacts", json: [ArtifactInfo(name: "full-log.txt", sizeBytes: 300)])
+        let full = """
+            2027-01-15T08:00:00.000Z [checkout] git fetch
+            2027-01-15T08:00:01.000Z [archive] SwiftDriver Sync normal arm64 (in target 'Sync' from project 'Legilo')
+            2027-01-15T08:00:01.500Z [archive]     builtin-SwiftDriver -- swiftc -module-name Sync
+            2027-01-15T08:00:02.000Z [archive] \("")
+
+            """
+        transport.on("GET jobs/\(jobID.uuidString)/artifacts/full-log.txt", StubTransport.Response(body: Data(full.utf8)))
+        let raw = try await Fixtures.call(
+            "get_build_log", tools, ["build_id": .string(build.id.uuidString), "raw": .bool(true), "step": "archive"])
+        #expect(!raw.isError, "\(raw.text)")
+        #expect(raw.text.contains("uncondensed (from the job's full-log.txt)"))
+        #expect(raw.text.hasSuffix("""
+            [archive] SwiftDriver Sync normal arm64 (in target 'Sync' from project 'Legilo')
+            [archive]     builtin-SwiftDriver -- swiftc -module-name Sync
+            [archive] \("")
+            """))
     }
 
     @Test func buildLogNeedsAJobWhenSeveralSucceeded() async throws {

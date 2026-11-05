@@ -55,7 +55,7 @@ Read (any scope):
 | `list_builds` | Recent builds with each job's state. |
 | `get_build` | A build's status, each job's step, machine, queue note, failure reason, test results, and the end of a failed step's log. |
 | `wait_for_build` | Waits up to 10 minutes for a build to finish, then returns `get_build`'s answer. |
-| `get_build_log` | The end of a job's log, at most 1000 lines and 64 KB, optionally one step. |
+| `get_build_log` | The end of a job's log, at most 1000 lines and 64 KB, optionally one step. xcodebuild's output is condensed to one `▸` line per task with every diagnostic kept; `raw: true` gives it uncondensed. |
 | `list_artifacts` | Each job's artifacts with their download URLs (never their contents). |
 | `list_machines` | Build Macs: online, Xcode versions, simulator runtimes, tools, signing, disk. |
 | `list_testflight_groups` | The app's TestFlight groups. |

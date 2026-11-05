@@ -431,6 +431,25 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.logLines.contains("** ARCHIVE FAILED **"))
     }
 
+    @Test func aCondensedArchiveLogUploadsTheFullLogToo() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.runner.recording.script(Self.isArchive, lines: [
+            "SwiftDriver Demo normal arm64 com.apple.xcode.tools.swift.compiler (in target 'Demo' from project 'Demo')",
+            "    cd /Users/me/w/Demo",
+            "    builtin-SwiftDriver -- swiftc -module-name Demo /Users/me/w/Demo/A.swift /Users/me/w/Demo/B.swift",
+            "",
+            "** ARCHIVE SUCCEEDED **",
+        ])
+
+        let result = await fixture.run()
+
+        #expect(result.status == .succeeded)
+        #expect(fixture.connection.logLines.contains("▸ Compile Demo (arm64)"))
+        #expect(!fixture.connection.logLines.contains { $0.contains("builtin-SwiftDriver") })
+        #expect(fixture.connection.uploads.last == "full-log.txt")
+    }
+
     @Test func failedStepNamesTheFirstErrorItsLogShows() async throws {
         let fixture = try Fixture()
         defer { fixture.removeAll() }
