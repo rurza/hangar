@@ -9,10 +9,14 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
     public var dataDirectory: String
     /// Where checkouts, DerivedData, job directories and each job's `TMPDIR` go. Nil: `defaultWorkDirectory`.
     public var workDirectory: String?
+    /// VM builds (VM builds design): set, every job runs in a fresh macOS VM and none on the host. Nil: host builds.
+    public var vm: VMSettings?
 
     public init(
-        serverURL: URL, token: String, maxConcurrentJobs: Int = 1, dataDirectory: String, workDirectory: String? = nil
+        serverURL: URL, token: String, maxConcurrentJobs: Int = 1, dataDirectory: String, workDirectory: String? = nil,
+        vm: VMSettings? = nil
     ) {
+        self.vm = vm
         self.serverURL = serverURL
         self.token = token
         self.maxConcurrentJobs = maxConcurrentJobs
@@ -57,6 +61,7 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
         maxConcurrentJobs = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentJobs) ?? 1
         dataDirectory = try container.decode(String.self, forKey: .dataDirectory)
         workDirectory = try container.decodeIfPresent(String.self, forKey: .workDirectory)
+        vm = try container.decodeIfPresent(VMSettings.self, forKey: .vm)
     }
 
     public struct LoadError: Error, CustomStringConvertible, Equatable {
