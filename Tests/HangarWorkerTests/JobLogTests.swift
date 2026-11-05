@@ -134,10 +134,57 @@ extension JobLogTests {
         let masked = String(repeating: "x", count: JobLog.maxLineBytes - 5) + "[masked]" + String(repeating: "y", count: 100)
         let cut = masked.utf8.count - JobLog.maxLineBytes
         #expect(connection.logLines.count == 3)
-        #expect(connection.logLines[0] == String(masked.prefix(JobLog.maxLineBytes)) + "… [truncated \(cut) bytes]")
+        #expect(connection.logLines[0] == String(masked.prefix(JobLog.maxLineBytes)) + "… [line too long to show: \(cut) bytes more are in the full log]")
         #expect(!connection.logLines[0].contains("hunte"))
         #expect(connection.logLines[1] == "short")
-        #expect(connection.logLines[2] == String(repeating: "x", count: JobLog.maxLineBytes - 1) + "… [truncated 3 bytes]")
+        #expect(connection.logLines[2] == String(repeating: "x", count: JobLog.maxLineBytes - 1) + "… [line too long to show: 3 bytes more are in the full log]")
+        #expect(JobLog.sizeDescription(1) == "1 byte" && JobLog.sizeDescription(53_308) == "52 KB")
+    }
+
+    @Test func xcodebuildStepsAreCondensedAndTheFullLogKeepsEverything() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("joblog-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fullLog = directory.appendingPathComponent("job/full-log.txt").path
+        let log = JobLog(
+            jobID: UUID(), masker: SecretMasker(secrets: ["hunter2"]), connection: connection, clock: clock,
+            fullLogPath: fullLog)
+        let compile = "SwiftDriver LegiloKit normal arm64 com.apple.xcode.tools.swift.compiler (in target 'LegiloKit' from project 'Legilo')"
+        log.line(step: "post-clone", "    cd somewhere")
+        log.line(step: "archive", compile)
+        log.line(step: "archive", "    builtin-SwiftDriver -- swiftc -module-name LegiloKit -token hunter2")
+        log.line(step: "archive", "")
+        log.line(step: "archive", "** ARCHIVE SUCCEEDED **")
+        await log.flush()
+
+        #expect(connection.logLines == ["    cd somewhere", "▸ Compile LegiloKit (arm64)", "** ARCHIVE SUCCEEDED **"])
+        let written = try String(contentsOfFile: fullLog, encoding: .utf8).split(separator: "\n", omittingEmptySubsequences: false)
+        #expect(written.count == 6)
+        #expect(written[0].hasSuffix("Z [post-clone]     cd somewhere"))
+        #expect(written[1].hasSuffix("[archive] \(compile)"))
+        #expect(written[2].hasSuffix("[archive]     builtin-SwiftDriver -- swiftc -module-name LegiloKit -token [masked]"))
+        #expect(written[3].hasSuffix("[archive] "))
+        #expect(written.last == "")
+
+        let copy = directory.appendingPathComponent("artifacts-full-log.txt").path
+        #expect(try log.copyFullLog(to: copy))
+        #expect(try String(contentsOfFile: copy, encoding: .utf8) == String(contentsOfFile: fullLog, encoding: .utf8))
+    }
+
+    @Test func aFullLogThatAddsNothingIsNotCopied() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("joblog-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let log = JobLog(
+            jobID: UUID(), masker: SecretMasker(secrets: []), connection: connection, clock: clock,
+            fullLogPath: directory.appendingPathComponent("full-log.txt").path)
+        log.line(step: "checkout", "git fetch")
+        log.line(step: "archive", "** ARCHIVE SUCCEEDED **")
+        let copy = directory.appendingPathComponent("copy.txt").path
+        #expect(try !log.copyFullLog(to: copy))
+        #expect(!FileManager.default.fileExists(atPath: copy))
+        // A cut line is reason enough.
+        log.line(step: "checkout", String(repeating: "x", count: JobLog.maxLineBytes + 10))
+        #expect(try log.copyFullLog(to: copy))
+        await log.flush()
     }
 
     @Test func aRefusedBatchIsSplitAndAPoisonLineDropped() async {

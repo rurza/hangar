@@ -28,6 +28,8 @@ public struct WorkspaceLayout: Sendable, Equatable {
     public var export: String { "\(jobDirectory)/export" }
     public var upload: String { "\(jobDirectory)/upload" }
     public var resultBundle: String { "\(jobDirectory)/result.xcresult" }
+    /// Everything the job logged, uncondensed; see `JobLog`.
+    public var fullLog: String { "\(jobDirectory)/full-log.txt" }
     /// The job's `TMPDIR`, outside the job directory: `<temporaryRoot>/<job ID>`.
     public var temporary: String { "\(temporaryRoot)/\(jobID.uuidString)" }
 
