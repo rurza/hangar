@@ -125,6 +125,15 @@ import Testing
         #expect(await Self.doctor(Self.scriptedRunner()).report(runningJobIDs: ids).runningJobIDs == ids)
     }
 
+    @Test func reportsTheUserTheWorkerRunsAs() async {
+        let doctor = Doctor(
+            runner: Self.scriptedRunner(),
+            locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: "/nonexistent"),
+            knownTools: [], dataDirectory: NSTemporaryDirectory(), userName: "hangar")
+        #expect(await doctor.report(runningJobIDs: []).runningUser == "hangar")
+        #expect(await Self.doctor(Self.scriptedRunner()).report(runningJobIDs: []).runningUser == NSUserName())
+    }
+
     @Test func failedProbesFallBackToConservativeDefaults() async {
         let runner = RecordingProcessRunner()
         runner.script({ _ in true }, lines: ["boom"], exitCode: 1)

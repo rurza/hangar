@@ -14,6 +14,7 @@ public struct Doctor: Sendable {
     private let simulatorTimeout: Duration
     private let simulatorRefresh: TimeInterval
     private let now: @Sendable () -> Date
+    private let userName: String
     /// The last simulator runtimes listed and when the list was last attempted, shared by the copies of this Doctor.
     private let simulators = SimulatorListCache()
 
@@ -24,8 +25,10 @@ public struct Doctor: Sendable {
         knownTools: [String] = ["git", "brew", "xcodegen", "rclone", "sentry-cli"],
         dataDirectory: String = NSHomeDirectory(), clock: any Clock<Duration> = ContinuousClock(),
         signTimeout: Duration = .seconds(10), simulatorTimeout: Duration = .seconds(10),
-        simulatorRefresh: TimeInterval = 600, now: @escaping @Sendable () -> Date = Date.init
+        simulatorRefresh: TimeInterval = 600, now: @escaping @Sendable () -> Date = Date.init,
+        userName: String = NSUserName()
     ) {
+        self.userName = userName
         self.simulatorTimeout = simulatorTimeout
         self.simulatorRefresh = simulatorRefresh
         self.now = now
@@ -56,7 +59,8 @@ public struct Doctor: Sendable {
             signingIdentities: Self.uniqueNames(identities),
             xcodeAccountSignedIn: await xcodeAccount,
             simulatorRuntimes: await simulatorRuntimes(),
-            capabilities: WorkerCapability.all)
+            capabilities: WorkerCapability.all,
+            runningUser: userName)
     }
 
     // MARK: Probes
