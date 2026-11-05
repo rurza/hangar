@@ -3,7 +3,7 @@
 
 import { api, ApiError, seg } from '../api.js';
 import {
-  button, confirm, field, h, relativeTime, replaceChildren, sheet, spinner, svg, toast,
+  button, checkBadge, confirm, field, h, relativeTime, replaceChildren, sheet, spinner, svg, toast,
 } from '../ui.js';
 import {
   filterRepositories, parseRepositoryURL, rankAppStoreConnectApps, rankRepositories,
@@ -29,6 +29,7 @@ export function openAddAppSheet({ onAdded } = {}) {
     manual: null, // { name, ascID, for } typed by hand instead (`for`: the detected app it is for, or null)
     picking: null, // the detected app whose App Store Connect picker is open
     manualFor: undefined, // the detected app the typed-ID form is for; null: none in particular; undefined: closed
+    autoMatched: false, // step 2 was decided by Hangar: one app in the repository, found in App Store Connect
   };
   let repos = null; // GitHubRepo[], loaded once
   let reposError = null;
@@ -40,6 +41,7 @@ export function openAddAppSheet({ onAdded } = {}) {
   const content = h('div', { class: 'add-app-content' });
   const handle = sheet({
     title: 'Add App',
+    anchor: 'top', // the steps differ in height: the top edge stays put and the sheet grows downwards
     body: h('div', { class: 'add-app' }, steps, content),
     actions: [],
     beforeDismiss: () => (state.repo ? confirm({
@@ -59,10 +61,18 @@ export function openAddAppSheet({ onAdded } = {}) {
   }
 
   function render() {
-    replaceChildren(steps, STEPS.map(([id, label], index) => h('li', {
-      class: ['add-app-step', id === state.step && 'current'],
-      'aria-current': id === state.step ? 'step' : null,
-    }, h('span', { class: 'add-app-step-number', 'aria-hidden': 'true' }, String(index + 1)), label)));
+    const at = STEPS.findIndex(([id]) => id === state.step);
+    replaceChildren(steps, STEPS.map(([id, label], index) => {
+      const done = index < at;
+      return h('li', {
+        class: ['add-app-step', id === state.step && 'current', done && 'done'],
+        'aria-current': id === state.step ? 'step' : null,
+      },
+      done ? checkBadge('add-app-step-number') : h('span', { class: 'add-app-step-number', 'aria-hidden': 'true' }, String(index + 1)),
+      h('span', { class: 'add-app-step-text' },
+        h('span', null, label, done ? h('span', { class: 'visually-hidden' }, ' (done)') : null),
+        id === 'app' && done && state.autoMatched ? h('span', { class: 'add-app-step-caption' }, 'Matched automatically') : null));
+    }));
     if (state.step === 'repo') renderRepoStep();
     else if (state.step === 'app') renderAppStep();
     else renderReviewStep();
@@ -153,7 +163,8 @@ export function openAddAppSheet({ onAdded } = {}) {
       },
       h('span', { class: 'pick-item-text' },
         h('span', { class: 'pick-item-name' },
-          h('span', { class: 'secondary' }, `${owner}/`), name,
+          // Owner and name are one run of text; the flex gap only separates the badges.
+          h('span', { class: 'pick-item-title' }, h('span', { class: 'secondary' }, `${owner}/`), name),
           repo.isPrivate ? lockBadge() : null,
           repo.archived ? h('span', { class: 'pick-badge' }, 'Archived') : null),
         repo.description ? h('span', { class: 'pick-item-detail' }, repo.description) : null),
@@ -169,6 +180,7 @@ export function openAddAppSheet({ onAdded } = {}) {
   }
 
   function pickRepo(repo) {
+    state.autoMatched = false;
     if (state.repo?.fullName !== repo.fullName) {
       state.inspection = null;
       state.app = null;
@@ -207,7 +219,9 @@ export function openAddAppSheet({ onAdded } = {}) {
         renderAppStep();
       },
     }, 'Enter the App Store Connect app ID by hand');
-    showManual.hidden = state.manualFor === null;
+    // Typing the ID is the fallback for an app Hangar could not match; with a match it is only noise.
+    const matched = apps.some((app) => app.appStoreConnect && !app.appStoreConnect.registered);
+    showManual.hidden = state.manualFor === null || matched;
 
     replaceChildren(content,
       inspection.hasWorkflowFile
@@ -261,6 +275,7 @@ export function openAddAppSheet({ onAdded } = {}) {
       state.manual = null;
       if (inspection.apps.length === 1 && ready.length === 1) {
         state.app = ready[0];
+        state.autoMatched = true;
         go('review');
         return;
       }
@@ -314,13 +329,14 @@ export function openAddAppSheet({ onAdded } = {}) {
         onClick: () => {
           state.app = app;
           state.manual = null;
+          state.autoMatched = false;
           go('review');
         },
       },
       detectedIcon(app),
       text(asc.name, asc.registered
         ? h('span', { class: 'detected-status' }, 'Already in Hangar')
-        : h('span', { class: 'detected-status found' }, 'Found in App Store Connect ✓')));
+        : h('span', { class: 'detected-status found' }, checkBadge('found-check'), 'In App Store Connect')));
     }
     const small = 'button button-secondary button-small';
     let status;
@@ -494,13 +510,13 @@ export function openAddAppSheet({ onAdded } = {}) {
         ? h('div', { class: 'add-app-callout warning', role: 'note' },
           `The App Store Connect app’s bundle ID is ${asc.bundleID} — the repository builds ${app.bundleIDs.join(', ')}. Builds upload to the App Store Connect app only if they match.`)
         : null,
-      h('p', { class: 'section-footer' }, hasWorkflowFile
-        ? 'Builds use the repository’s .hangar.yml.'
-        : 'Next, Hangar sets up the workflow from what it found in the repository.'));
+      hasWorkflowFile
+        ? h('p', { class: 'add-app-next' }, 'Builds use the repository’s .hangar.yml.')
+        : h('p', { class: 'add-app-next' }, 'Next, Hangar fills in the workflow from what it found in the repository.'));
     handle.setActions([
       { label: 'Back', kind: 'secondary', onClick: () => { go('app'); return false; } },
       {
-        label: 'Add App',
+        label: hasWorkflowFile ? 'Add App' : 'Add App and Set Up Workflow',
         kind: 'primary',
         onClick: async () => {
           const request = { name, repoURL, appStoreConnectAppID: ascID };

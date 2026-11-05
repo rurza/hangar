@@ -4,7 +4,9 @@
 import { api } from '../api.js';
 import { button, card, confirm, field, h, page, replaceChildren, section, toast } from '../ui.js';
 import { variablesEditor } from './variables.js';
-import { appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, problem, withBusy } from './setup.js';
+import {
+  ASC_KEYS_URL, appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, issuerField, keyDropZone, problem, withBusy,
+} from './setup.js';
 
 const GITHUB_TOKEN = 'HANGAR_GITHUB_TOKEN';
 
@@ -48,13 +50,13 @@ export async function settingsPage(params, context) {
   },
     section({
       title: 'App Store Connect',
-      footer: 'Hangar uses the API key for build numbers and TestFlight. Jobs get it as HANGAR_ASC_KEY_ID, '
-        + 'HANGAR_ASC_ISSUER_ID and HANGAR_ASC_KEY_PATH.',
+      footer: 'Hangar uses the API key for build numbers and TestFlight.',
     }, asc.element),
     section({
       title: 'GitHub',
-      footer: 'A token that can read your app repositories and their private Swift packages. Jobs get it as HANGAR_GITHUB_TOKEN.',
+      footer: 'Hangar reads your app repositories and their private Swift packages with it.',
     }, github.element),
+    advanced(),
     section({
       title: 'Global Variables',
       footer: 'Every job of every app gets these. An app variable with the same name replaces one of these.',
@@ -62,8 +64,19 @@ export async function settingsPage(params, context) {
     section({ title: 'About' }, about));
 }
 
-function cardTitle(text, trailing) {
-  return h('div', { class: 'card-title-row' }, h('h3', { class: 'card-title' }, text), trailing);
+/** For build scripts: the variables the key and the token reach jobs as. Most people never need it. */
+function advanced() {
+  return h('details', { class: 'disclosure' },
+    h('summary', null, 'Advanced: Variables in Build Scripts'),
+    h('p', { class: 'section-footer' },
+      'Jobs get the App Store Connect key as HANGAR_ASC_KEY_ID, HANGAR_ASC_ISSUER_ID and HANGAR_ASC_KEY_PATH, '
+      + 'and the GitHub token as HANGAR_GITHUB_TOKEN.'));
+}
+
+/** "Not connected" with a grey dot: a card's state before it is set up. */
+function notConnected() {
+  return h('p', { class: 'card-headline settings-state' },
+    h('span', { class: 'online-dot', 'aria-hidden': 'true' }), 'Not connected');
 }
 
 function fact(label, value) {
@@ -118,7 +131,6 @@ function ascCard(getStatus, refresh) {
     if (counted?.keyID !== key.keyID) countApps(key.keyID);
     const count = counted?.keyID === key.keyID ? counted.count : null;
     replaceChildren(element,
-      cardTitle('API Key'),
       h('p', { class: 'card-headline settings-state' },
         h('span', { class: 'online-dot online', 'aria-hidden': 'true' }),
         team ? 'Team key' : 'Individual key'),
@@ -137,92 +149,13 @@ function ascCard(getStatus, refresh) {
         })));
   }
 
+  /** The .p8 first: its name carries the key ID, and the Issuer ID is asked only when App Store Connect needs it. */
   function form(existing) {
-    let keyText = null; // the .p8 contents, kept only until saved
-    const keyIDInput = h('input', {
-      class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'characters',
-      autocorrect: 'off', placeholder: 'ABC123DEFG',
-      onInput: () => keyIDInput.removeAttribute('aria-invalid'),
-    });
-    const issuerInput = h('input', {
-      class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
-      autocorrect: 'off', placeholder: '69a6de70-…',
-    });
-    const fileHint = h('span', null, 'The AuthKey_<Key ID>.p8 file you downloaded from App Store Connect.');
-    const fileInput = h('input', {
-      class: 'input file-input', type: 'file', accept: '.p8',
-      onChange: () => readKey(),
-    });
-
-    function readKey() {
-      keyText = null;
-      fileInput.removeAttribute('aria-invalid');
-      const file = fileInput.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.addEventListener('load', () => {
-        const text = typeof reader.result === 'string' ? reader.result : '';
-        if (!text.includes('BEGIN PRIVATE KEY')) {
-          fileInput.value = '';
-          fileInput.setAttribute('aria-invalid', 'true');
-          toast(`${file.name} is not a private key (.p8) file.`, 'error');
-          return;
-        }
-        keyText = text;
-        // Fill in the key ID from the AuthKey_<ID>.p8 name when it is still empty.
-        const id = /^AuthKey_([A-Za-z0-9]+)\.p8$/.exec(file.name)?.[1];
-        if (id && keyIDInput.value.trim() === '') keyIDInput.value = id;
-      });
-      reader.addEventListener('error', () => {
-        fileInput.value = '';
-        toast(`${file.name} could not be read.`, 'error');
-      });
-      reader.readAsText(file);
-    }
-
-    const message = h('div');
-    const save = button('Test & Save Key', {
-      kind: 'primary',
-      onClick: async () => {
-        const keyID = keyIDInput.value.trim();
-        const issuerID = issuerInput.value.trim();
-        if (keyID === '') {
-          keyIDInput.setAttribute('aria-invalid', 'true');
-          keyIDInput.focus();
-          toast('Enter the key ID.', 'error');
-          return;
-        }
-        if (keyText === null) {
-          fileInput.setAttribute('aria-invalid', 'true');
-          fileInput.focus();
-          toast('Choose the .p8 file.', 'error');
-          return;
-        }
-        // The server tests the key with App Store Connect and saves it only when it is accepted.
-        replaceChildren(message);
-        let result;
-        try {
-          result = await withBusy(save, 'Testing…', () => api.post('/settings/asc-key',
-            { keyID, privateKey: keyText, ...(issuerID ? { issuerID } : {}) }));
-        } catch (error) {
-          if (error.code === 'issuer_required') issuerInput.setAttribute('aria-invalid', 'true');
-          replaceChildren(message, problem(error.message));
-          if (error.code === 'issuer_required') issuerInput.focus();
-          return;
-        }
-        counted = { keyID: result.keyID, count: result.appCount };
-        keyText = null;
-        fileInput.value = '';
-        toast(`Connected — ${appCountText(result.appCount)} in App Store Connect`, 'success');
-        editing = false;
-        await refresh();
-        focusFirst(element);
-      },
-    });
+    const slot = h('div', { class: 'form' });
     const cancel = existing
       ? button('Cancel', {
+        kind: 'plain', class: 'button button-plain',
         onClick: () => {
-          keyText = null;
           editing = false;
           render();
           focusFirst(element);
@@ -230,16 +163,69 @@ function ascCard(getStatus, refresh) {
       })
       : null;
 
-    return h('div', { class: 'form' },
-      cardTitle(existing ? 'Replace API Key' : 'API Key'),
-      existing ? null : h('p', { class: 'card-detail' },
-        'Not set up. Create a key in App Store Connect under Users and Access › Integrations, with the App Manager role.'),
-      h('div', { class: 'field-pair' },
-        field({ label: 'Key ID', control: keyIDInput }),
-        field({ label: 'Issuer ID', hint: 'Leave empty: Hangar asks for it if the key needs one.', control: issuerInput })),
-      field({ label: 'Private key (.p8)', hint: fileHint, control: fileInput }),
-      message,
-      h('div', { class: 'card-actions' }, cancel, save));
+    function showDrop() {
+      replaceChildren(slot,
+        existing ? null : notConnected(),
+        h('p', { class: 'card-detail' },
+          'Create a key in ', externalLink(ASC_KEYS_URL, 'App Store Connect › Users and Access › Integrations'),
+          ' (an individual key, or a team key with the App Manager role) and add its .p8 file.'),
+        keyDropZone(onKey),
+        cancel ? h('div', { class: 'card-actions' }, cancel) : null);
+    }
+
+    function onKey({ keyID, text, name }) {
+      const keyInput = h('input', {
+        class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'characters',
+        autocorrect: 'off', placeholder: 'ABC123DEFG', value: keyID ?? '',
+        onInput: () => keyInput.removeAttribute('aria-invalid'),
+      });
+      const extra = h('div', { class: 'found-key-extra' });
+      const save = button('Test & Save Key', { kind: 'primary', onClick: () => send(undefined, save) });
+      async function send(issuerID, control) {
+        const id = keyInput.value.trim().toUpperCase();
+        if (!id) {
+          keyInput.setAttribute('aria-invalid', 'true');
+          keyInput.focus();
+          return;
+        }
+        replaceChildren(extra);
+        let result;
+        try {
+          // The server tests the key with App Store Connect and saves it only when it is accepted.
+          result = await withBusy(control, 'Testing…', () => api.post('/settings/asc-key',
+            { keyID: id, privateKey: text, ...(issuerID ? { issuerID } : {}) }));
+        } catch (error) {
+          if (error.code === 'issuer_required') {
+            const issuer = issuerField((value, connect) => send(value, connect));
+            replaceChildren(extra, issuer.element);
+            issuer.focus();
+          } else {
+            replaceChildren(extra, problem(error.message));
+            if (issuerID) extra.append(issuerField((value, connect) => send(value, connect)).element);
+          }
+          return;
+        }
+        counted = { keyID: result.keyID, count: result.appCount };
+        toast(`Connected — ${appCountText(result.appCount)} in App Store Connect`, 'success');
+        editing = false;
+        await refresh();
+        focusFirst(element);
+      }
+      replaceChildren(slot,
+        h('p', { class: 'card-headline' }, name),
+        // The file name carries the key ID; only a renamed file needs it typed.
+        keyID ? h('p', { class: 'card-note' }, `Key ID ${keyID}, from the file name.`)
+          : field({ label: 'Key ID', hint: 'The file name does not carry it; copy it from App Store Connect.', control: keyInput }),
+        extra,
+        h('div', { class: 'card-actions' },
+          button('Choose Another', { kind: 'plain', class: 'button button-plain', onClick: showDrop }),
+          cancel,
+          save));
+      (keyID ? save : keyInput).focus();
+    }
+
+    showDrop();
+    return slot;
   }
 
   return { element, render };
@@ -283,7 +269,6 @@ function githubCard(getStatus, refresh) {
       },
     });
     replaceChildren(element,
-      cardTitle('Token'),
       h('p', { class: 'card-headline settings-state' },
         h('span', { class: 'online-dot online', 'aria-hidden': 'true' }),
         github?.login ? `Connected as ${github.login}` : 'Token set'),
@@ -334,6 +319,7 @@ function githubCard(getStatus, refresh) {
     });
     const cancel = isSet
       ? button('Cancel', {
+        kind: 'plain', class: 'button button-plain',
         onClick: () => {
           editing = false;
           render();
@@ -342,12 +328,11 @@ function githubCard(getStatus, refresh) {
       })
       : null;
     return h('div', { class: 'form' },
-      cardTitle(isSet ? 'Replace Token' : 'Token'),
-      isSet ? null : h('p', { class: 'card-detail' }, 'Not set.'),
+      isSet ? null : notConnected(),
       field({
         label: 'Personal access token',
         hint: h('span', null, externalLink(GITHUB_TOKEN_URL, 'Create a fine-grained token'),
-          ' with Contents: Read-only. GitHub checks it before it is saved; it cannot be read back.'),
+          ' with Contents: Read-only. GitHub checks it before it is saved; it can’t be read back.'),
         control: input,
       }),
       message,

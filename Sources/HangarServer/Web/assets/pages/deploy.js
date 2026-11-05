@@ -1,12 +1,14 @@
-// The Deploy sheet: pick a workflow at a branch or commit, see the build number it gets and where it runs, and
-// start the build.
+// The Deploy sheet: pick a branch (or type a tag or commit) and a workflow, read what the deploy will do, see
+// where it runs and the build number it gets, and start the build. Deploy stays off while no Mac can run the
+// workflow, so a build number is never spent on a build that would wait forever.
 
 import { api, seg } from '../api.js';
 import { navigate } from '../router.js';
-import { h, replaceChildren, sheet, spinner } from '../ui.js';
-import { actionLabel, isOnline } from './build.js';
+import { h, relativeTime, replaceChildren, sheet, spinner } from '../ui.js';
+import { listText, machineOnline, machineProblems, workflowSteps } from '../workflow-summary.js';
 
 const REF_DEBOUNCE_MS = 500;
+const REF_HINT = 'Pick a branch, or type a tag or commit SHA.';
 
 /** Error codes that are about the branch or commit and the workflow file found there. */
 const REF_ERRORS = new Set([
@@ -16,19 +18,6 @@ const REF_ERRORS = new Set([
 const NUMBER_ERRORS = new Set([
   'app_store_connect_not_configured', 'build_number_source_unavailable', 'build_number_not_integer',
 ]);
-
-/** "TestFlight · groups: Internal · wait for processing" for one post-action of a workflow. */
-function postActionSummary(spec) {
-  if (spec.name !== 'testflight') return spec.requiresApproval ? `${spec.name} · needs approval` : spec.name;
-  const settings = spec.settings ?? {};
-  const parts = ['TestFlight'];
-  const groups = Array.isArray(settings.groups) ? settings.groups : [];
-  if (groups.length) parts.push(`groups: ${groups.join(', ')}`);
-  if (settings['wait-for-processing'] ?? true) parts.push('wait for processing');
-  if (settings['submit-for-external-review']) parts.push('submit for external review');
-  if (spec.requiresApproval) parts.push('needs approval');
-  return parts.join(' · ');
-}
 
 /** Opens the Deploy sheet for `app` (an `App`). */
 export function openDeploySheet(app) {
@@ -43,36 +32,43 @@ export function openDeploySheet(app) {
   let debounce = null;
   let report = null; // NumbersReport
   let numberError = null;
-  let machines = []; // [Machine]
+  let machines = null; // [Machine], null until listed
+  let machinesError = null;
+  let branchesLoading = true;
 
   // MARK: Fields
 
-  const refHint = h('p', { class: 'field-hint', id: 'deploy-ref-hint' }, 'A branch, tag or commit SHA.');
+  const refHint = h('p', { class: 'field-hint', id: 'deploy-ref-hint' }, REF_HINT);
+  const branchList = h('datalist', { id: 'deploy-branches' });
   const refInput = h('input', {
-    class: 'input mono', type: 'text', id: 'deploy-ref', value: 'main', autocomplete: 'off', spellcheck: 'false',
-    autocapitalize: 'off', 'aria-describedby': 'deploy-ref-hint',
+    class: 'input mono', type: 'text', id: 'deploy-ref', autocomplete: 'off', spellcheck: 'false',
+    autocapitalize: 'off', placeholder: 'Loading branches…', list: 'deploy-branches',
+    'aria-describedby': 'deploy-ref-hint',
     onInput: () => scheduleWorkflows(),
   });
   const refField = h('div', { class: 'field' },
-    h('label', { class: 'field-label', for: 'deploy-ref' }, 'Branch or commit'),
+    h('label', { class: 'field-label', for: 'deploy-ref' }, 'Branch'),
     refInput,
+    branchList,
     refHint);
 
   const workflowSelect = h('select', {
     class: 'input select', id: 'deploy-workflow', 'aria-describedby': 'deploy-workflow-hint',
-    onChange: () => { renderWorkflowDetails(); update(); },
+    onChange: () => { renderWorkflowDetails(); renderWhere(); update(); },
   });
   const workflowHint = h('p', { class: 'field-hint', id: 'deploy-workflow-hint' });
-  const workflowDetails = h('div', { class: 'deploy-details' });
   const workflowField = h('div', { class: 'field' },
     h('label', { class: 'field-label', for: 'deploy-workflow' }, 'Workflow'),
     workflowSelect,
-    workflowHint,
-    workflowDetails);
+    workflowHint);
+
+  const workflowDetails = h('div', { class: 'deploy-plan', 'aria-live': 'polite' });
 
   const whereOptions = h('div', { class: 'where-options' });
+  const whereNotice = h('div', { class: 'deploy-notice-slot' });
   const whereField = h('fieldset', { class: 'field where-field' },
     h('legend', { class: 'field-label' }, 'Where'),
+    whereNotice,
     whereOptions);
 
   const numberPreview = h('div', { class: 'deploy-number', 'aria-live': 'polite' });
@@ -87,7 +83,7 @@ export function openDeploySheet(app) {
   const handle = sheet({
     title: `Deploy ${app.name}`,
     submitOnEnter: true,
-    body: h('div', { class: 'form deploy-form' }, refField, workflowField, whereField, numberPreview, reason),
+    body: h('div', { class: 'form deploy-form' }, refField, workflowField, workflowDetails, whereField, numberPreview, reason),
     actions: [{ label: 'Cancel', kind: 'cancel' }, deployAction],
     onClose: () => {
       clearTimeout(debounce);
@@ -98,6 +94,30 @@ export function openDeploySheet(app) {
   });
   const deployButton = handle.element.querySelector('.sheet-actions .button-primary');
   deployButton?.setAttribute('aria-describedby', 'deploy-reason');
+
+  // MARK: Branches
+
+  /** The repository's branches, the default one pre-filled; a typed tag or SHA still works. */
+  async function loadBranches() {
+    let branches = null;
+    try {
+      branches = await api.get(`${base}/branches`, { signal: lifetime.signal });
+    } catch (error) {
+      if (error.code === 'aborted') return;
+      setRefError(null);
+      refHint.textContent = `Branches could not be listed (${error.message}). Type a branch, tag or commit SHA.`;
+    }
+    branchesLoading = false;
+    refInput.placeholder = 'main';
+    replaceChildren(branchList, (branches?.branches ?? []).map((name) => h('option', { value: name })));
+    // Only when nothing was typed meanwhile.
+    if (refInput.value.trim() === '') {
+      refInput.value = branches?.defaultBranch ?? branches?.branches?.[0] ?? '';
+      if (refInput.value) loadWorkflows();
+      else { renderWorkflows(); update(); }
+    }
+    if (document.activeElement === handle.element || document.activeElement === document.body) refInput.focus();
+  }
 
   // MARK: Workflows at the ref
 
@@ -134,12 +154,13 @@ export function openDeploySheet(app) {
     workflowsRequest = null;
     workflowsLoading = false;
     renderWorkflows();
+    renderWhere();
     update();
   }
 
   function setRefError(message, invalid = Boolean(message)) {
     refError = message;
-    refHint.textContent = message ?? 'A branch, tag or commit SHA.';
+    refHint.textContent = message ?? REF_HINT;
     refHint.classList.toggle('field-error', Boolean(message));
     if (invalid) refInput.setAttribute('aria-invalid', 'true');
     else refInput.removeAttribute('aria-invalid');
@@ -149,7 +170,7 @@ export function openDeploySheet(app) {
     const previous = workflowSelect.value;
     const names = workflows && !workflowsLoading ? Object.keys(workflows.workflows?.workflows ?? {}).sort() : [];
     if (names.length === 0) {
-      const placeholder = workflowsLoading ? 'Loading…' : 'No workflows';
+      const placeholder = workflowsLoading || branchesLoading ? 'Loading…' : 'No workflows';
       replaceChildren(workflowSelect, h('option', { value: '' }, placeholder));
       workflowSelect.disabled = true;
     } else {
@@ -158,11 +179,11 @@ export function openDeploySheet(app) {
       workflowSelect.disabled = false;
     }
     if (workflowsLoading) {
-      workflowHint.textContent = 'Reading the workflow file…';
+      workflowHint.textContent = 'Reading the workflow at this branch…';
     } else if (workflows) {
       const commit = String(workflows.commit ?? '').slice(0, 7);
       workflowHint.textContent = workflows.source === 'hangar'
-        ? `Defined in Hangar · commit ${commit}`
+        ? `Defined in Hangar · builds commit ${commit}`
         : `From .hangar.yml at ${commit}`;
     } else {
       workflowHint.textContent = refError ? 'Fix the branch or commit to see its workflows.' : '';
@@ -175,23 +196,18 @@ export function openDeploySheet(app) {
     return workflows.workflows?.workflows?.[workflowSelect.value] ?? null;
   }
 
+  /** What the deploy does, as a short numbered list of sentences. */
   function renderWorkflowDetails() {
     const workflow = selectedWorkflow();
     if (!workflow) {
       replaceChildren(workflowDetails);
+      workflowDetails.hidden = true;
       return;
     }
-    const detail = (label, value) => h('div', { class: 'fact' },
-      h('dt', { class: 'fact-label' }, label),
-      h('dd', { class: 'fact-value deploy-fact-value' }, value));
-    const postActions = workflow.postActions ?? [];
-    replaceChildren(workflowDetails, h('dl', { class: 'facts' },
-      detail('Builds', h('ul', { class: 'plain-list' },
-        (workflow.actions ?? []).map((action) => h('li', null, actionLabel(action))))),
-      detail('Then', postActions.length
-        ? h('ul', { class: 'plain-list' }, postActions.map((spec) => h('li', null, postActionSummary(spec))))
-        : 'Nothing else'),
-      detail('Xcode', workflow.xcode ?? '–')));
+    workflowDetails.hidden = false;
+    replaceChildren(workflowDetails,
+      h('p', { class: 'deploy-plan-title' }, 'What happens'),
+      h('ol', { class: 'deploy-plan-steps' }, workflowSteps(workflow).map((step) => h('li', null, step))));
   }
 
   // MARK: Machines
@@ -200,34 +216,100 @@ export function openDeploySheet(app) {
     try {
       machines = await api.get('/machines', { signal: lifetime.signal });
       machines.sort((a, b) => a.name.localeCompare(b.name));
+      machinesError = null;
     } catch (error) {
       if (error.code === 'aborted') return;
       machines = [];
-      renderWhere(`Machines could not be listed: ${error.message}`);
-      return;
+      machinesError = error.message;
     }
     renderWhere();
+    update();
   }
 
-  function renderWhere(note) {
-    const previous = whereOptions.querySelector('input:checked')?.value ?? '';
+  /** Each machine with whether it is online and what keeps it from the selected workflow. */
+  function machineStates() {
+    const workflow = selectedWorkflow();
     const now = new Date();
-    const option = (value, title, detail, online) => h('label', { class: 'where-option' },
-      h('input', { type: 'radio', name: 'deploy-where', value, checked: value === previous, class: 'where-radio' }),
-      online === undefined
-        ? null
-        : h('span', { class: ['online-dot', online ? 'online' : 'offline'], 'aria-hidden': 'true' }),
+    return (machines ?? []).map((machine) => ({
+      machine,
+      online: machineOnline(machine, now),
+      problems: workflow ? machineProblems(machine, workflow) : [],
+    }));
+  }
+
+  /** Why no machine can run the deploy (with what to do), or null. */
+  function machineBlocker() {
+    if (machines === null || machinesError) return null;
+    if (machines.length === 0) {
+      return { text: 'No Mac can run builds yet. Add one, then deploy.', link: ['Add a Mac', '/machines?add=1'] };
+    }
+    if (!selectedWorkflow()) return null;
+    const states = machineStates();
+    const pinned = whereOptions.querySelector('input:checked')?.value;
+    const pick = pinned ? states.filter((state) => state.machine.id === pinned) : states;
+    const able = pick.filter((state) => state.problems.length === 0);
+    if (able.length === 0) {
+      const why = pick.map((state) => `${state.machine.name} (${listText(state.problems)})`);
+      return {
+        text: `${pinned ? 'This Mac can’t' : 'No Mac can'} build this workflow: ${listText(why)}.`,
+        link: ['Open Machines', '/machines'],
+      };
+    }
+    if (!able.some((state) => state.online)) {
+      const names = listText(able.map((state) => state.machine.name));
+      const seen = able.map((state) => state.machine.lastSeenAt).filter(Boolean).sort().at(-1);
+      return {
+        text: `${names} ${able.length === 1 ? 'is' : 'are'} offline${seen ? ` (last seen ${relativeTime(seen)})` : ''}. `
+          + 'Start the worker on it, then deploy.',
+        link: ['Open Machines', '/machines'],
+      };
+    }
+    return null;
+  }
+
+  function renderWhere() {
+    const previous = whereOptions.querySelector('input:checked')?.value ?? '';
+    const states = machineStates();
+    const workflow = selectedWorkflow();
+    const able = states.filter((state) => state.online && state.problems.length === 0);
+    const option = (value, title, detail, dot) => h('label', { class: 'where-option' },
+      h('input', { type: 'radio', name: 'deploy-where', value, checked: value === previous, class: 'where-radio', onChange: () => update() }),
+      // Every row keeps the dot's column, so the titles line up.
+      h('span', { class: ['online-dot', dot ?? 'none'], 'aria-hidden': 'true' }),
       h('span', { class: 'where-text' },
         h('span', { class: 'where-title' }, title),
         h('span', { class: 'where-detail' }, detail)));
-    replaceChildren(whereOptions,
-      option('', 'Automatic', 'The first machine that can build it.'),
-      machines.map((machine) => {
-        const online = isOnline(machine, now);
-        return option(machine.id, machine.name, online ? 'Online' : 'Offline · the build waits for it', online);
-      }),
-      note ? h('p', { class: 'field-hint' }, note) : null);
-    if (!whereOptions.querySelector('input:checked')) whereOptions.querySelector('input').checked = true;
+    const automaticDetail = !workflow || able.length === 0
+      ? 'The first free Mac that can build it.'
+      : able.length === 1 ? `Runs on ${able[0].machine.name}, the Mac that can build it.`
+        : `The first free of ${listText(able.map((state) => state.machine.name))}.`;
+    if (machines !== null && machines.length === 0) {
+      replaceChildren(whereOptions);
+      whereOptions.hidden = true;
+    } else {
+      whereOptions.hidden = false;
+      replaceChildren(whereOptions,
+        option('', 'Automatic', automaticDetail),
+        states.map(({ machine, online, problems }) => {
+          const detail = !online
+            ? `Offline${machine.lastSeenAt ? ` · seen ${relativeTime(machine.lastSeenAt)}` : ' · never connected'}`
+            : problems.length ? `Online · ${listText(problems)}` : 'Online · can build it';
+          return option(machine.id, machine.name, detail, online ? (problems.length ? 'warning' : 'online') : 'offline');
+        }),
+        machines === null ? h('p', { class: 'field-hint where-loading' }, spinner('Loading machines'), 'Loading machines…') : null,
+        machinesError ? h('p', { class: 'field-hint field-error' }, `Machines could not be listed: ${machinesError}`) : null);
+      if (!whereOptions.querySelector('input:checked')) whereOptions.querySelector('input').checked = true;
+    }
+    renderNotice();
+  }
+
+  function renderNotice() {
+    const blocker = machineBlocker();
+    replaceChildren(whereNotice, blocker
+      ? h('div', { class: 'deploy-notice', role: 'note' },
+        h('p', null, blocker.text),
+        h('a', { href: blocker.link[1], 'data-link': true, class: 'button button-secondary button-small' }, blocker.link[0]))
+      : null);
   }
 
   // MARK: Build number
@@ -266,19 +348,24 @@ export function openDeploySheet(app) {
 
   /** Why Deploy is unavailable, or null when it can run. */
   function blocker() {
+    if (branchesLoading && !refInput.value.trim()) return 'Loading the branches…';
     if (!refInput.value.trim()) return 'Enter a branch or commit to deploy.';
-    if (workflowsLoading) return 'Reading the workflow file at this branch or commit…';
+    if (workflowsLoading) return 'Reading the workflow at this branch…';
     if (refError) return 'Fix the branch or commit first.';
     const workflow = selectedWorkflow();
     if (!workflow) return 'There is no workflow to deploy.';
     const gated = (workflow.postActions ?? []).find((spec) => spec.requiresApproval);
     if (gated) return `The post-action “${gated.name}” needs approval, which Hangar does not support yet.`;
+    if (machines === null) return 'Checking the machines…';
+    const machine = machineBlocker();
+    if (machine) return 'No Mac can run this build now, so Deploy is off and no build number is used.';
     if (numberError) return 'Hangar cannot pick a build number (see above).';
     if (!report) return 'Waiting for the build number…';
     return null;
   }
 
   function update() {
+    renderNotice();
     const why = blocker();
     deployAction.disabled = Boolean(why);
     if (deployButton) deployButton.disabled = deployAction.disabled;
@@ -319,8 +406,7 @@ export function openDeploySheet(app) {
   renderWorkflows();
   renderWhere();
   update();
-  workflowsLoading = true;
-  loadWorkflows();
+  loadBranches();
   loadMachines();
   loadNumber();
   return handle;

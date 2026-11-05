@@ -1,9 +1,8 @@
 // The History page (`/builds`): the latest builds across apps, filtered by app, kept live from the event stream.
 
 import { api, ApiError, events, seg } from '../api.js';
-import { emptyState, h, page, relativeTime, replaceChildren, spinner, statusBadge, button } from '../ui.js';
-import { appIcon } from './apps.js';
-import { buildDuration } from './build.js';
+import { emptyState, h, page, replaceChildren, spinner, button } from '../ui.js';
+import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
 
 const LIMIT = 50;
@@ -23,7 +22,7 @@ export async function historyPage(params, context) {
   let appsRequest = null; // the reloadApps call in flight
 
   const select = h('select', {
-    class: 'input select history-filter', id: 'history-app', onChange: () => {
+    class: 'popup-button history-filter', id: 'history-app', onChange: () => {
       filter = select.value;
       const url = filter ? `/builds?app=${seg(filter)}` : '/builds';
       history.replaceState(null, '', url);
@@ -32,7 +31,7 @@ export async function historyPage(params, context) {
   });
   function renderFilter() {
     replaceChildren(select,
-      h('option', { value: '' }, 'All apps'),
+      h('option', { value: '' }, 'All Apps'),
       apps.map((app) => h('option', { value: app.slug }, app.name)),
       // An unknown slug from the address stays selectable so the page says what it is filtering by.
       filter && !apps.some((app) => app.slug === filter) ? h('option', { value: filter }, filter) : null);
@@ -83,42 +82,21 @@ export async function historyPage(params, context) {
       })));
       return;
     }
-    const ul = h('ul', { class: 'list history-list' }, builds.map((build) => rowFor(build).element));
+    const ul = h('ul', { class: 'list build-list history-list' }, builds.map((build) => rowFor(build).element));
     replaceChildren(list, ul);
   }
 
-  /** A row for `build`, registered in `rows`; `update(build)` refreshes its contents without replacing the link. */
+  /** A row for `build`, registered in `rows`. */
   function rowFor(build) {
-    const link = h('a', { href: `/builds/${seg(build.id)}`, 'data-link': true, class: 'row history-row' });
-    const when = h('span', { class: 'row-detail history-when' });
-    const row = { element: h('li', null, link), build, when, update };
-    function update(next) {
-      row.build = next;
-      const app = appsByID.get(next.appID);
-      replaceChildren(link,
-        app ? appIcon(app, 'small') : h('span', { class: 'app-icon app-icon-small monogram monogram-0', 'aria-hidden': 'true' }, '?'),
-        h('span', { class: 'row-main history-main' },
-          h('span', { class: 'row-title history-title' },
-            h('span', { class: 'history-app' }, app?.name ?? 'Unknown app'),
-            h('span', { class: 'history-number' }, `Build ${next.buildNumber}`)),
-          h('span', { class: 'row-detail build-ref' },
-            `${next.workflow} · ${next.ref} · ${String(next.commit ?? '').slice(0, 7)}`)),
-        h('span', { class: 'build-trailing' }, statusBadge(next.status), when));
-      setWhen(row);
-    }
-    update(build);
+    const row = buildRow(build, { app: (next) => appsByID.get(next.appID) });
     rows.set(build.id, row);
     return row;
-  }
-
-  function setWhen(row, now = new Date()) {
-    row.when.textContent = `${relativeTime(row.build.createdAt, now)} · ${buildDuration(row.build)}`;
   }
 
   /** Moves relative times and running durations on without rebuilding the rows. */
   function refreshTimes() {
     const now = new Date();
-    for (const row of rows.values()) setWhen(row, now);
+    for (const row of rows.values()) row.tick(now);
   }
 
   function upsert(build) {

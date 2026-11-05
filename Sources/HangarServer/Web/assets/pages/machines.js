@@ -5,10 +5,10 @@
 import { api, events, seg } from '../api.js';
 import { addLeaveGuard } from '../router.js';
 import {
-  button, card, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring, selectContents,
-  sheet, spinner, toast,
+  button, card, checkBadge, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring,
+  selectContents, sheet, spinner, toast,
 } from '../ui.js';
-import { isOnline } from './build.js';
+import { actionLabel, isOnline } from './build.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
 const TICK_MS = 15_000;
@@ -24,6 +24,8 @@ export async function machinesPage(params, context) {
   const machineListeners = new Set();
   // The page's own Add button; the empty state has its own.
   const addButton = button('Add Mac', { kind: 'primary', onClick: () => addMac() });
+  // What each running job is ("Legilo 88 · macOS"), for the widgets; refreshed when a machine reports jobs.
+  const jobs = runningJobs(context.signal, () => widgets.forEach((widget) => widget.refresh()));
 
   function render() {
     machines.sort((a, b) => a.name.localeCompare(b.name));
@@ -44,7 +46,7 @@ export async function machinesPage(params, context) {
     const nodes = machines.map((machine) => {
       let widget = widgets.get(machine.id);
       if (!widget) {
-        widget = machineWidget(machine, { onRemove: remove });
+        widget = machineWidget(machine, { onRemove: remove, jobInfo: jobs.info });
         widgets.set(machine.id, widget);
       } else {
         widget.update(machine);
@@ -52,6 +54,7 @@ export async function machinesPage(params, context) {
       return widget.element;
     });
     replaceChildren(content, h('div', { class: 'grid machine-grid' }, nodes));
+    jobs.want(machines.flatMap((machine) => machine.report?.runningJobIDs ?? []));
   }
 
   function upsert(machine) {
@@ -92,6 +95,10 @@ export async function machinesPage(params, context) {
   }
 
   render();
+  if (context.query.get('add') === '1') {
+    history.replaceState(null, '', '/machines');
+    addMac();
+  }
 
   const timer = setInterval(() => widgets.forEach((widget) => widget.tick()), TICK_MS);
   context.onCleanup(() => clearInterval(timer));
@@ -136,7 +143,7 @@ export async function removeMachine(machine) {
 // MARK: Widget
 
 /** A machine's widget. `update(machine)` redraws it with new data, `tick()` re-evaluates the online state. */
-export function machineWidget(initial, { onRemove }) {
+export function machineWidget(initial, { onRemove, jobInfo }) {
   let machine = initial;
   const title = h('h2', { class: 'machine-name' });
   const status = h('p', { class: 'machine-status' });
@@ -164,12 +171,12 @@ export function machineWidget(initial, { onRemove }) {
     machine = next;
     title.textContent = machine.name;
     removeButton.setAttribute('aria-label', `Remove ${machine.name}`);
-    replaceChildren(body, machine.report ? reportView(machine) : waitingView());
+    replaceChildren(body, machine.report ? reportView(machine, jobInfo) : waitingView());
     tick();
   }
 
   update(initial);
-  return { element, update, tick };
+  return { element, update, tick, refresh: () => update(machine) };
 }
 
 function waitingView() {
@@ -177,11 +184,21 @@ function waitingView() {
     'Waiting for the first heartbeat. The worker sends one as soon as it is installed and running on this Mac.');
 }
 
-function reportView(machine) {
+function reportView(machine, jobInfo) {
   const report = machine.report;
   const max = Math.max(1, machine.maxConcurrentJobs ?? 1);
-  const running = Array.isArray(report.runningJobIDs) ? report.runningJobIDs.length : 0;
+  const runningIDs = Array.isArray(report.runningJobIDs) ? report.runningJobIDs : [];
+  const running = runningIDs.length;
   const jobs = max === 1 ? 'job' : 'jobs';
+  // "Building Legilo 88 · macOS" as links to the builds, once known.
+  const known = runningIDs.map((id) => jobInfo?.(id)).filter(Boolean);
+  const activity = running === 0
+    ? h('p', { class: 'card-headline' }, 'Idle')
+    : known.length
+      ? h('p', { class: 'card-headline machine-activity' }, 'Building ', known.map((info, index) => [
+        index ? ', ' : null,
+        h('a', { href: `/builds/${seg(info.buildID)}`, 'data-link': true }, info.label)]))
+      : h('p', { class: 'card-headline' }, 'Building');
   const fact = (label, value) => h('div', { class: 'fact' },
     h('dt', { class: 'fact-label' }, label),
     h('dd', { class: 'fact-value' }, value));
@@ -193,8 +210,8 @@ function reportView(machine) {
     h('div', { class: 'machine-load' },
       ring(running / max, `${running} of ${max} ${jobs} running`),
       h('div', { class: 'machine-load-text' },
-        h('p', { class: 'card-headline' }, `${running} of ${max} ${jobs}`),
-        h('p', { class: 'card-detail' }, running === 0 ? 'Idle' : 'Building'))),
+        activity,
+        h('p', { class: 'card-detail' }, `${running} of ${max} ${jobs} running`))),
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),
@@ -204,11 +221,12 @@ function reportView(machine) {
       fact('macOS', report.macOSVersion || '–'),
       fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn))),
     chipGroup('Xcode', xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
-    chipGroup('Tools', tools.map(([name, version]) => (version ? `${name} ${version}` : name)), 'None reported'),
+    // The name only; where it lives is a tooltip.
+    chipGroup('Tools', tools.map(([name, detail]) => ({ text: name, title: detail || null })), 'None reported'),
     chipGroup('Signing identities', identities, 'None in the keychain yet'),
     report.canSignWithoutPrompt
       ? h('p', { class: 'signing signing-ok' },
-        h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '✓'),
+        checkBadge('signing-icon'),
         'Can sign without a prompt')
       : h('div', { class: 'signing signing-warning' },
         h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
@@ -231,8 +249,53 @@ function chipGroup(label, items, emptyText) {
   return h('div', { class: 'machine-group' },
     h('h3', { class: 'machine-group-title' }, label),
     items.length
-      ? h('ul', { class: 'chips', 'aria-label': label }, items.map((item) => h('li', { class: 'chip' }, item)))
+      ? h('ul', { class: 'chips', 'aria-label': label }, items.map((item) => (typeof item === 'string'
+        ? h('li', { class: 'chip' }, item)
+        : h('li', { class: 'chip', title: item.title }, item.text))))
       : h('p', { class: 'card-note' }, emptyText));
+}
+
+/**
+ * What the running jobs are, looked up from the latest builds. `want(ids)` fetches when an id is not known yet
+ * (once at a time) and calls `onChange()`; `info(id)` is `{ buildID, label }` or undefined.
+ */
+function runningJobs(signal, onChange) {
+  const known = new Map(); // job id → { buildID, label }
+  const tried = new Set(); // ids looked for once already, found or not
+  let loading = null;
+  let apps = null;
+
+  async function load() {
+    try {
+      const [builds, list] = await Promise.all([
+        api.get('/builds?limit=50', { signal }),
+        apps ? Promise.resolve(apps) : api.get('/apps', { signal }),
+      ]);
+      apps = list;
+      const names = new Map(apps.map((app) => [app.id, app.name]));
+      for (const build of builds) {
+        for (const job of build.jobs ?? []) {
+          known.set(job.id, {
+            buildID: build.id,
+            label: `${names.get(build.appID) ?? 'a build'} ${build.buildNumber} · ${actionLabel(job.action).split(' · ').pop()}`,
+          });
+        }
+      }
+      onChange();
+    } catch {
+      // Without it the widget says "Building" without naming it.
+    }
+  }
+
+  return {
+    info: (id) => known.get(id),
+    want(ids) {
+      const missing = ids.filter((id) => !known.has(id) && !tried.has(id));
+      if (loading || missing.length === 0) return;
+      missing.forEach((id) => tried.add(id));
+      loading = load().finally(() => { loading = null; });
+    },
+  };
 }
 
 function formatGB(value) {
@@ -254,9 +317,23 @@ function minutesAndSeconds(seconds) {
  * returns the function that stops them; `onManual` opens the token flow instead.
  */
 export function openAddMacSheet({ knownIDs, listen, onManual }) {
-  const command = `curl -fsSL ${location.origin}/install | sh`;
-  const commandBlock = h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'Install command' },
-    h('code', null, command));
+  const isLocal = LOCAL_HOSTS.has(location.hostname);
+  // Other Macs cannot reach localhost: the command then names the server by an address they can, which the
+  // user can correct (filled in with this Mac's network name once the server says it).
+  const hostInput = isLocal ? h('input', {
+    class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off',
+    value: location.origin, 'aria-describedby': 'add-mac-host-hint',
+    onInput: () => renderCommand(),
+  }) : null;
+  const commandCode = h('code');
+  const commandBlock = h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'Install command' }, commandCode);
+  let command = '';
+  function renderCommand() {
+    const origin = (hostInput?.value.trim() || location.origin).replace(/\/+$/, '');
+    command = `curl -fsSL ${origin}/install | sh`;
+    commandCode.textContent = command;
+  }
+  renderCommand();
   const codeText = h('span', { class: 'pairing-code', 'aria-label': 'Pairing code' }, '····-····');
   const expiry = h('span', { class: 'pairing-expiry' }, 'Getting a code…');
   const newCodeButton = button('Get a New Code', {
@@ -268,15 +345,14 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
   });
   const notices = h('div', { class: 'pairing-notices' });
   const status = h('div', { class: 'pairing-status', role: 'status', 'aria-live': 'polite' });
-  const doneButton = button('Close', { kind: 'secondary', onClick: () => handle.close() });
-  const manualButton = button('Add Manually…', {
-    kind: 'plain', class: 'button button-plain button-small',
+  const manualAction = {
+    label: 'Add Manually…',
+    kind: 'plain',
     onClick: () => {
-      handle.close();
       // Opened after this sheet has closed, so focus returns to the page when it is dismissed.
       setTimeout(onManual);
     },
-  });
+  };
 
   let pairing = null;
   let deadline = 0; // performance.now() when the code expires, from the server's expiresIn
@@ -334,11 +410,10 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
         h('span', null, `${enrolled.name} is enrolled. Waiting for the worker to start…`));
     } else {
       replaceChildren(status,
-        h('span', { class: 'pairing-connected-icon', 'aria-hidden': 'true' }, '✓'),
+        checkBadge('pairing-connected-icon'),
         h('span', { class: 'pairing-connected' }, `${enrolled.name} is connected`));
-      doneButton.textContent = 'Done';
-      doneButton.className = 'button button-primary';
-      doneButton.focus();
+      handle.setActions([{ label: 'Done', kind: 'primary' }]);
+      handle.element.querySelector('.sheet-actions .button-primary')?.focus();
     }
   }
 
@@ -349,10 +424,12 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
     showStatus();
   });
 
-  if (LOCAL_HOSTS.has(location.hostname)) {
-    notices.append(h('p', { class: 'token-warning', role: 'note' },
-      `This page is open on ${location.host}, which other Macs cannot reach. In the command, use the server’s `
-      + 'tailnet address instead, e.g. http://hangar-server:8787/install.'));
+  if (isLocal) {
+    api.get('/setup').then((setup) => {
+      if (!setup?.localHostName || hostInput.value !== location.origin) return;
+      hostInput.value = `${location.protocol}//${setup.localHostName}.local${location.port ? `:${location.port}` : ''}`;
+      renderCommand();
+    }, () => {});
   }
   api.get('/settings').then((settings) => {
     if (settings && settings.workerInstallAvailable === false) {
@@ -373,6 +450,13 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
       h('ol', { class: 'pairing-steps' },
         h('li', null, 'On the new Mac, open Terminal and run the command.'),
         h('li', null, 'Type the code when asked.')),
+      hostInput ? field({
+        label: 'Server address',
+        hint: h('span', { id: 'add-mac-host-hint' },
+          `This page is open on ${location.host}, which other Macs can’t reach. Use an address they can, `
+          + 'such as the server’s tailnet name.'),
+        control: hostInput,
+      }) : null,
       h('div', { class: 'code-field' },
         h('div', { class: 'field-label-row' },
           h('span', { class: 'field-label' }, 'Command'),
@@ -390,9 +474,8 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
           copyCodeButton),
         h('div', { class: 'pairing-code-box' }, codeText),
         h('div', { class: 'pairing-expiry-row' }, expiry, newCodeButton)),
-      status,
-      h('div', { class: 'pairing-footer' }, manualButton, doneButton)),
-    actions: [],
+      status),
+    actions: [manualAction, { label: 'Close', kind: 'secondary' }],
   });
 
   showStatus();

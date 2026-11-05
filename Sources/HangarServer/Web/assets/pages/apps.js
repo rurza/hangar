@@ -92,8 +92,11 @@ export async function appsPage(params, context) {
   }
 
   let setupLeft = false; // with no apps: setup still has a step to do
+  // The page's Add App; the empty state has its own, so this one shows once there are apps.
+  const addButton = button('Add App', { kind: 'primary', onClick: () => addApp() });
 
   function render() {
+    addButton.hidden = apps.length === 0;
     if (apps.length === 0) {
       replaceChildren(content, emptyState({
         icon: h('span', { class: 'empty-plus' }, '+'),
@@ -107,11 +110,7 @@ export async function appsPage(params, context) {
       }));
       return;
     }
-    replaceChildren(grid,
-      apps.map((app) => appCard(app, latest.get(app.id))),
-      h('button', { type: 'button', class: 'card app-card add-card', onClick: addApp },
-        h('span', { class: 'add-card-plus', 'aria-hidden': 'true' }, '+'),
-        h('span', { class: 'add-card-label' }, 'Add App')));
+    replaceChildren(grid, apps.map((app) => appCard(app, latest.get(app.id))));
     replaceChildren(content, grid);
   }
 
@@ -158,7 +157,7 @@ export async function appsPage(params, context) {
     onReconnect: () => load().then(render, () => {}),
   }));
 
-  return page({ title: 'Apps' }, content);
+  return page({ title: 'Apps', actions: addButton }, content);
 }
 
 function appCard(app, build) {
