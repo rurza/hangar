@@ -91,7 +91,7 @@ final class FakeSourceHost: SourceHost {
             state.tokens.append(token)
             state.branchReads += 1
             if let error = state.branchesError { throw error }
-            return state.branches.defaultFirst
+            return state.branches  // as the host lists them; the server puts the default branch first
         }
     }
 

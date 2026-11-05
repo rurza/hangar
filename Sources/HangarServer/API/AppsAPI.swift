@@ -24,7 +24,7 @@ extension HangarServerApp {
             let app = try app(context)
             let branches = try await repositoryBranches.branches(app.id) {
                 try await withAppToken(app) { token in
-                    try await repositoryDetector.sourceHost.branches(repoURL: app.repoURL, token: token)
+                    try await repositoryDetector.sourceHost.branches(repoURL: app.repoURL, token: token).defaultFirst
                 }
             }
             return try Response.json(branches)

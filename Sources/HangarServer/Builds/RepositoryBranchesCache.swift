@@ -3,7 +3,8 @@ import HangarCore
 import Synchronization
 
 /// Each app's branches, remembered for `lifetime` so opening the Deploy sheet again does not ask GitHub again.
-/// Only answers are remembered; a failure is asked again next time.
+/// Only answers are remembered; a failure is asked again next time. Keyed by app only, so a replaced token may see
+/// the old token's list for up to a minute; two sheets opened at once ask GitHub twice. Both are harmless here.
 public final class RepositoryBranchesCache: Sendable {
     static let lifetime: TimeInterval = 60
 

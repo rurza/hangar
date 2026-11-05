@@ -2,6 +2,7 @@ import Foundation
 import HangarCore
 import Hummingbird
 import HummingbirdTesting
+import Synchronization
 import Testing
 
 @testable import HangarServer
@@ -27,6 +28,21 @@ import Testing
         let state = fixture.host.state.withLock { $0 }
         #expect(state.branchReads == 1)
         #expect(state.tokens == ["ghp-x"])
+    }
+
+    @Test func theCacheExpiresAfterAMinute() async throws {
+        let time = Mutex(Date(timeIntervalSince1970: 1_800_000_000))
+        let fixture = try APIFixture(now: { time.withLock { $0 } })
+        try fixture.createApp()
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/apps/legilo/branches", method: .get) { #expect($0.status == .ok) }
+            time.withLock { $0 += 59 }
+            try await client.execute(uri: "/api/v1/apps/legilo/branches", method: .get) { #expect($0.status == .ok) }
+            #expect(fixture.host.state.withLock { $0.branchReads } == 1)
+            time.withLock { $0 += 2 }
+            try await client.execute(uri: "/api/v1/apps/legilo/branches", method: .get) { #expect($0.status == .ok) }
+            #expect(fixture.host.state.withLock { $0.branchReads } == 2)
+        }
     }
 
     @Test func aGitHubFailureIsAnErrorAndNotCached() async throws {
