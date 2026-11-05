@@ -1,4 +1,5 @@
 import Foundation
+import HangarAppStoreConnect
 import HangarCore
 import Hummingbird
 import HummingbirdTesting
@@ -29,6 +30,23 @@ private func report(
 }
 
 private let clock = Date(timeIntervalSince1970: 1_800_000_000)
+
+/// App Store Connect that only knows the app's Beta App Descriptions.
+private struct DescriptionASC: AppStoreConnectClient {
+    let localizations: [ASCBetaAppLocalization]
+    func betaAppLocalizations(appID: String) async throws -> [ASCBetaAppLocalization] { localizations }
+    func builds(appID: String, version: String?) async throws -> [ASCBuild] { [] }
+    func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
+    func apps() async throws -> [ASCApp] { [] }
+    func appIconURL(appID: String) async throws -> String? { nil }
+    func betaGroups(appID: String) async throws -> [ASCBetaGroup] { [] }
+    func createBetaGroup(appID: String, name: String, internal isInternal: Bool) async throws -> ASCBetaGroup {
+        ASCBetaGroup(id: "x", name: name, isInternal: isInternal)
+    }
+    func addBuild(_ buildID: String, toBetaGroup groupID: String) async throws {}
+    func setWhatToTest(buildID: String, locale: String, text: String) async throws {}
+    func submitForBetaReview(buildID: String) async throws {}
+}
 
 @Suite(.timeLimit(.minutes(1))) struct DeployCheckAPITests {
     func fixture() throws -> APIFixture {
@@ -137,6 +155,80 @@ private let clock = Date(timeIntervalSince1970: 1_800_000_000)
         #expect(state.refs.isEmpty && state.reads.isEmpty)
     }
 
+    @Test func warnsAboutScriptsBeforeTheBuildRuns() async throws {
+        let fixture = try fixture()
+        _ = try addMachine(fixture, "mini", report: report())
+        let app = try #require(try fixture.server.apps.find(slugOrID: "legilo"))
+        try fixture.server.variables.set(scope: .app(app.id), name: "SENTRY_ORG", input: VariableInput(value: "acme"))
+        fixture.host.state.withLock { state in
+            state.tree = RepositoryTree(
+                paths: ["ci_scripts", "ci_scripts/ci_post_clone.sh", "ci_scripts/ci_post_xcodebuild.sh", "ci_scripts/nested/x.sh", "README.md"],
+                executables: ["ci_scripts/ci_post_xcodebuild.sh"])
+            state.files["ci_scripts/ci_post_clone.sh"] = "#!/bin/sh\ncd $CI_PRIMARY_REPOSITORY_PATH\necho \"$SENTRY_DSN\" > dsn\n"
+            state.files["ci_scripts/ci_post_xcodebuild.sh"] = "#!/bin/sh\nsentry-cli --org $SENTRY_ORG --auth-token $SENTRY_AUTH_TOKEN\n"
+        }
+        let commit = fixture.host.state.withLock { $0.commit }
+
+        let first = try await check(fixture, "workflow=testflight&commit=\(commit)")
+
+        #expect(first.canDeploy)
+        let check = first
+        #expect(check.notices.map(\.code) == ["undefined-variables", "undefined-variables", "script-not-executable"])
+        #expect(check.notices[0].message.hasPrefix("ci_scripts/ci_post_clone.sh uses $SENTRY_DSN, which isn’t defined in Hangar"))
+        #expect(check.notices[1].message.hasPrefix("ci_scripts/ci_post_xcodebuild.sh uses $SENTRY_AUTH_TOKEN,"))
+        #expect(check.notices[2].message.hasPrefix("ci_scripts/ci_post_clone.sh isn’t executable"))
+
+        // Read once per commit, however often the sheet asks.
+        _ = try await self.check(fixture, "workflow=testflight&commit=\(commit)")
+        let state = fixture.host.state.withLock { $0 }
+        #expect(state.treeReads == 1)
+        #expect(state.reads.filter { $0.hasPrefix("ci_scripts/") }.sorted() == ["ci_scripts/ci_post_clone.sh", "ci_scripts/ci_post_xcodebuild.sh"])
+    }
+
+    @Test func aRepositoryThatCannotBeReadOnlyMeansNoNotices() async throws {
+        let fixture = try fixture()
+        _ = try addMachine(fixture, "mini", report: report())
+        fixture.host.state.withLock { $0.treeError = .http(status: 500, body: "boom") }
+        let check = try await check(fixture)
+        #expect(check.canDeploy)
+        #expect(check.notices.isEmpty)
+    }
+
+    @Test func warnsWhenExternalReviewHasNoBetaAppDescription() async throws {
+        let localizations = [ASCBetaAppLocalization(locale: "en-US", description: " ")]
+        let fixture = try APIFixture(
+            appStoreConnectFactory: { _ in DescriptionASC(localizations: localizations) }, now: { clock })
+        try fixture.createApp()
+        try fixture.server.variables.set(scope: .global, name: "HANGAR_ASC_KEY_ID", input: VariableInput(value: "K"))
+        try fixture.server.variables.set(
+            scope: .global, name: "HANGAR_ASC_KEY_PATH", input: VariableInput(value: "pem", isSecret: true, asFile: true))
+        _ = try addMachine(fixture, "mini", report: report())
+        fixture.host.state.withLock {
+            $0.files[WorkflowFile.path] = """
+                version: 1
+                workflows:
+                  external:
+                    project: Legilo.xcodeproj
+                    xcode: "27.2"
+                    actions:
+                      - { scheme: LegiloMobile, platform: ios, export: app-store-connect }
+                    post-actions:
+                      - testflight: { groups: [Public], submit-for-external-review: true }
+                  internal:
+                    project: Legilo.xcodeproj
+                    xcode: "27.2"
+                    actions:
+                      - { scheme: LegiloMobile, platform: ios, export: app-store-connect }
+                    post-actions:
+                      - testflight: { groups: [Internal] }
+                """
+        }
+        let external = try await check(fixture, "workflow=external&ref=main")
+        #expect(external.notices.map(\.code) == ["beta-app-description-missing"])
+        #expect(external.notices.first?.message.contains("TestFlight › Test Information") == true)
+        #expect(try await check(fixture, "workflow=internal&ref=main").notices.isEmpty)
+    }
+
     @Test func aMalformedCommitIsRefused() async throws {
         let fixture = try fixture()
         try await fixture.test { client in
@@ -149,6 +241,23 @@ private let clock = Date(timeIntervalSince1970: 1_800_000_000)
     @Test func actionsAreLabelledLikeTheWorkflowAction() {
         let action = WorkflowAction(scheme: "Legilo", platform: .macOS, export: .appStoreConnect)
         #expect(HangarServerApp.label(action) == "\(action.kindLabel) · Legilo")
+    }
+
+    /// Names as the wizard allows them, sent the way URLSearchParams (`+` for a space) and encodeURIComponent (`%20`) send them.
+    @Test(arguments: [
+        ("UX Review Keep", ["UX+Review+Keep", "UX%20Review%20Keep"]),
+        ("A+B", ["A%2BB"]),
+        ("R&D", ["R%26D"]),
+        ("Wydanie łódź", ["Wydanie+%C5%82%C3%B3d%C5%BA", "Wydanie%20%C5%82%C3%B3d%C5%BA"]),
+    ])
+    func aWorkflowNameIsReadAsAFormEncodesIt(name: String, encodings: [String]) async throws {
+        let fixture = try fixture()
+        let yaml = testWorkflow.replacingOccurrences(of: "  ci:", with: "  \"\(name)\":")
+        fixture.host.state.withLock { $0.files[WorkflowFile.path] = yaml }
+        _ = try addMachine(fixture, "mini", report: report())
+        for encoded in encodings {
+            #expect(try await check(fixture, "workflow=\(encoded)&ref=main").canDeploy, "\(encoded)")
+        }
     }
 
     @Test func anUnknownWorkflowIsAnError() async throws {

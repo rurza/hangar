@@ -8,8 +8,13 @@ public struct HangarRequestContext: RemoteAddressRequestContext {
     public var coreContext: CoreRequestContextStorage
     /// The authenticated worker machine; set by `MachineAuth` on the worker routes, nil on the public ones.
     public var machine: Machine?
+    /// The API token of the request, set by `APITokenAuth`; nil for the web UI, the CLI and the worker routes.
+    public var apiToken: APIToken?
     /// The connected peer; the pairing rate limit counts failures per address.
     public let remoteAddress: SocketAddress?
+    /// Set by `ProxyMark` when the request carries a reverse proxy's forwarding headers: the socket peer is then
+    /// the proxy, not the browser, so it never counts as this Mac.
+    public var relayedByProxy = false
 
     public init(source: ApplicationRequestContextSource) {
         coreContext = .init(source: source)
@@ -32,8 +37,11 @@ extension HangarServerApp {
         router.add(middleware: APIErrorMiddleware())
         // Every route, the UI's included: a DNS-rebinding page arrives under a Host that is not this server's.
         router.add(middleware: HostCheck(policy: configuration.hostPolicy))
+        router.add(middleware: ProxyMark())
         // The cross-site guard skips the worker routes, which a machine token authenticates.
+        // API tokens are checked after it: a token never makes a cross-site request acceptable.
         let api = router.group("api/v1").add(middleware: CrossSiteGuard())
+            .add(middleware: APITokenAuth(tokens: apiTokens, now: now))
         api.get("health") { _, _ in try Response.json(HealthResponse(ok: true, version: HangarVersion.current)) }
         addAppRoutes(to: api)
         addVariableRoutes(to: api)
@@ -47,6 +55,7 @@ extension HangarServerApp {
         addMachineRoutes(to: api)
         addGitHubRoutes(to: api)
         addBetaGroupRoutes(to: api)
+        addAPITokenRoutes(to: api)
         addWorkerRoutes(to: api)
         api.get("events") { _, _ in eventsResponse() }
         // The worker install script and binary: outside /api/v1, GETs only, so no cross-site guard; Host-checked.
@@ -77,7 +86,7 @@ extension Response {
 extension Request {
     /// The integer query parameter, nil when absent; 400 when it is not a non-negative integer.
     func integer(_ name: String) throws -> Int? {
-        guard let text = uri.queryParameters.get(name) else { return nil }
+        guard let text = query.get(name) else { return nil }
         guard let value = Int(text), value >= 0 else {
             throw APIError(code: "invalid_request", message: "'\(name)' must be a non-negative integer.")
         }

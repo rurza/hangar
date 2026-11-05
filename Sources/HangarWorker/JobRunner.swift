@@ -28,6 +28,8 @@ public struct JobRunner: Sendable {
     private let runner: any ProcessRunner
     private let locator: XcodeLocator
     private let dataDirectory: String
+    /// Holds every job's `TMPDIR`; see `WorkspaceLayout.temporaryRoot`.
+    private let temporaryRoot: String
     /// Names this Mac in failure reasons.
     private let machineName: String
     private let clock: any Clock<Duration>
@@ -36,6 +38,7 @@ public struct JobRunner: Sendable {
 
     public init(
         connection: any ServerConnection, runner: any ProcessRunner, locator: XcodeLocator, dataDirectory: String,
+        temporaryRoot: String? = nil,
         machineName: String = JobRunner.computerName,
         clock: any Clock<Duration> = ContinuousClock(),
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
@@ -46,6 +49,7 @@ public struct JobRunner: Sendable {
         self.runner = runner
         self.locator = locator
         self.dataDirectory = dataDirectory
+        self.temporaryRoot = temporaryRoot ?? WorkspaceLayout.temporaryRoot(dataDirectory: dataDirectory)
         self.machineName = machineName
         self.clock = clock
         self.appStoreConnectFactory = appStoreConnectFactory
@@ -65,9 +69,14 @@ public struct JobRunner: Sendable {
         var testDestination: TestDestination?
     }
 
-    public func run(_ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
+    /// `stopReason` says why the worker itself cancelled the job (it is shutting down); the job then reports it.
+    public func run(
+        _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool,
+        stopReason: @escaping @Sendable () -> String? = { nil }
+    ) async -> JobResult {
         let jobID = assignment.job.id
-        let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID)
+        let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID,
+            temporaryRoot: temporaryRoot)
         let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
         let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock)
         let materializer = SecretsMaterializer(directory: layout.secrets)
@@ -81,7 +90,10 @@ public struct JobRunner: Sendable {
             return result
         }
 
-        var pipeline = JobPipeline(jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled)
+        await reportInfo(jobID: jobID, JobRunInfo(workerVersion: Self.workerVersion))
+
+        var pipeline = JobPipeline(
+            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason)
         let prepared = await pipeline.step(StepName.checkout) { [self] in
             let prepared = try await prepare(assignment, layout: layout, materializer: materializer, log: log.lines(StepName.checkout))
             try await Checkout(runner: runner, layout: layout).run(
@@ -101,6 +113,31 @@ public struct JobRunner: Sendable {
             for name in later { await pipeline.skip(name) }
         }
 
+        // A worker that is shutting down has seconds before launchd kills it: a stopped job's partial artifacts are
+        // not worth them.
+        if pipeline.stopNote != nil {
+            await pipeline.skip(StepName.uploadArtifacts)
+        } else {
+            await uploadArtifacts(assignment, layout: layout, log: log, pipeline: &pipeline)
+        }
+
+        await pipeline.report(StepName.cleanup, .running)
+        let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
+        await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
+        await log.finalFlush()
+
+        // Error descriptions (an App Store Connect response body, say) and post-action outputs may hold a secret.
+        let result = JobResult(
+            status: pipeline.status, failureReason: pipeline.reason.map(masker.mask),
+            outputs: outputs.mapValues(masker.mask))
+        await reportFinish(jobID: jobID, result)
+        return result
+    }
+
+    private func uploadArtifacts(
+        _ assignment: JobAssignment, layout: WorkspaceLayout, log: JobLog, pipeline: inout JobPipeline
+    ) async {
+        let jobID = assignment.job.id
         await pipeline.step(StepName.uploadArtifacts, .always) { [connection, runner] in
             let lines = log.lines(StepName.uploadArtifacts)
             // Every piece is attempted; the step fails at the end if any could not be zipped or uploaded.
@@ -118,18 +155,6 @@ public struct JobRunner: Sendable {
             }
             if !failures.isEmpty { throw ArtifactError.incomplete(failures) }
         }
-
-        await pipeline.report(StepName.cleanup, .running)
-        let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
-        await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
-        await log.finalFlush()
-
-        // Error descriptions (an App Store Connect response body, say) and post-action outputs may hold a secret.
-        let result = JobResult(
-            status: pipeline.status, failureReason: pipeline.failureReason.map(masker.mask),
-            outputs: outputs.mapValues(masker.mask))
-        await reportFinish(jobID: jobID, result)
-        return result
     }
 
     /// The Mac's computer name (System Settings › General › Sharing), read once without a DNS lookup.
@@ -137,6 +162,22 @@ public struct JobRunner: Sendable {
         if let name = SCDynamicStoreCopyComputerName(nil, nil) as String?, !name.isEmpty { return name }
         return "this Mac"
     }()
+
+    /// "0.5.0 (a1c9b45d)": the release and the start of this binary's SHA-256, which tells apart two builds of one
+    /// release.
+    public static let workerVersion: String = {
+        guard let hash = WorkerSelfUpdate.executableSHA256 else { return HangarVersion.current }
+        return "\(HangarVersion.current) (\(hash.prefix(8)))"
+    }()
+
+    /// Best effort: a server that predates `jobs/{id}/info` answers 404, and the job runs on regardless.
+    private func reportInfo(jobID: UUID, _ info: JobRunInfo) async {
+        do {
+            try await connection.info(jobID: jobID, info)
+        } catch {
+            logger.info("could not report the job's worker and Xcode: \(error)", metadata: ["job": "\(jobID)"])
+        }
+    }
 
     /// Delays between attempts to report a job's result; five attempts in all.
     static let finishRetryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
@@ -176,6 +217,7 @@ public struct JobRunner: Sendable {
             throw PreparationError.xcodeNotInstalled(workflow.xcode)
         }
         log("using Xcode \(xcode.version) (\(xcode.build)) at \(xcode.path)")
+        await reportInfo(jobID: assignment.job.id, JobRunInfo(xcodeVersion: xcode.version, xcodeBuild: xcode.build))
         let developerDir = xcode.path + "/Contents/Developer"
         let testDestination = action.kind == .test ? try await destination(for: action, developerDir: developerDir) : nil
         if let testDestination {
@@ -184,16 +226,20 @@ public struct JobRunner: Sendable {
         let paths = CIEnvironment.Paths(
             repository: layout.repository, projectFile: layout.repository + "/" + workflow.projectOrWorkspacePath,
             derivedData: layout.derivedData, archive: layout.archive(scheme: action.scheme),
-            resultBundle: layout.resultBundle, workspace: layout.jobDirectory)
+            resultBundle: layout.resultBundle, workspace: layout.jobDirectory,
+            temporary: layout.temporary)
         let ci = CIEnvironment.make(
             app: assignment.app, workflow: assignment.workflowName, action: action, buildNumber: assignment.buildNumber,
             jobID: assignment.job.id, buildID: assignment.job.buildID, commit: assignment.commit, ref: assignment.ref,
             teamID: workflow.teamID, paths: paths, developerDir: developerDir, basePATH: Self.basePATH,
             testDestination: testDestination)
         let merged = CIEnvironment.merge(ci: ci, entries: assignment.environment, secretsDirectory: layout.secrets)
-        // TMPDIR must exist before the first hook; cleanup removes it with the job directory.
-        try FileManager.default.createDirectory(
-            atPath: layout.temporary, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // TMPDIR must exist before the first hook; cleanup removes it. The root is created 0700 too: nothing else has a
+        // reason to read another job's files.
+        for directory in [layout.temporaryRoot, layout.temporary] {
+            try FileManager.default.createDirectory(
+                atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
         merged.warnings.forEach(log)
         try materializer.write(merged.filesToWrite)
         // Tests sign with the key when there is one, but do not need it.
@@ -298,9 +344,20 @@ public struct JobRunner: Sendable {
                 projectDirectory: projectDirectory, environment: environment,
                 xcodebuildEnvironment: prepared.xcodebuildEnvironment, layout: layout,
                 developerDir: prepared.developerDir, teamID: workflow.teamID, key: prepared.key,
-                appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name))
-            let output = await pipeline.step(name) { try await PostActionRegistry.make(spec).run(context) }
+                appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name),
+                reportStages: { [reporter = pipeline.stageReporter(name)] stages in
+                    await reporter(stages.map { StepStage(name: $0.name, status: $0.status, detail: $0.detail.map(masker.mask)) })
+                })
+            let output = await pipeline.step(name, ending: { output in
+                JobPipeline.Ending(
+                    status: output.warnings.isEmpty ? .succeeded : .warning,
+                    detail: output.warnings.isEmpty ? nil : masker.mask(output.warnings.joined(separator: " ")),
+                    stages: output.stages?.map { stage in
+                        StepStage(name: stage.name, status: stage.status, detail: stage.detail.map(masker.mask))
+                    })
+            }) { try await PostActionRegistry.make(spec).run(context) }
             if let output {
+                for warning in output.warnings { log.line(step: name, "warning: \(warning)") }
                 log.line(step: name, output.summary)
                 outputs.merge(output.outputs) { _, new in new }
             }
@@ -371,6 +428,9 @@ public struct JobRunner: Sendable {
                 let outcome = try await runner.run(command, onLine: log)
                 if outcome.exitCode != 0 { throw CheckoutError.gitFailed(command: "git clean -ffdx", exitCode: outcome.exitCode) }
             }
+        }
+        await attempt("remove the temporary directory") {
+            try SafeRemoval.removeItem(atPath: layout.temporary, within: layout.temporaryRoot)
         }
         await attempt("remove the job directory") {
             try SafeRemoval.removeItem(atPath: layout.jobDirectory, within: dataDirectory + "/jobs")

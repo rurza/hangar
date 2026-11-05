@@ -9,13 +9,26 @@ The `hangar` CLI and the web UI talk to the server only through this API. Every 
 - Every request's `Host` must name the server (see [server setup](server-setup.md#options)): its bound address, its host or MagicDNS name, a `*.ts.net` name or an `--allowed-host`. Any other gets `421` `host_not_allowed`, on every route including the web UI.
 - On the public routes (not `/api/v1/worker/*`), every method but `GET`, `HEAD` and `OPTIONS` is refused with `403` `cross_site_request` when `Sec-Fetch-Site` is present and not `same-origin` or `none`, or when `Origin` names another host or port than `Host`. A request body must be sent as `Content-Type: application/json` (parameters such as `charset` are fine), else `415` `unsupported_media_type`; bodiless calls such as `DELETE` or a cancel need no Content-Type. The CLI sends neither `Origin` nor `Sec-Fetch-Site`.
 
+## API tokens
+
+Agents (the [MCP server](mcp.md)) call the API with an API token: `Authorization: Bearer hgr_…`. A token is created in Settings › Agent Access or with `hangar tokens create`, shown once, stored only as its SHA-256, and revoked by deleting it. Requests without an API token are unchanged: the API trusts the tailnet, as the web UI and the CLI always have. A token bounds what its bearer can do; it does not lock the API for everyone else.
+
+- An unknown or revoked token gets `401` `invalid_api_token`; it never falls back to the open API. A bearer value that does not start with `hgr_` (a machine token, say) is ignored on the public routes, as before tokens.
+- Each token has a scope, and scopes nest: `read` < `deploy` < `configure`. A route outside the token's scope gets `403` `token_scope`.
+  - `read`: every `GET` but the local-only `/setup/*` routes and `/api-tokens` (except `/api-tokens/current`).
+  - `deploy`: also `POST /builds` and `POST /builds/{id}/cancel`.
+  - `configure`: also `POST /apps`, `DELETE /apps/{id}`, `PUT` and `DELETE /apps/{id}/workflow-file`, `POST /apps/{id}/beta-groups` and `PUT /apps/{id}/numbers/next`.
+  - No token may change variables or settings, run setup, add, pair or delete machines, enroll, or create, list or revoke tokens.
+- A token never excuses a cross-site request: the cross-site rules run first.
+- Every request a token makes other than a `GET` is logged with the token's name. `lastUsedAt` is updated at most once a minute.
+
 ## Routes
 
 An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine's `{id}` is its name or its UUID.
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /health` | | `200` `{"ok": true, "version": "0.5.0"}` |
+| `GET /health` | | `200` `{"ok": true, "version": "0.6.0"}` |
 | `GET /apps` | | `200` `[App]`; apps without `iconURL` get one resolved in the background (at most one attempt per app per hour), shown on a later request |
 | `POST /apps` | `CreateAppRequest` | `201` `App`; `400` `invalid_input` when `iconURL` is not an https URL with a host; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
 | `GET /apps/{id}` | | `200` `App` |
@@ -34,7 +47,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `PUT /apps/{id}/numbers/next` | `BumpNumberRequest` | `200` `NumbersReport` |
 | `GET /apps/{id}/branches` | | `200` `RepositoryBranches` `{defaultBranch?, branches}`: the repository's branches (at most 100) with the app's token, the default branch first; for the Deploy sheet's branch picker, which still takes a typed tag or SHA. Cached for a minute per app; a failure is not cached (`502` `github_unauthorized` when GitHub refuses the token) |
 | `GET /apps/{id}/workflows?ref=` | `ref` optional (the default branch) | `200` `WorkflowsResponse` `{commit, workflows: WorkflowFile, source}`; `source` is `hangar` (the stored workflow file wins) or `repository` (`.hangar.yml` at `commit`) |
-| `GET /apps/{id}/deploy-check?workflow=&ref=&commit=&machine=` | `workflow` required; `ref` optional (the default branch); `commit` optional (a SHA, e.g. the one `/workflows` returned: the ref is then not resolved, and the repository's `.hangar.yml` is read once per commit and cached for 10 minutes, so repeated checks make no GitHub calls; `400` `invalid_request` when not 7–40 hex digits); `machine` optional (name or UUID: judge only that machine, as a pinned deploy) | `200` `DeployCheck` `{canDeploy, blocking: [{action, reasons}], warnings: [{action, reasons}], machines: [{id, name, online, problems, waits}]}`: a dry run of a deploy. Reads the workflow exactly as `POST /builds` does (the stored one, else `.hangar.yml` at the ref) and judges each action's job with the scheduler's own rules against every machine as a scheduler tick sees it, online by the server's clock. `action` is labelled like `Archive – macOS · Legilo`; `reasons` maps machine name to the scheduler's reasons. Offline, Xcode, tools, signing, a missing simulator runtime and an outdated worker block (`blocking`; `canDeploy` false); busy and low disk only delay (`warnings`). A machine's `problems` are its blocking reasons over all actions and `waits` its delaying ones. Reserves no number and creates nothing. Errors as for `POST /builds` (`workflow_not_found`, `ref_not_found`, `machine_not_found`, …) |
+| `GET /apps/{id}/deploy-check?workflow=&ref=&commit=&machine=` | `workflow` required; `ref` optional (the default branch); `commit` optional (a SHA, e.g. the one `/workflows` returned: the ref is then not resolved, and the repository's `.hangar.yml` is read once per commit and cached for 10 minutes, so repeated checks make no GitHub calls; `400` `invalid_request` when not 7–40 hex digits); `machine` optional (name or UUID: judge only that machine, as a pinned deploy) | `200` `DeployCheck` `{canDeploy, blocking: [{action, reasons}], warnings: [{action, reasons}], machines: [{id, name, online, problems, waits}]}`: a dry run of a deploy. Reads the workflow exactly as `POST /builds` does (the stored one, else `.hangar.yml` at the ref) and judges each action's job with the scheduler's own rules against every machine as a scheduler tick sees it, online by the server's clock. `action` is labelled like `Archive – macOS · Legilo`; `reasons` maps machine name to the scheduler's reasons. Offline, Xcode, tools, signing, a missing simulator runtime and an outdated worker block (`blocking`; `canDeploy` false); busy and low disk only delay (`warnings`). A machine's `problems` are its blocking reasons over all actions and `waits` its delaying ones. `notices: [{code, message}]` never block: `undefined-variables` (a `ci_scripts/*.sh` reads `$NAME`/`${NAME}` that no Hangar variable, `CI_*` name or standard variable defines and no script assigns), `script-not-executable` (a hook without mode 100755) and `beta-app-description-missing` (a TestFlight step submits for external review and App Store Connect has no Beta App Description); the scripts are read once per commit, App Store Connect asked once per 5 minutes per app, and a lookup that fails gives no notice. Reserves no number and creates nothing. Errors as for `POST /builds` (`workflow_not_found`, `ref_not_found`, `machine_not_found`, …) |
 | `POST /builds` | `DeployRequest` | `202` `Build` with its queued jobs |
 | `GET /builds?app=&limit=` | `app` optional (slug or UUID); `limit` defaults to 50, at most 200 | `200` `[Build]`, newest first |
 | `GET /builds/{id}` | | `200` `Build` |
@@ -67,6 +80,10 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /apps/{id}/beta-groups` | | `200` `[BetaGroup]` `{id, name, isInternal}`: the app's TestFlight groups in App Store Connect, internal ones first, each set by name. `409` `asc_not_configured` without the App Store Connect key; `502` `asc_refused` when App Store Connect refuses, with its own words in the message |
 | `POST /apps/{id}/beta-groups` | `{name}` | `201` `BetaGroup`: creates an internal group of the app (`POST /v1/betaGroups` with `isInternalGroup: true` and the app relationship). `400` `invalid_request` for an empty name; otherwise as `GET` |
 | `GET /apps/{id}/repo-icon?ref=` | `ref` optional | `200` the image of the `appiconset` icon `workflow-suggestion` finds, cached in memory for an hour; `404` `icon_not_found` when there is none (or only an Icon Composer icon) |
+| `GET /api-tokens` | | `200` `[APIToken]` `{id, name, scope, prefix, createdAt, lastUsedAt?}` sorted by name; never a secret or its hash |
+| `POST /api-tokens` | `CreateAPITokenRequest` `{name, scope}` | `201` `CreateAPITokenResponse` `{token: APIToken, secret}`: the only response with the secret (`hgr_` and 43 base64url characters); `prefix` is its first 8 characters. `400` `invalid_name` (empty or over 64 characters), `409` `token_exists` |
+| `DELETE /api-tokens/{id}` | | `204`; `{id}` is the name or UUID; the token stops working at once. `404` `token_not_found` |
+| `GET /api-tokens/current` | | `200` `APIToken`: the token the request carries (any scope); `404` `not_found` without one |
 | `GET /events` | | SSE stream, see below |
 
 ### Jobs
@@ -100,7 +117,8 @@ Worker machines call these routes under `/api/v1/worker`. Each needs `Authorizat
 | `POST /worker/heartbeat` | `HeartbeatRequest` | `200` `HeartbeatResponse`: the IDs of the machine's jobs a user asked to cancel |
 | `GET /worker/jobs/next?wait=` | `wait` in seconds, default 25, at most 60 | `200` `JobAssignment` for the oldest job assigned to the machine; `204` when none is assigned within `wait` |
 | `POST /worker/jobs/{id}/start` | | `200` `Job`, now `running`; the job must be `assigned` |
-| `POST /worker/jobs/{id}/steps` | `StepUpdate` | `200` `Job`; the job must be `running` |
+| `POST /worker/jobs/{id}/steps` | `StepUpdate` `{name, status, at, detail?, stages?}` | `200` `Job`; the job must be `running`. `status` adds `warning` and `cancelled`; `detail` is the step's one-line cause or warnings, `stages` `[{name, status, detail?}]` its parts (TestFlight) |
+| `POST /worker/jobs/{id}/info` | `JobRunInfo` `{workerVersion?, xcodeVersion?, xcodeBuild?}` | `200` `Job`; merged into the job's `runInfo` (whose `machineName` the server sets at start); the job must be `running` |
 | `POST /worker/jobs/{id}/log` | `LogBatch` | `204`; the job must be `running` |
 | `POST /worker/jobs/{id}/artifacts/{name}` | the raw file, streamed | `201` `ArtifactInfo`; the job must be `running` |
 | `POST /worker/jobs/{id}/finish` | `JobResult` with `succeeded`, `failed` or `cancelled` | `200` `Job`; the job must be `assigned` or `running` |
@@ -114,10 +132,10 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 | Status | Codes |
 | --- | --- |
 | `400` | `invalid_request` (malformed body or query), `asc_key_not_found`, `asc_key_rejected`, `asc_key_forbidden`, `invalid_asc_key`, `invalid_key_id`, `github_token_rejected`, `invalid_token`, `gh_not_signed_in`, `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path` |
-| `401` | `unauthorized` (worker routes) |
-| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only` |
-| `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found`, `icon_not_found`, `repository_not_found` (no such repository, or the token cannot read it) |
-| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed` |
+| `401` | `unauthorized` (worker routes), `invalid_api_token` |
+| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only`, `token_scope` |
+| `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found`, `icon_not_found`, `token_not_found`, `repository_not_found` (no such repository, or the token cannot read it) |
+| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed`, `token_exists` |
 | `415` | `unsupported_media_type` |
 | `422` | `no_project_found` (no Xcode project in the repository) |
 | `421` | `host_not_allowed` |

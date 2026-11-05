@@ -5,9 +5,13 @@ import Logging
 /// The web app: static files bundled in the `Web` resource folder. `GET /assets/<file>` serves a file from
 /// `Web/assets`; every other `GET` outside `/api/` gets `index.html`, whose router renders the page.
 public struct WebUI: Sendable {
-    /// Every UI response carries this policy: no inline scripts or styles, no requests to other origins.
+    /// Every UI response carries this policy: no inline scripts or styles, no requests to other origins, and no
+    /// framing by any page (another site could otherwise overlay the UI and trick a click on Delete or Add Mac).
     static let contentSecurityPolicy =
-        "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'"
+        "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
+        + "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    /// `frame-ancestors` for browsers that predate it.
+    static let frameOptions = HTTPFields.Element.Name("X-Frame-Options")!
     static let contentTypes = [
         "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8", "svg": "image/svg+xml",
         "html": "text/html; charset=utf-8",
@@ -79,7 +83,7 @@ public struct WebUI: Sendable {
             status: .serviceUnavailable,
             headers: [
                 .contentType: "text/html; charset=utf-8", .cacheControl: "no-cache",
-                .contentSecurityPolicy: contentSecurityPolicy, .xContentTypeOptions: "nosniff",
+                .contentSecurityPolicy: contentSecurityPolicy, .xContentTypeOptions: "nosniff", frameOptions: "DENY",
             ],
             body: ResponseBody(byteBuffer: ByteBuffer(string: html)))
     }
@@ -117,7 +121,7 @@ public struct WebUI: Sendable {
             headers: [
                 .contentType: contentType, .contentLength: "\(data.count)", .cacheControl: "no-cache",
                 .contentSecurityPolicy: Self.contentSecurityPolicy, .xContentTypeOptions: "nosniff",
-                .init("Referrer-Policy")!: "same-origin",
+                .init("Referrer-Policy")!: "same-origin", Self.frameOptions: "DENY",
             ],
             body: ResponseBody(byteBuffer: ByteBuffer(bytes: data)))
     }

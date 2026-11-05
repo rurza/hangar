@@ -107,6 +107,24 @@ enum Migrations {
                 );
                 """)
         }
+        // Bearer tokens for agents (the MCP server): only the SHA-256 of each secret is stored.
+        migrator.registerMigration("v5") { db in
+            try db.execute(sql: """
+                CREATE TABLE api_tokens (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    scope TEXT NOT NULL,
+                    prefix TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at DOUBLE NOT NULL,
+                    last_used_at DOUBLE
+                );
+                """)
+        }
+        // Who ran a job (machine name, worker build, Xcode), as JSON; NULL until a machine starts it.
+        migrator.registerMigration("v6") { db in
+            try db.execute(sql: "ALTER TABLE jobs ADD COLUMN run_info_json TEXT")
+        }
         return migrator
     }
 }

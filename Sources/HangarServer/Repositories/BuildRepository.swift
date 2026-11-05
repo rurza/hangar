@@ -203,12 +203,12 @@ public struct BuildRepository: Sendable {
             guard let job = try Self.job(db, id: jobID) else { return }
             var steps = job.steps
             var step = steps.first { $0.name == update.name } ?? StepRecord(name: update.name, status: update.status)
+            // A repeated `running` (a step reporting its stages) keeps the time it started.
+            if update.status == .running, step.status != .running || step.startedAt == nil { step.startedAt = update.at }
+            if update.status.isFinished { step.finishedAt = update.at }
             step.status = update.status
-            switch update.status {
-            case .running: step.startedAt = update.at
-            case .succeeded, .failed, .skipped: step.finishedAt = update.at
-            case .pending: break
-            }
+            if let detail = update.detail { step.detail = detail }
+            if let stages = update.stages { step.stages = stages }
             if let index = steps.firstIndex(where: { $0.name == update.name }) {
                 steps[index] = step
             } else {
@@ -216,6 +216,16 @@ public struct BuildRepository: Sendable {
             }
             try db.execute(
                 sql: "UPDATE jobs SET steps_json = ? WHERE id = ?", arguments: [try Self.json(steps), jobID.uuidString])
+        }
+    }
+
+    /// Merges `info` into the job's run info (fields it leaves nil keep their value).
+    public func mergeRunInfo(jobID: UUID, _ info: JobRunInfo) throws {
+        try database.write { db in
+            guard let job = try Self.job(db, id: jobID) else { return }
+            let merged = (job.runInfo ?? JobRunInfo()).merging(info)
+            try db.execute(
+                sql: "UPDATE jobs SET run_info_json = ? WHERE id = ?", arguments: [try Self.json(merged), jobID.uuidString])
         }
     }
 
@@ -307,6 +317,7 @@ public struct BuildRepository: Sendable {
             steps: try decode([StepRecord].self, row["steps_json"]), queueNote: row["queue_note"],
             failureReason: row["failure_reason"], outputs: try decode([String: String].self, row["outputs_json"]),
             createdAt: dbDate(row["created_at"] as Double), assignedAt: dbDate(row["assigned_at"] as Double?),
-            startedAt: dbDate(row["started_at"] as Double?), finishedAt: dbDate(row["finished_at"] as Double?))
+            startedAt: dbDate(row["started_at"] as Double?), finishedAt: dbDate(row["finished_at"] as Double?),
+            runInfo: try (row["run_info_json"] as String?).map { try decode(JobRunInfo.self, $0) })
     }
 }

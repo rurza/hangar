@@ -4,6 +4,7 @@
 // server's call (`deploy-check`, the scheduler's own rules and clock), asked again as machines change.
 
 import { api, events, seg } from '../api.js';
+import { withQuery } from '../query.js';
 import { navigate } from '../router.js';
 import { h, replaceChildren, sheet, spinner } from '../ui.js';
 import { allowsBranch, listText, suggestedBranch, workflowSteps } from '../workflow-summary.js';
@@ -72,6 +73,8 @@ export function openDeploySheet(app) {
     workflowHint);
 
   const workflowDetails = h('div', { class: 'deploy-plan', 'aria-live': 'polite' });
+  // What the build is likely to trip over (the repository's scripts, App Store Connect), from the deploy check.
+  const preflight = h('div', { class: 'deploy-preflight-slot', 'aria-live': 'polite' });
 
   const whereOptions = h('div', { class: 'where-options' });
   const whereNotice = h('div', { class: 'deploy-notice-slot' });
@@ -92,7 +95,7 @@ export function openDeploySheet(app) {
   const handle = sheet({
     title: `Deploy ${app.name}`,
     submitOnEnter: true,
-    body: h('div', { class: 'form deploy-form' }, refField, workflowField, workflowDetails, whereField, numberPreview, reason),
+    body: h('div', { class: 'form deploy-form' }, refField, workflowField, workflowDetails, preflight, whereField, numberPreview, reason),
     actions: [{ label: 'Cancel', kind: 'cancel' }, deployAction],
     onClose: () => {
       clearTimeout(debounce);
@@ -189,7 +192,7 @@ export function openDeploySheet(app) {
     renderWorkflows();
     update();
     try {
-      const response = await api.get(`${base}/workflows?ref=${encodeURIComponent(ref)}`, { signal: controller.signal });
+      const response = await api.get(withQuery(`${base}/workflows`, { ref }), { signal: controller.signal });
       if (workflowsRequest !== controller) return;
       workflows = response;
     } catch (error) {
@@ -282,10 +285,9 @@ export function openDeploySheet(app) {
     const controller = new AbortController();
     checkRequest = controller;
     // The commit /workflows resolved: the server then asks GitHub nothing, however often the sheet checks.
-    const query = new URLSearchParams({ workflow: workflowSelect.value, ref });
-    if (workflows?.commit) query.set('commit', workflows.commit);
+    const query = { workflow: workflowSelect.value, ref, commit: workflows?.commit || null };
     try {
-      const answer = await api.get(`${base}/deploy-check?${query}`, { signal: controller.signal });
+      const answer = await api.get(withQuery(`${base}/deploy-check`, query), { signal: controller.signal });
       if (checkRequest !== controller) return;
       check = answer;
       machineCount = answer.machines.length;
@@ -344,10 +346,9 @@ export function openDeploySheet(app) {
     const previous = selectedMachineID();
     const option = (value, title, detail, dot) => h('label', { class: 'where-option' },
       h('input', { type: 'radio', name: 'deploy-where', value, checked: value === previous, class: 'where-radio', onChange: () => update() }),
-      // Every row keeps the dot's column, so the titles line up.
-      h('span', { class: ['online-dot', dot ?? 'none'], 'aria-hidden': 'true' }),
+      // The title sits 12 px from the radio, as in the wizard; the online dot follows the Mac's name.
       h('span', { class: 'where-text' },
-        h('span', { class: 'where-title' }, title),
+        h('span', { class: 'where-title' }, title, dot ? h('span', { class: ['online-dot', dot], 'aria-hidden': 'true' }) : null),
         h('span', { class: 'where-detail' }, detail)));
     const machines = check?.machines ?? [];
     const able = machines.filter((machine) => machine.online && machine.problems.length === 0);
@@ -385,7 +386,18 @@ export function openDeploySheet(app) {
     renderNotice();
   }
 
+  /** The deploy check's notices: they never block the deploy, but say what to fix first. */
+  function renderPreflight() {
+    const notices = Array.isArray(check?.notices) ? check.notices.filter((notice) => notice?.message) : [];
+    replaceChildren(preflight, notices.length
+      ? h('div', { class: 'deploy-preflight', role: 'note' },
+        h('p', { class: 'deploy-preflight-title' }, notices.length === 1 ? 'Before you deploy' : `Before you deploy (${notices.length})`),
+        h('ul', { class: 'deploy-preflight-list' }, notices.map((notice) => h('li', null, notice.message))))
+      : null);
+  }
+
   function renderNotice() {
+    renderPreflight();
     const blocker = machineBlocker();
     const wait = waitText();
     replaceChildren(whereNotice, blocker

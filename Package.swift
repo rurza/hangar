@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "HangarServer", targets: ["HangarServer"]),
         .library(name: "HangarWorker", targets: ["HangarWorker"]),
         .library(name: "HangarClient", targets: ["HangarClient"]),
+        .library(name: "HangarMCP", targets: ["HangarMCP"]),
         .executable(name: "hangar-server", targets: ["hangar-server"]),
         .executable(name: "hangar-worker", targets: ["hangar-worker"]),
         .executable(name: "hangar", targets: ["hangar"]),
@@ -42,6 +43,7 @@ let package = Package(
             .product(name: "Logging", package: "swift-log"),
         ]),
         .target(name: "HangarClient", dependencies: ["HangarCore"]),
+        .target(name: "HangarMCP", dependencies: ["HangarClient", "HangarCore"]),
         .executableTarget(name: "hangar-server", dependencies: [
             "HangarServer", "HangarCore", "HangarAppStoreConnect",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -55,7 +57,7 @@ let package = Package(
             .product(name: "Logging", package: "swift-log"),
         ]),
         .executableTarget(name: "hangar", dependencies: [
-            "HangarClient", "HangarCore",
+            "HangarClient", "HangarCore", "HangarMCP",
             .product(name: "ArgumentParser", package: "swift-argument-parser"),
         ]),
         .testTarget(name: "HangarCoreTests", dependencies: ["HangarCore"]),
@@ -71,6 +73,7 @@ let package = Package(
         ]),
         .testTarget(name: "HangarWorkerTests", dependencies: ["HangarWorker"], resources: [.copy("Fixtures")]),
         .testTarget(name: "HangarClientTests", dependencies: ["HangarClient", "HangarCore"]),
+        .testTarget(name: "HangarMCPTests", dependencies: ["HangarMCP", "HangarClient", "HangarCore"]),
         .testTarget(name: "hangarTests", dependencies: ["hangar", "HangarClient", "HangarCore"]),
     ],
     swiftLanguageModes: [.v6]

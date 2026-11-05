@@ -100,6 +100,8 @@ private final class Shared<Value: Sendable>: Sendable {
 
     private struct Fixture {
         let dataDirectory = NSTemporaryDirectory() + "hangar-job-" + UUID().uuidString
+        /// Stands in for the per-user temp directory's `hangar-jobs`, so tests never touch the real one.
+        let temporaryRoot = NSTemporaryDirectory() + "hangar-job-tmp-" + UUID().uuidString
         let applications: String
         let runner = PipelineRunner()
         let connection: FakeServerConnection
@@ -134,7 +136,8 @@ private final class Shared<Value: Sendable>: Sendable {
         }
 
         var layout: WorkspaceLayout {
-            WorkspaceLayout(dataDirectory: dataDirectory, appSlug: "demo", jobID: assignment.job.id)
+            WorkspaceLayout(
+                dataDirectory: dataDirectory, appSlug: "demo", jobID: assignment.job.id, temporaryRoot: temporaryRoot)
         }
 
         /// Makes the job a test action of `DemoTests` and scripts the simulator list and the result summary.
@@ -157,20 +160,24 @@ private final class Shared<Value: Sendable>: Sendable {
             }
         }
 
-        func run(cancelled: @escaping @Sendable () -> Bool = { false }) async -> JobResult {
+        func run(
+            cancelled: @escaping @Sendable () -> Bool = { false }, stopReason: @escaping @Sendable () -> String? = { nil }
+        ) async -> JobResult {
             let jobRunner = JobRunner(
                 connection: connection, runner: runner,
                 locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: applications),
-                dataDirectory: dataDirectory, machineName: "Studio", clock: clock,
+                dataDirectory: dataDirectory, temporaryRoot: temporaryRoot, machineName: "Studio", clock: clock,
                 appStoreConnectFactory: { [credentials, appStoreConnect] received in
                     credentials.update { $0.append(received) }
                     return appStoreConnect
                 })
-            return await jobRunner.run(assignment, cancelled: cancelled)
+            return await jobRunner.run(assignment, cancelled: cancelled, stopReason: stopReason)
         }
 
         /// Runs while a ticker moves the test clock forward, for steps that wait on it.
-        func runTicking(cancelled: @escaping @Sendable () -> Bool) async -> JobResult {
+        func runTicking(
+            cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String? = { nil }
+        ) async -> JobResult {
             let ticker = Task {
                 while !Task.isCancelled {
                     await clock.advance(by: .seconds(1))
@@ -178,7 +185,7 @@ private final class Shared<Value: Sendable>: Sendable {
                 }
             }
             defer { ticker.cancel() }
-            return await run(cancelled: cancelled)
+            return await run(cancelled: cancelled, stopReason: stopReason)
         }
 
         func command(_ match: (ProcessCommand) -> Bool) -> ProcessCommand? { runner.commands.first(where: match) }
@@ -187,6 +194,7 @@ private final class Shared<Value: Sendable>: Sendable {
 
         func removeAll() {
             try? FileManager.default.removeItem(atPath: dataDirectory)
+            try? FileManager.default.removeItem(atPath: temporaryRoot)
             try? FileManager.default.removeItem(atPath: applications)
         }
     }
@@ -211,6 +219,11 @@ private final class Shared<Value: Sendable>: Sendable {
             outputs: ["testflight.buildID": "asc-build", "testflight.processingState": "VALID"]))
         #expect(fixture.connection.events.first == .start)
         #expect(fixture.connection.events.last == .finish(result))
+        // The worker build first, then the Xcode the job picked.
+        #expect(fixture.connection.infos.count == 2)
+        #expect(fixture.connection.infos.first?.workerVersion?.hasPrefix(HangarVersion.current) == true)
+        #expect(fixture.connection.infos.last?.xcodeVersion == "27.2")
+        #expect(fixture.connection.infos.last?.xcodeBuild?.isEmpty == false)
         #expect(fixture.connection.steps.map(\.name) == Self.allSteps.flatMap { [$0, $0] })
         #expect(fixture.connection.steps.map(\.status) == Self.allSteps.flatMap { _ in [.running, .succeeded] })
 
@@ -225,7 +238,9 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postClone.environment["CI_WORKFLOW_ID"] == "release")
         #expect(postClone.environment["HANGAR_ASC_KEY_PATH"] == layout.secrets + "/HANGAR_ASC_KEY_PATH")
         #expect(postClone.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
-        #expect(postClone.environment["TMPDIR"] == layout.jobDirectory + "/tmp")
+        #expect(postClone.environment["TMPDIR"] == fixture.temporaryRoot + "/" + fixture.assignment.job.id.uuidString)
+        #expect(postClone.environment["TMPDIR"] == layout.temporary)
+        #expect(!layout.temporary.hasPrefix(layout.jobDirectory))
         #expect(temporaryExisted.get() == true)
         #expect(!FileManager.default.fileExists(atPath: layout.temporary))
 
@@ -338,7 +353,8 @@ private final class Shared<Value: Sendable>: Sendable {
 
         let result = await fixture.run()
 
-        #expect(result == JobResult(status: .failed, failureReason: "test: xcodebuild exited with 70"))
+        // The log's error says more than the exit status, which follows it.
+        #expect(result == JobResult(status: .failed, failureReason: "test: error: build failed (xcodebuild exited with 70)"))
     }
 
     /// A build that fails before any test ran leaves a result bundle with no tests in it: no Tests section then.
@@ -413,6 +429,24 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postXcodebuild.environment["CI_APP_STORE_SIGNED_APP_PATH"] == nil)
         #expect(!fixture.runner.commands.contains { $0.arguments.contains("-exportArchive") })
         #expect(fixture.connection.logLines.contains("** ARCHIVE FAILED **"))
+    }
+
+    @Test func failedStepNamesTheFirstErrorItsLogShows() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.runner.recording.script(Self.isArchive, lines: [
+            "CompileSwift normal arm64 /src/AnalyticsClient+Live.swift",
+            "/Users/me/w/BatFiKit/Sources/AnalyticsClient+Live.swift:19:35: error: cannot find 'analyticsDSN' in scope",
+            "/Users/me/w/BatFiKit/Sources/Other.swift:3:1: error: a later error",
+            "** ARCHIVE FAILED **",
+        ], exitCode: 65)
+
+        let result = await fixture.run()
+
+        let cause = "AnalyticsClient+Live.swift:19:35: error: cannot find 'analyticsDSN' in scope (xcodebuild exited with 65)"
+        #expect(result.failureReason == "archive: " + cause)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.status == .failed)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == cause)
     }
 
     @Test func secretsWipedEvenOnFailure() async throws {
@@ -559,11 +593,34 @@ private final class Shared<Value: Sendable>: Sendable {
         let result = await fixture.runTicking(cancelled: { archiveStarted.get() })
 
         #expect(result.status == .cancelled)
-        #expect(fixture.connection.status(of: "archive") == .failed)
+        #expect(fixture.connection.status(of: "archive") == .cancelled)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == "Cancelled")
+        #expect(result.failureReason == nil)
         #expect(fixture.connection.status(of: "post-xcodebuild") == .skipped)
         #expect(fixture.hook(.postXcodebuild) == nil)
         #expect(fixture.connection.status(of: "upload-artifacts") == .succeeded)
         #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+    }
+
+    @Test func aWorkerStopCancelsTheStepWithItsReasonAndSkipsTheUpload() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.runner.recording.scriptHang(Self.isArchive)
+        let archiveStarted = Shared(false)
+        fixture.runner.whenRunning { if Self.isArchive($0) { archiveStarted.update { $0 = true } } }
+        let reason = "hangar-worker on Studio was stopped (SIGTERM)"
+
+        let result = await fixture.runTicking(
+            cancelled: { archiveStarted.get() }, stopReason: { archiveStarted.get() ? reason : nil })
+
+        #expect(result == JobResult(status: .cancelled, failureReason: reason + " during archive"))
+        #expect(fixture.connection.result == result)
+        #expect(fixture.connection.status(of: "archive") == .cancelled)
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == "Stopped: " + reason)
+        #expect(fixture.connection.status(of: "upload-artifacts") == .skipped)
+        #expect(fixture.connection.uploads.isEmpty)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+        #expect(fixture.connection.logLines.contains("job stopped: \(reason); stopped archive"))
     }
 
     @Test func failureReasonAndOutputsAreMasked() async throws {
@@ -648,7 +705,7 @@ private final class Shared<Value: Sendable>: Sendable {
 
         #expect(result.status == .succeeded)
         #expect(fixture.connection.logLines.contains("archived"))
-        #expect(fixture.connection.logLines.contains("git clone https://github.com/acme/demo.git \(fixture.layout.repository)"))
+        #expect(fixture.connection.logLines.contains("git clone -- https://github.com/acme/demo.git \(fixture.layout.repository)"))
         #expect(fixture.connection.events.last == .finish(result))
     }
 

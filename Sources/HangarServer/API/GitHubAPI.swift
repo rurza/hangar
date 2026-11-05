@@ -17,7 +17,7 @@ extension HangarServerApp {
         api.get("github/repos/:owner/:repo/inspect") { request, context in
             let repoURL = try repositoryURL(context)
             var inspection = try await repositoryDetector.inspection(
-                repoURL: repoURL, ref: request.uri.queryParameters.get("ref"), token: try globalGitHubToken())
+                repoURL: repoURL, ref: request.query.get("ref"), token: try globalGitHubToken())
             inspection = try await matchAppStoreConnect(inspection)
             return try Response.json(inspection)
         }
@@ -30,18 +30,18 @@ extension HangarServerApp {
         api.get("apps/:id/workflow-suggestion") { request, context in
             let app = try app(context)
             // The bundle ID the Add App sheet picked, else the app's from App Store Connect.
-            let picked = request.uri.queryParameters.get("bundleID").flatMap { $0.isEmpty ? nil : [String($0)] }
+            let picked = request.query.get("bundleID").flatMap { $0.isEmpty ? nil : [String($0)] }
             let bundleIDs: [String]? = if let picked { picked } else { await bundleIDs(of: app) }
             let suggestion = try await withAppToken(app) { token in
                 try await repositoryDetector.suggestion(
-                    repoURL: app.repoURL, ref: request.uri.queryParameters.get("ref"), token: token,
+                    repoURL: app.repoURL, ref: request.query.get("ref"), token: token,
                     machines: try machines.all(), bundleIDs: bundleIDs)
             }
             return try Response.json(suggestion)
         }
         api.get("apps/:id/repo-icon") { request, context in
             let app = try app(context)
-            let ref = request.uri.queryParameters.get("ref") ?? ""
+            let ref = request.query.get("ref") ?? ""
             let bundleIDs = await bundleIDs(of: app)
             let image = try await withAppToken(app) { token in
                 try await repositoryDetector.icon(
@@ -131,11 +131,11 @@ extension HangarServerApp {
 
     /// `commit` (a SHA) and `path` (an image inside an `.appiconset`) of an icon request.
     static func imageQuery(_ request: Request) throws -> (commit: String, path: String) {
-        let commit = request.uri.queryParameters.get("commit") ?? ""
+        let commit = request.query.get("commit") ?? ""
         guard commit.count >= 7, commit.count <= 40, commit.allSatisfy(\.isHexDigit) else {
             throw APIError(code: "invalid_request", message: "'commit' must be a commit SHA.")
         }
-        let path = request.uri.queryParameters.get("path") ?? ""
+        let path = request.query.get("path") ?? ""
         let lowered = path.lowercased()
         guard path.contains(".appiconset/"), [".png", ".jpg", ".jpeg"].contains(where: lowered.hasSuffix),
             GitHubSourceHost.escapePath(path) != nil

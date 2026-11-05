@@ -3,6 +3,7 @@
 
 import { api, ApiError } from '../api.js';
 import { h, plusIcon, replaceChildren, spinner, svg } from '../ui.js';
+import { automaticGroupNames, groupRow } from '../workflow-model.js';
 
 // MARK: Glyphs
 
@@ -208,17 +209,24 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
     const known = state.groups.filter((group) => !internalOnly || group.isInternal);
     const names = new Set(state.groups.map((group) => group.name));
     const missing = selected.filter((name) => !names.has(name));
+    const hintElement = h('p', { class: 'wf-field-hint' });
+    // The hint follows the ticks (an external group adds Apple's review), without redrawing the focused row.
     const toggle = (name, on) => {
       const index = selected.indexOf(name);
       if (on && index < 0) selected.push(name);
       if (!on && index >= 0) selected.splice(index, 1);
+      hintElement.textContent = hintWithAutomatic();
       onChange?.();
     };
     const rows = [
-      ...known.map((group) => checkRow({
-        title: group.name, tag: internalOnly ? null : group.isInternal ? 'Internal' : 'External', checked: selected.includes(group.name), disabled,
-        onChange: (on) => toggle(group.name, on),
-      })),
+      ...known.map((group) => {
+        const row = groupRow(group, selected, { internalOnly });
+        return checkRow({
+          title: group.name, detail: row.detail, tag: row.tag, checked: row.checked, disabled: disabled || row.disabled,
+          // An automatic group is only ever taken out of the workflow: it gets each build anyway.
+          onChange: (on) => { toggle(group.name, row.automatic ? false : on); if (row.automatic) draw(); },
+        });
+      }),
       // A name in the workflow that App Store Connect does not have: shown, so it can be unticked.
       ...missing.map((name) => checkRow({
         title: name, tag: 'Not in App Store Connect', tagWarning: true, checked: true, disabled,
@@ -226,19 +234,25 @@ export function groupPicker({ store, selected, onChange, internalOnly = false, d
       })),
     ];
     const list = h('ul', { class: 'wf-checklist', 'aria-label': 'TestFlight groups' }, rows, addRow());
-    const selectedExternal = known.filter((group) => !group.isInternal && selected.includes(group.name));
-    let hint;
-    if (!(known.length || missing.length)) {
-      hint = 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.';
-    } else if (selectedExternal.length) {
-      const names = selectedExternal.map((group) => group.name);
-      hint = `${names.length === 1 ? `${names[0]} is an external group` : `${names.join(', ')} are external groups`}. The build goes to Apple’s beta review before those testers get it.`;
-    } else if (internalOnly || known.every((group) => group.isInternal)) {
-      hint = 'Internal groups contain people on your App Store Connect team.';
-    } else {
-      hint = 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
+    function hint() {
+      const selectedExternal = known.filter((group) => !group.isInternal && selected.includes(group.name));
+      if (!(known.length || missing.length)) {
+        return 'This app has no groups yet. Create one, or pick none: App Store Connect users with access still see each build.';
+      }
+      if (selectedExternal.length) {
+        const names = selectedExternal.map((group) => group.name);
+        return `${names.length === 1 ? `${names[0]} is an external group` : `${names.join(', ')} are external groups`}. The build goes to Apple’s beta review before those testers get it.`;
+      }
+      if (internalOnly || known.every((group) => group.isInternal)) return 'Internal groups contain people on your App Store Connect team.';
+      return 'Internal groups are people on your App Store Connect team. External groups get the build after Apple’s beta review.';
     }
-    replaceChildren(element, list, h('p', { class: 'wf-field-hint' }, hint));
+    function hintWithAutomatic() {
+      const automatic = automaticGroupNames(known);
+      if (!automatic.length) return hint();
+      return `${hint()} ${automatic.join(', ')} ${automatic.length === 1 ? 'gets' : 'get'} every build automatically (set in App Store Connect).`;
+    }
+    hintElement.textContent = hintWithAutomatic();
+    replaceChildren(element, list, hintElement);
   }
 
   function addRow() {

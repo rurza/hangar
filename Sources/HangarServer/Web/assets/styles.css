@@ -22,6 +22,7 @@
   --neutral: #8e8e93;
   --header-bg: rgba(242, 242, 247, 0.78);
   --tab-bar-bg: rgba(249, 249, 249, 0.86);
+  --bar-solid: #f9f9f9;
   --backdrop: rgba(0, 0, 0, 0.32);
   --toast-bg: rgba(30, 30, 32, 0.92);
   --toast-text: #ffffff;
@@ -94,6 +95,7 @@
     --neutral: #98989d;
     --header-bg: rgba(0, 0, 0, 0.72);
     --tab-bar-bg: rgba(22, 22, 24, 0.86);
+    --bar-solid: #161618;
     --backdrop: rgba(0, 0, 0, 0.56);
     --toast-bg: rgba(58, 58, 60, 0.95);
     /* Dark surfaces are raised by lightness and a hairline, not by shadow. */
@@ -346,8 +348,16 @@ img, svg { display: block; }
   margin: var(--space-2) 0 var(--space-3);
 }
 .page-heading { flex: 1; min-width: 0; }
-/* The actions sit in the title's row: 32 px controls centred on the first 41 px line (4.5 px down). */
-.page-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+/* The actions sit in the title's row: 32 px controls centred on the first 41 px line (4.5 px down). When the
+   title and the actions do not fit side by side (a phone), the actions wrap onto a line of their own instead of
+   squeezing the title to a letter per line. */
+.page-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+}
 .page-title-row .large-title { min-width: 0; }
 
 .large-title {
@@ -860,6 +870,9 @@ a.row:hover { text-decoration: none; background: var(--fill); }
 .switch:disabled { opacity: 0.4; cursor: default; }
 
 .button-small { min-height: 30px; padding: 4px 14px; font-size: 14px; }
+/* A 44 pt tall hit area around the 30 px button. */
+.button-small { position: relative; }
+.button-small::after { content: ""; position: absolute; inset: -7px 0; }
 .button-plain-destructive { background: transparent; color: var(--failure); padding-inline: var(--space-1); }
 .button-plain.button-small, .button-plain-destructive.button-small { padding-inline: var(--space-1); }
 .card-title-row > .button-plain:last-child, .field-label-row > .button-plain:last-child,
@@ -1117,6 +1130,11 @@ a.row:hover { text-decoration: none; background: var(--fill); }
 .pick-item-detail { color: var(--secondary); font: var(--footnote); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pick-item-time { flex-shrink: 0; color: var(--secondary); font: var(--footnote); }
 .pick-badge { padding: 0 6px; border-radius: var(--radius-pill); background: var(--fill-strong); color: var(--secondary); font: var(--caption); }
+/* A repository or app already in Hangar: the row, then "Open <app>" at its end. */
+.pick-row { display: flex; align-items: center; gap: var(--space-1); }
+.pick-row > :first-child { flex: 1; min-width: 0; }
+.pick-row-link { flex-shrink: 0; }
+.detected-list .pick-row { padding-right: 10px; border-radius: 10px; background: var(--card); }
 .pick-lock { display: inline-flex; color: var(--secondary); }
 .pick-lock svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 
@@ -1143,6 +1161,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .detected-status.found { display: flex; align-items: center; gap: 6px; color: var(--success); font-weight: 600; }
 .found-check { width: 16px; height: 16px; }
 .detected-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); padding-top: var(--space-half); }
+.detected-more { padding: 10px; font: var(--subhead); }
 .detected-item.unmatched { flex-direction: column; align-items: stretch; gap: var(--space-1); }
 .detected-item.unmatched .detected-actions { padding-left: 68px; }
 .detected-pick {
@@ -1226,7 +1245,16 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .page-notice p, .deploy-notice p { flex: 1 1 240px; }
 .page-notice { margin-bottom: var(--space-2); }
 .deploy-notice { padding-inline: 12px; }
-.page-notice-slot:empty, .deploy-notice-slot:empty { display: none; }
+.page-notice-slot:empty, .deploy-notice-slot:empty, .deploy-preflight-slot:empty { display: none; }
+.deploy-preflight {
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  font: var(--subhead);
+  letter-spacing: -0.24px;
+}
+.deploy-preflight-title { margin: 0 0 4px; font-weight: 600; }
+.deploy-preflight-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .facts { display: grid; gap: var(--space-1); margin: 0; }
 .fact { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); font: var(--subhead); letter-spacing: -0.24px; }
 /* Mono values share the label's baseline at a size that reads as the same weight of text. */
@@ -1295,12 +1323,21 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 
 /* MARK: Back link, segmented control and pop-up */
 
+/* A 44 pt hit area around the 21 px line; the negative margins keep the text where it was. */
 .back-link {
-  display: inline-block;
-  margin-bottom: var(--space-1);
+  display: inline-flex;
+  align-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin: -11.5px calc(-1 * var(--space-1)) calc(var(--space-1) - 11.5px);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
   font: var(--callout);
   letter-spacing: -0.32px;
 }
+.back-link:hover { text-decoration: none; background: var(--fill); }
+/* A flex item drops its trailing space; keep the one after the chevron. */
+.back-link > span { white-space: pre; }
 
 .segmented {
   display: inline-flex;
@@ -1327,6 +1364,16 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 }
 
 .select { appearance: auto; padding-block: 0; cursor: pointer; }
+/* A text field with suggestions (the Deploy sheet's branch): the chevron of a pop-up, not the browser's ▼. */
+.input[list] {
+  padding-right: 32px;
+  /* A stroked chevron in the grey that reads on both appearances (a data: image, which the CSP allows). */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 9px center;
+  background-size: 10px 6px;
+  background-repeat: no-repeat;
+}
+.input[list]::-webkit-calendar-picker-indicator { opacity: 0; cursor: pointer; }
 
 /* MARK: Deploy sheet */
 
@@ -1360,14 +1407,14 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
   content: "";
   position: absolute;
   top: 0;
-  left: 62px;
+  left: 42px;
   right: 0;
   border-top: 0.5px solid var(--separator);
 }
 .where-option:has(.where-radio:checked) { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .where-radio { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex-shrink: 0; }
 .where-text { flex: 1; min-width: 0; display: grid; }
-.where-title { font: var(--callout); font-weight: 500; overflow-wrap: anywhere; }
+.where-title { display: flex; align-items: center; gap: 6px; font: var(--callout); font-weight: 500; overflow-wrap: anywhere; }
 .where-detail { color: var(--secondary); font: var(--footnote); }
 .where-options > .field-hint { padding: 8px 12px; }
 .online-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--neutral); }
@@ -1435,7 +1482,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 }
 
 .steps { margin: 0; padding: 0; list-style: none; display: grid; }
-.step { display: flex; align-items: center; gap: 10px; min-height: 32px; font: var(--callout); letter-spacing: -0.32px; }
+.step { display: flex; flex-wrap: wrap; align-items: center; column-gap: 10px; min-height: 32px; font: var(--callout); letter-spacing: -0.32px; }
 .step-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .step-row-pending .step-name, .step-row-skipped .step-name { color: var(--secondary); }
 .step-row-running .step-name { font-weight: 600; }
@@ -1454,6 +1501,27 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .step-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
 .step-succeeded { --tone: var(--success); }
 .step-failed { --tone: var(--failure); }
+.step-warning { --tone: var(--warning); }
+.step-cancelled { --tone: var(--fill-strong); color: var(--secondary); }
+.step-row-cancelled .step-name { color: var(--secondary); }
+/* The cause or warning under a step: indented past the icon, wrapping long compiler lines. */
+.step-detail {
+  flex-basis: 100%;
+  margin: 0 0 6px 30px;
+  font: var(--footnote);
+  overflow-wrap: anywhere;
+  color: var(--secondary);
+}
+.step-detail-failed { color: var(--failure); }
+.step-detail-warning { color: color-mix(in srgb, var(--warning) 70%, var(--text)); }
+.step-stages { flex-basis: 100%; margin: 0 0 6px 30px; padding: 0; list-style: none; display: grid; gap: 4px; }
+.step-stage { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; font: var(--footnote); }
+.step-stage .step-icon { width: 16px; height: 16px; }
+.step-stage .step-icon svg { width: 11px; height: 11px; }
+.step-stage-name { font-weight: 600; }
+.step-stage-detail { color: var(--secondary); overflow-wrap: anywhere; min-width: 0; }
+.step-stage.step-row-warning .step-stage-detail { color: color-mix(in srgb, var(--warning) 70%, var(--text)); }
+.step-stage.step-row-failed .step-stage-detail { color: var(--failure); }
 .step-skipped { --tone: var(--fill-strong); color: var(--secondary); }
 .step-pending { background: none; box-shadow: inset 0 0 0 1.5px var(--tertiary); }
 .step-running { --tone: var(--running); background: none; box-shadow: inset 0 0 0 1.5px var(--tone); }
@@ -1510,6 +1578,19 @@ li + li > .artifact-link::before {
 }
 .artifact-name { flex: 1; min-width: 0; font: var(--callout); overflow-wrap: anywhere; }
 .artifact-size { color: var(--secondary); font: var(--footnote); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.artifact-product .artifact-name { font-weight: 600; }
+.artifact-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  color: var(--accent);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.artifact-others { margin: var(--space-2) 0 var(--space-1); color: var(--secondary); font: var(--footnote); font-weight: 600; }
 
 /* MARK: Log */
 
@@ -1544,30 +1625,9 @@ li + li > .artifact-link::before {
 
 /* MARK: History */
 
-/* A compact pop-up button, as in a toolbar: 32 px, the value and a chevron. */
-.popup-button {
-  appearance: none;
-  -webkit-appearance: none;
-  min-width: 140px;
-  max-width: 100%;
-  height: 32px;
-  padding: 0 32px 0 14px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
-  background-image: linear-gradient(45deg, transparent 50%, var(--accent) 50%), linear-gradient(135deg, var(--accent) 50%, transparent 50%);
-  background-position: right 17px center, right 12px center;
-  background-size: 5px 5px, 5px 5px;
-  background-repeat: no-repeat;
-  color: var(--accent);
-  font: var(--headline);
-  font-size: 15px;
-  letter-spacing: -0.24px;
-  cursor: pointer;
-}
-.page-actions .popup-button { max-width: 50vw; text-overflow: ellipsis; }
+/* The app filter: a grey pop-up like the editor's workflow picker, sized to its value. */
+.history-filter { width: auto; max-width: 50vw; min-height: 36px; padding-inline: 12px 8px; font: var(--subhead); font-weight: 500; }
 .key-id-line .link-button { font: inherit; }
-.popup-button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 /* MARK: Machines */
 

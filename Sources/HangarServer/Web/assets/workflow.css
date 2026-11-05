@@ -70,6 +70,9 @@
   cursor: pointer;
   transition: background-color 160ms ease;
 }
+.wf-icon-button { position: relative; }
+/* A 44 pt hit area around the 28 px circle. */
+.wf-icon-button::after { content: ""; position: absolute; inset: -8px; }
 .wf-icon-button:hover { background: var(--fill-strong); }
 .wf-icon-button:disabled { opacity: 0.4; cursor: default; }
 /* The plus fills the circle, so it is centred by construction (ui.js plusIcon). */
@@ -274,7 +277,8 @@
   align-items: center;
   gap: 2px;
   justify-self: start;
-  margin-left: calc(-1 * var(--space-1));
+  min-height: 44px;
+  margin: -7px 0 -7px calc(-1 * var(--space-1));
   padding: 4px var(--space-1);
   border: 0;
   border-radius: var(--radius-sm);
@@ -319,6 +323,8 @@
   overflow-wrap: anywhere;
 }
 .wf-readonly a { overflow-wrap: anywhere; }
+/* A value that cannot be changed here: plain text, not a field it could be mistaken for. */
+.wf-readonly.wf-plain { min-height: 0; padding: 0; background: none; color: var(--text); }
 
 /* Radio cards: a choice and what it means. */
 .wf-choices { display: grid; gap: var(--space-1); margin: 0; padding: 0; border: 0; min-width: 0; }
@@ -547,15 +553,14 @@
 
 /* Settings nested under a switch, indented to its label. */
 .wf-nested { display: grid; gap: var(--space-2); margin: 0 12px 12px 28px; }
-.wf-nested.wf-dependent-note { padding: 0; }
+/* The note stands in for the settings, so it lines up with the switch's label, not indented under it. */
+.wf-nested.wf-dependent-note { padding: 0; margin-left: 12px; }
 .wf-inline-field { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .wf-inline-field .select { width: auto; min-width: 140px; }
 .wf-nested .wf-checklist, .wf-switch-list { background: var(--card); }
 .wf-switch-list { display: grid; border-radius: var(--radius-sm); }
 .wf-switch-list .switch-field { padding: 12px; }
 
-/* The wizard's Cancel on the left of its footer, as on iOS. */
-.wf-wizard-sheet .sheet-actions > .button:first-child { margin-inline-end: auto; }
 
 /* MARK: YAML sheet */
 
@@ -714,6 +719,10 @@
     bottom: calc(var(--tab-bar-height) + var(--safe-bottom));
     border-bottom: 0;
     border-top: 0.5px solid var(--separator);
+    /* Opaque: the rows scrolling under it would show through a translucent bar right behind Cancel. */
+    background: var(--bar-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
   .wf-menu { right: 0; width: min(300px, calc(100vw - 2 * var(--gutter))); }
   .wf-detail-header .wf-tile { width: 32px; height: 32px; border-radius: 8px; }
@@ -739,6 +748,6 @@
 .wf-pattern { display: flex; align-items: center; gap: var(--space-1); min-height: 44px; padding: 4px 12px; }
 .wf-pattern-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
 .wf-checklist > .wf-pattern + .wf-pattern::before { left: 12px; }
-.wf-pattern .button { margin-inline-end: -14px; }
+.wf-pattern .button { margin-inline-end: calc(-1 * var(--space-1)); }
 .wf-fact-value { display: inline-flex; align-items: baseline; gap: var(--space-1); }
 .wf-fact .wf-branch-select { width: auto; min-height: 36px; max-width: 100%; }

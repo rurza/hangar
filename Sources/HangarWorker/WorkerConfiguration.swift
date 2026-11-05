@@ -5,13 +5,49 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
     public var serverURL: URL
     public var token: String
     public var maxConcurrentJobs: Int
+    /// Where the configuration lives (by default `~/Library/Application Support/Hangar/worker`).
     public var dataDirectory: String
+    /// Where checkouts, DerivedData, job directories and each job's `TMPDIR` go. Nil: `defaultWorkDirectory`.
+    public var workDirectory: String?
 
-    public init(serverURL: URL, token: String, maxConcurrentJobs: Int = 1, dataDirectory: String) {
+    public init(
+        serverURL: URL, token: String, maxConcurrentJobs: Int = 1, dataDirectory: String, workDirectory: String? = nil
+    ) {
         self.serverURL = serverURL
         self.token = token
         self.maxConcurrentJobs = maxConcurrentJobs
         self.dataDirectory = dataDirectory
+        self.workDirectory = workDirectory
+    }
+
+    /// The work directory in use: the configured one, else `defaultWorkDirectory(for:home:)`.
+    public var resolvedWorkDirectory: String {
+        if let workDirectory, !workDirectory.isEmpty { return Self.standardized(workDirectory) }
+        return Self.defaultWorkDirectory(for: dataDirectory, home: NSHomeDirectory())
+    }
+
+    /// The data directory itself when its path has no whitespace. Otherwise a path without spaces under
+    /// `~/.hangar`: `~/.hangar/<name>` for the usual `~/Library/Application Support/Hangar/<name>`, and
+    /// `~/.hangar/work-<hash>` for anything else. Projects written for Xcode Cloud expect a workspace path without
+    /// spaces (`/Volumes/workspace/repository`): `cd $CI_PRIMARY_REPOSITORY_PATH` unquoted breaks on
+    /// "Application Support".
+    public static func defaultWorkDirectory(for dataDirectory: String, home: String) -> String {
+        let data = standardized(dataDirectory)
+        guard data.contains(where: \.isWhitespace) else { return data }
+        let home = standardized(home)
+        let support = home + "/Library/Application Support/Hangar/"
+        var name: String
+        if data.hasPrefix(support), !data.dropFirst(support.count).contains("/"), !data.dropFirst(support.count).isEmpty {
+            name = String(data.dropFirst(support.count))
+        } else {
+            name = "work-" + String(SHA256File.hex(of: Data(data.utf8)).prefix(8))
+        }
+        name = String(name.map { $0.isWhitespace ? "-" : $0 })
+        return home + "/.hangar/" + name
+    }
+
+    static func standardized(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     public init(from decoder: any Decoder) throws {
@@ -20,6 +56,7 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
         token = try container.decode(String.self, forKey: .token)
         maxConcurrentJobs = try container.decodeIfPresent(Int.self, forKey: .maxConcurrentJobs) ?? 1
         dataDirectory = try container.decode(String.self, forKey: .dataDirectory)
+        workDirectory = try container.decodeIfPresent(String.self, forKey: .workDirectory)
     }
 
     public struct LoadError: Error, CustomStringConvertible, Equatable {

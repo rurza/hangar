@@ -165,6 +165,14 @@ import Testing
         #expect(try await host.tree(repoURL: "https://github.com/a/b", commit: "abc", token: nil).sizes == ["a.pbxproj": 12])
     }
 
+    @Test func treeReportsExecutableFiles() async throws {
+        let body = #"{"tree":[{"path":"ci_scripts/ci_post_clone.sh","type":"blob","mode":"100755","size":3},"#
+            + #"{"path":"ci_scripts/helper.sh","type":"blob","mode":"100644","size":3},{"path":"ci_scripts","type":"tree","mode":"040000"}]}"#
+        let (host, _) = make([.init(body: body)])
+        #expect(try await host.tree(repoURL: "https://github.com/a/b", commit: "abc", token: nil).executables
+            == ["ci_scripts/ci_post_clone.sh"])
+    }
+
     @Test func readDataRefusesBodiesOverTheCap() async throws {
         let (host, _) = make([
             .init(body: Data([1, 2]), headers: ["Content-Length": "9000000"]), .init(body: Data(repeating: 0, count: 20)),

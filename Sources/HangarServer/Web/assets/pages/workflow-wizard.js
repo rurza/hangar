@@ -5,7 +5,7 @@
 
 import { confirm, field, h, replaceChildren, sheet, spinner, svg } from '../ui.js';
 import {
-  detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, uniqueName, wizardModel,
+  defaultGroup, detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, uniqueName, wizardModel,
 } from '../workflow-model.js';
 import { workflowSteps } from '../workflow-summary.js';
 import { choiceCards, groupPicker, guessNotes, tile } from './workflow-parts.js';
@@ -51,8 +51,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       destructive: true,
     }) : true),
   });
-  handle.element.classList.add('wf-wizard-sheet');
-  // Cancel on every step, on the left; it asks first once something was chosen.
+  // Cancel on every step, just before Back and Next as in the other sheets; it asks first once something was chosen.
   const cancel = { label: 'Cancel', kind: 'cancel', onClick: async () => (state.touched ? confirm({
     title: 'Discard This Workflow?',
     message: 'It has not been created yet.',
@@ -177,6 +176,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       h('span', { class: 'wf-target-text' },
         h('span', { class: 'wf-target-title' }, `${choice.scheme} · ${platformName(platform)}`),
         what ? h('span', { class: 'wf-target-detail' }, what) : null,
+        choice.guessed ? h('span', { class: 'wf-target-detail' }, `Platform not detected, so ${platformName(platform)} is a guess`) : null,
         notes().platforms[choice.scheme] ? h('span', { class: 'wf-target-detail' }, notes().platforms[choice.scheme]) : null),
       h('div', { class: 'wf-target-options', role: 'group', 'aria-label': `What to do with ${choice.scheme}` },
         pill('test', 'Run Tests', false),
@@ -206,12 +206,14 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
   function renderDistribute() {
     const groupState = groups.state;
     const macOnly = archived().every((choice) => choice.platform === 'macos');
-    const notMac = archived().filter((choice) => choice.platform !== 'macos').map((choice) => choice.scheme);
+    // With the platform: Velum archives for iOS and macOS, and only "Velum (iOS)" is not a Mac app.
+    const notMac = archived().filter((choice) => choice.platform !== 'macos')
+      .map((choice) => `${choice.scheme} (${platformName(choice.platform)})`);
     if (state.distribution === null && groupState) {
       state.distribution = groupState.notConfigured ? 'keep' : 'testflight';
-      // One internal group: it is the obvious recipient.
-      const internal = groupState.groups?.filter((group) => group.isInternal) ?? [];
-      if (!state.groupsTouched && internal.length === 1) state.groups = [internal[0].name];
+      // One internal group that does not already get every build: it is the obvious recipient.
+      const pick = defaultGroup(groupState.groups);
+      if (!state.groupsTouched && pick) state.groups = [pick];
     }
     if (state.distribution === 'developer-id' && !macOnly) state.distribution = groupState?.notConfigured ? 'keep' : 'testflight';
     const ascMissing = Boolean(groupState?.notConfigured);
@@ -384,6 +386,8 @@ function initialChoices(suggestion, appName) {
       platform,
       isApplication: scheme.isApplication,
       hasTests: Boolean(scheme.hasTests),
+      // No platform found in the project: this one is a guess, and the row says so.
+      guessed: listed.length === 0,
       // app: this app's; other-app: an app with another bundle ID; not-app: tests, a framework...
       group: !scheme.isApplication ? 'not-app' : mine.has(scheme.name) || mine.size === 0 ? 'app' : 'other-app',
       alternative: false,

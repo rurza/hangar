@@ -287,7 +287,7 @@ function ascStep(getStatus, onChange, signal) {
         h('p', { class: 'card-note' }, key.kind === 'team'
           ? `Team key ${key.keyID}. Builds sign with the key (cloud-managed signing).`
           : `Individual key ${key.keyID}. Builds sign with the Apple account signed in to Xcode on each build Mac.`),
-        h('div', { class: 'card-actions' }, button('Use a Different Key', {
+        h('div', { class: 'card-actions' }, button('Replace Key', {
           kind: 'plain', class: 'button button-plain button-small',
           onClick: () => {
             replacing = true;
@@ -518,7 +518,7 @@ function githubStep(getStatus, onChange, signal) {
       replaceChildren(step.body,
         doneLine(github.login ? `Connected as ${github.login}` : 'Token saved (GitHub could not be reached to check it)'),
         h('p', { class: 'card-note' }, github.source === 'gh' ? GH_NOTE : 'Using the token you pasted.'),
-        h('div', { class: 'card-actions' }, button('Use a Different Account', {
+        h('div', { class: 'card-actions' }, button('Replace Token', {
           kind: 'plain', class: 'button button-plain button-small',
           onClick: () => {
             replacing = true;
@@ -635,6 +635,15 @@ function machinesStep(getStatus, onChange, context) {
 
   function renderLocal() {
     const status = getStatus();
+    // The worker on this Mac answers to another Hangar (a second server on another port): say so, rather than
+    // show nothing because a machine with this Mac's name is enrolled here.
+    const elsewhere = !install && status.viewerIsLocal ? otherServer(status.installedWorker?.serverURL) : null;
+    if (elsewhere) {
+      replaceChildren(local, h('p', { class: 'card-note' },
+        `The worker on ${status.localHostName ?? 'this Mac'} belongs to the server at ${elsewhere}, not this one, `
+        + 'so its builds go there. To build for this server, add a Mac below.'));
+      return;
+    }
     if (status.localWorker && !install) {
       replaceChildren(local);
       return;
@@ -699,6 +708,19 @@ function machinesStep(getStatus, onChange, context) {
         `Build on ${status.localHostName}, the Mac Hangar runs on: Hangar installs its worker for your user `
         + '(into ~/.local/bin, started at login) and enrolls it.'),
       h('div', { class: 'card-actions' }, useThisMacButton('Use This Mac for Builds')));
+  }
+
+  /** `serverURL` when it is another server than the one this page came from (another port: both run on this Mac). */
+  function otherServer(serverURL) {
+    if (!serverURL) return null;
+    let url;
+    try {
+      url = new URL(serverURL);
+    } catch {
+      return null;
+    }
+    const port = (u) => u.port || (u.protocol === 'https:' ? '443' : '80');
+    return port(url) === port(location) ? null : serverURL;
   }
 
   function useThisMacButton(label) {

@@ -226,6 +226,50 @@ final class ManualNow: Sendable {
         }
     }
 
+    @Test func workerReportsWhatRunsTheJob() async throws {
+        let setup = try await Setup()
+        let job = setup.build.jobs[0]
+        let path = "/api/v1/worker/jobs/\(job.id.uuidString)"
+        try await setup.fixture.test { client in
+            // Only once the job runs.
+            try await client.execute(
+                uri: "\(path)/info", method: .post, headers: setup.auth, body: try body(JobRunInfo(workerVersion: "0.5.0"))
+            ) { response in #expect(response.status == .conflict) }
+            try await client.execute(uri: "\(path)/start", method: .post, headers: setup.auth) { response in
+                #expect(response.status == .ok)
+            }
+            // The machine's name is the server's, whatever the worker says.
+            try await client.execute(
+                uri: "\(path)/info", method: .post, headers: setup.auth,
+                body: try body(JobRunInfo(machineName: "evil", workerVersion: "0.5.0 (a1c9b45d)"))
+            ) { response in #expect(response.status == .ok) }
+            try await client.execute(
+                uri: "\(path)/info", method: .post, headers: setup.auth,
+                body: try body(JobRunInfo(xcodeVersion: "27.2", xcodeBuild: "27B48"))
+            ) { response throws in
+                #expect(response.status == .ok)
+                #expect(try decode(Job.self, response).runInfo == JobRunInfo(
+                    machineName: "studio", workerVersion: "0.5.0 (a1c9b45d)", xcodeVersion: "27.2", xcodeBuild: "27B48"))
+            }
+        }
+    }
+
+    @Test func lostJobReasonSaysWhereWhenAndWhat() {
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let utc = TimeZone(identifier: "UTC")!
+        var job = Job(
+            id: UUID(), buildID: UUID(), action: WorkflowAction(scheme: "L", platform: .macOS, export: .appStoreConnect),
+            status: .running, createdAt: t0, startedAt: t0)
+        #expect(HangarServerApp.lostJobReason(job, machineName: "mini", at: t0 + 30, timeZone: utc)
+            == "The worker on mini no longer had this job at 08:00:30, 30 s after it started: it restarted or was stopped. Rebuild to run it again.")
+        job.steps = [
+            StepRecord(name: "checkout", status: .succeeded, startedAt: t0, finishedAt: t0 + 5),
+            StepRecord(name: "archive", status: .running, startedAt: t0 + 5),
+        ]
+        #expect(HangarServerApp.lostJobReason(job, machineName: "mini", at: t0 + 5 + 3900, timeZone: utc)
+            == "The worker on mini no longer had this job at 09:05:05, 1 h 5 min into archive: it restarted or was stopped. Rebuild to run it again.")
+    }
+
     @Test func lifecycleStartStepsLogFinishUpdatesBuild() async throws {
         let setup = try await Setup()
         let server = setup.fixture.server
@@ -411,6 +455,7 @@ final class ManualNow: Sendable {
                 response in
                 #expect(response.status == .ok)
             }
+            try server.builds.upsertStep(jobID: first.id, StepUpdate(name: StepName.archive, status: .running, at: Self.t0))
             // The worker restarts: its next heartbeats no longer list the job. Within the grace nothing happens,
             // since a heartbeat may have been taken just before the job started.
             now.advance(by: 30)
@@ -423,7 +468,11 @@ final class ManualNow: Sendable {
             #expect(try await heartbeat(client, setup.auth, running: []) == [])
             let failed = try #require(try server.builds.job(id: first.id))
             #expect(failed.status == .failed)
-            #expect(failed.failureReason == "worker lost track of the job")
+            #expect(failed.failureReason?.hasPrefix("The worker on studio no longer had this job at ") == true)
+            #expect(failed.failureReason?.contains(", 1 min into archive: it restarted or was stopped.") == true)
+            #expect(failed.steps.first { $0.name == StepName.archive }?.status == .failed)
+            #expect(failed.steps.first { $0.name == StepName.archive }?.detail == "The worker on studio lost this job")
+            #expect(failed.runInfo?.machineName == "studio")
             #expect(failed.finishedAt == now())
             #expect(try server.builds.build(id: setup.build.id)?.jobs.first { $0.id == first.id }?.status == .failed)
 

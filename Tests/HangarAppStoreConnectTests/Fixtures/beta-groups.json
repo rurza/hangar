@@ -1,4 +1,5 @@
 {"data":[
  {"type":"betaGroups","id":"g1","attributes":{"name":"Team","isInternalGroup":true}},
- {"type":"betaGroups","id":"g2","attributes":{"name":"Public","isInternalGroup":false}}
+ {"type":"betaGroups","id":"g2","attributes":{"name":"Public","isInternalGroup":false,"hasAccessToAllBuilds":false}},
+ {"type":"betaGroups","id":"g3","attributes":{"name":"Internal","isInternalGroup":true,"hasAccessToAllBuilds":true}}
 ]}

@@ -18,6 +18,8 @@ public struct HangarServerApp: Sendable {
     public let apps: AppRepository
     public let builds: BuildRepository
     public let machines: MachineRepository
+    /// Bearer tokens for agents; only their hashes are stored.
+    public let apiTokens: APITokenRepository
     public let variables: VariableRepository
     public let workflowFiles: WorkflowFileRepository
     public let numbers: BuildNumberService
@@ -50,6 +52,8 @@ public struct HangarServerApp: Sendable {
     let localHostName = LocalHostName()
     /// "Use This Mac for Builds".
     let localWorkerSetup = LocalWorkerSetup()
+    /// The deploy check's warnings about the repository's scripts and App Store Connect.
+    let preflight: DeployPreflight
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
     /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
@@ -72,6 +76,7 @@ public struct HangarServerApp: Sendable {
         apps = AppRepository(database: database)
         builds = BuildRepository(database: database)
         machines = MachineRepository(database: database)
+        apiTokens = APITokenRepository(database: database)
         workflowFiles = WorkflowFileRepository(database: database)
         let variables = VariableRepository(
             database: database, box: SecretBox(key: try MasterKey.loadOrCreate(at: configuration.masterKeyPath)))
@@ -103,6 +108,7 @@ public struct HangarServerApp: Sendable {
         self.setup = setup
         serverSettings = ServerSettingsRepository(database: database)
         githubAccounts = GitHubAccounts(transport: githubTransport, now: now)
+        preflight = DeployPreflight(sourceHost: sourceHost, now: now)
     }
 
     /// Starts resolving icons for every app without one (at start-up); returns at once.

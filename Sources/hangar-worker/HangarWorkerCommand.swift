@@ -42,14 +42,33 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             let runner = LiveProcessRunner()
             let locator = XcodeLocator(runner: runner)
             let connection = HTTPServerConnection(baseURL: configuration.serverURL, token: configuration.token)
+            let work = configuration.resolvedWorkDirectory
             let loop = WorkerLoop(
                 configuration: configuration, connection: connection,
-                doctor: HangarWorker.Doctor(
-                    runner: runner, locator: locator, dataDirectory: configuration.dataDirectory),
-                jobRunner: JobRunner(
-                    connection: connection, runner: runner, locator: locator, dataDirectory: configuration.dataDirectory))
-            logger.info("worker started", metadata: ["server": "\(configuration.serverURL)"])
+                doctor: HangarWorker.Doctor(runner: runner, locator: locator, dataDirectory: work),
+                jobRunner: JobRunner(connection: connection, runner: runner, locator: locator, dataDirectory: work))
+            logger.info("worker started", metadata: [
+                "server": "\(configuration.serverURL)", "version": "\(JobRunner.workerVersion)", "work": "\(work)",
+            ])
+            let signals = Self.stopOnSignals(loop)
             await loop.run()
+            signals.forEach { $0.cancel() }
+            logger.info("worker stopped")
+        }
+
+        /// SIGTERM (launchd stopping the agent, `launchctl bootout`, an update) and SIGINT stop the worker
+        /// gracefully: running jobs are cancelled with the reason, report it and clean up before the process exits.
+        /// launchd sends SIGKILL if that takes longer than its exit timeout (20 s by default).
+        static func stopOnSignals(_ loop: WorkerLoop) -> [any DispatchSourceSignal] {
+            [(SIGTERM, "SIGTERM"), (SIGINT, "SIGINT")].map { number, name in
+                signal(number, SIG_IGN)
+                let source = DispatchSource.makeSignalSource(signal: number, queue: .global())
+                source.setEventHandler {
+                    Task { await loop.stop(reason: "hangar-worker on \(JobRunner.computerName) was stopped (\(name))") }
+                }
+                source.resume()
+                return source
+            }
         }
     }
 
@@ -102,8 +121,10 @@ struct HangarWorkerCommand: AsyncParsableCommand {
         var server: String
         @Option(help: "The machine's token from `hangar machines add`. Default: $HANGAR_WORKER_TOKEN.")
         var token: String?
-        @Option(help: "Where the worker keeps checkouts and job files.")
+        @Option(help: "Where the worker keeps its state.")
         var dataDir: String = defaultSupportDirectory
+        @Option(help: "Where checkouts, DerivedData and job files go; no spaces. Default: the data directory when its path has no spaces, else ~/.hangar/<name>.")
+        var workDir: String?
         @Option(help: "Jobs to run at once.")
         var maxJobs: Int = 1
         @Option(help: "Configuration file to write.")
@@ -117,8 +138,15 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 throw ValidationError("pass --token or set HANGAR_WORKER_TOKEN")
             }
             guard maxJobs >= 1 else { throw ValidationError("--max-jobs must be at least 1") }
-            try WorkerConfiguration(serverURL: url, token: token, maxConcurrentJobs: maxJobs, dataDirectory: dataDir)
-                .write(to: config)
+            if let workDir, workDir.contains(where: \.isWhitespace) {
+                throw ValidationError("--work-dir must not contain spaces: scripts written for Xcode Cloud assume none")
+            }
+            // An existing configuration keeps its work directory when none is given.
+            let existing = try? WorkerConfiguration.load(from: config)
+            try WorkerConfiguration(
+                serverURL: url, token: token, maxConcurrentJobs: maxJobs, dataDirectory: dataDir,
+                workDirectory: workDir ?? existing?.workDirectory
+            ).write(to: config)
             print("Wrote \(config)")
         }
     }

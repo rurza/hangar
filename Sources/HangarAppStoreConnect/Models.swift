@@ -49,11 +49,28 @@ public struct ASCBetaGroup: Sendable, Equatable {
     public var id: String
     public var name: String
     public var isInternal: Bool
+    /// `hasAccessToAllBuilds`: the group gets every build of the app on its own (an internal group with automatic
+    /// distribution). App Store Connect refuses to assign a build to such a group by hand (HTTP 422, "Builds cannot
+    /// be assigned to this internal group").
+    public var receivesEveryBuild: Bool
 
-    public init(id: String, name: String, isInternal: Bool) {
+    public init(id: String, name: String, isInternal: Bool, receivesEveryBuild: Bool = false) {
         self.id = id
         self.name = name
         self.isInternal = isInternal
+        self.receivesEveryBuild = receivesEveryBuild
+    }
+}
+
+/// TestFlight's test information in one locale. External beta review needs a `description` (the Beta App
+/// Description) in at least one.
+public struct ASCBetaAppLocalization: Sendable, Equatable {
+    public var locale: String
+    public var description: String?
+
+    public init(locale: String, description: String?) {
+        self.locale = locale
+        self.description = description
     }
 }
 

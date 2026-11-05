@@ -58,6 +58,7 @@ public struct GitHubSourceHost: SourceHost {
                     var path: String
                     var type: String?
                     var size: Int?
+                    var mode: String?
                 }
                 var tree: [Entry]
                 var truncated: Bool?
@@ -66,7 +67,9 @@ public struct GitHubSourceHost: SourceHost {
             let sizes = Dictionary(
                 tree.tree.compactMap { entry in entry.type == "blob" ? entry.size.map { (entry.path, $0) } : nil },
                 uniquingKeysWith: { first, _ in first })
-            return RepositoryTree(paths: tree.tree.map(\.path), truncated: tree.truncated ?? false, sizes: sizes)
+            let executables = Set(tree.tree.filter { $0.type == "blob" && $0.mode == "100755" }.map(\.path))
+            return RepositoryTree(
+                paths: tree.tree.map(\.path), truncated: tree.truncated ?? false, sizes: sizes, executables: executables)
         case 404, 422: throw SourceHostError.refNotFound(commit)
         default: throw Self.failure(response, data)
         }

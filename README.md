@@ -16,7 +16,8 @@ Phase 1: the TestFlight path (archive, export, upload to App Store Connect, wait
 - `hangar-server`: control plane on one always-on Mac. Stores apps, builds and encrypted secrets, schedules jobs, serves the HTTP API.
 - `hangar-worker`: runs on each build Mac as a launchd agent. Heartbeats, long-polls for jobs, runs them with Xcode.
 - `hangar`: command-line client for the server API.
-- `plugins/hangar`: Claude Code plugin with deploy and status skills over the CLI.
+- `hangar mcp`: an MCP server for AI agents, with scoped API tokens; see [MCP access](docs/mcp.md).
+- `plugins/hangar`: Claude Code plugin that registers `hangar mcp`, with deploy and status skills over the CLI.
 
 ## Quick start
 
@@ -50,6 +51,7 @@ The same steps are available from the command line (`hangar settings`, `hangar a
 - [Worker setup](docs/worker-setup.md)
 - [`.hangar.yml` reference](docs/hangar-yml.md)
 - [HTTP API](docs/api.md)
+- [MCP access for AI agents](docs/mcp.md)
 - [Claude Code plugin](plugins/hangar/README.md)
 
 ## License

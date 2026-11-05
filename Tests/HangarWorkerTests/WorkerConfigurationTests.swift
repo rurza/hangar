@@ -19,6 +19,34 @@ import Testing
         #expect(config.dataDirectory == "/var/hangar")
     }
 
+    @Test func workDirectoryHasNoSpaces() {
+        let home = "/Users/adam"
+        let support = home + "/Library/Application Support/Hangar"
+        #expect(WorkerConfiguration.defaultWorkDirectory(for: support + "/worker", home: home) == home + "/.hangar/worker")
+        #expect(WorkerConfiguration.defaultWorkDirectory(for: support + "/preview-worker/", home: home)
+            == home + "/.hangar/preview-worker")
+        // A data directory without spaces stays where it is.
+        #expect(WorkerConfiguration.defaultWorkDirectory(for: "/var/hangar", home: home) == "/var/hangar")
+        // Anywhere else with a space: a stable name of its own.
+        let other = WorkerConfiguration.defaultWorkDirectory(for: "/Volumes/Build Disk/hangar", home: home)
+        #expect(other.hasPrefix(home + "/.hangar/work-") && other.count == (home + "/.hangar/work-").count + 8)
+        #expect(other == WorkerConfiguration.defaultWorkDirectory(for: "/Volumes/Build Disk/hangar", home: home))
+        #expect(!other.contains(" "))
+    }
+
+    @Test func configuredWorkDirectoryWinsAndIsOptionalInTheFile() throws {
+        let path = try Self.write(
+            #"{"serverURL":"https://h.example","token":"t","dataDirectory":"/a b/w","workDirectory":"/srv/hangar/"}"#)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let config = try WorkerConfiguration.load(from: path)
+        #expect(config.workDirectory == "/srv/hangar/")
+        #expect(config.resolvedWorkDirectory == "/srv/hangar")
+        let old = try Self.write(#"{"serverURL":"https://h.example","token":"t","dataDirectory":"/var/hangar"}"#)
+        defer { try? FileManager.default.removeItem(atPath: old) }
+        #expect(try WorkerConfiguration.load(from: old).workDirectory == nil)
+        #expect(try WorkerConfiguration.load(from: old).resolvedWorkDirectory == "/var/hangar")
+    }
+
     @Test func missingAndInvalidFilesThrowClearErrors() throws {
         #expect(throws: WorkerConfiguration.LoadError.self) { try WorkerConfiguration.load(from: "/nonexistent/w.json") }
         let path = try Self.write("{not json")

@@ -97,6 +97,32 @@ import Testing
         #expect(loaded.queueNote == "waiting")
     }
 
+    @Test func upsertStepKeepsStartOfARepeatedRunningAndStoresDetailAndStages() throws {
+        let build = makeBuild()
+        try builds.insert(build, workflow: workflow)
+        let job = build.jobs[0].id
+        let t1 = Date(timeIntervalSince1970: 1_800_000_001)
+        let t2 = Date(timeIntervalSince1970: 1_800_000_002)
+        let t3 = Date(timeIntervalSince1970: 1_800_000_003)
+        let name = "post-action:testflight"
+        try builds.upsertStep(jobID: job, StepUpdate(name: name, status: .running, at: t1))
+        try builds.upsertStep(jobID: job, StepUpdate(
+            name: name, status: .running, at: t2, stages: [StepStage(name: "Uploaded", status: .succeeded)]))
+        try builds.upsertStep(jobID: job, StepUpdate(
+            name: name, status: .warning, at: t3, detail: "Groups: refused",
+            stages: [StepStage(name: "Uploaded", status: .succeeded), StepStage(name: "Groups", status: .failed, detail: "refused")]))
+        // A later update without detail or stages keeps them.
+        try builds.upsertStep(jobID: job, StepUpdate(name: name, status: .warning, at: t3))
+        let step = try #require(try builds.job(id: job)?.steps.first)
+        #expect(step.startedAt == t1)
+        #expect(step.finishedAt == t3)
+        #expect(step.status == .warning)
+        #expect(step.detail == "Groups: refused")
+        #expect(step.stages?.map(\.status) == [.succeeded, .failed])
+        try builds.upsertStep(jobID: job, StepUpdate(name: "archive", status: .cancelled, at: t3))
+        #expect(try builds.job(id: job)?.steps.last?.finishedAt == t3)
+    }
+
     @Test func workflowRoundTrips() throws {
         let build = makeBuild()
         try builds.insert(build, workflow: workflow)

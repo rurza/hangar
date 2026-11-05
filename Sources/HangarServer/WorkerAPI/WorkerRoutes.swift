@@ -57,7 +57,20 @@ extension HangarServerApp {
             else {
                 throw try stateConflict(job.id, "cannot start")
             }
+            // By name, so the job still says where it ran after the machine is removed or re-enrolled.
+            try builds.mergeRunInfo(jobID: job.id, JobRunInfo(machineName: try context.requireMachine().name))
             return try Response.json(publishChange(of: job))
+        }
+
+        // The worker build and the Xcode the job runs with, for the job's header. The machine name is the server's.
+        worker.post("jobs/:id/info") { request, context in
+            let job = try running(workerJob(context))
+            var info = try await request.decode(as: JobRunInfo.self, context: context)
+            info.machineName = nil
+            try builds.mergeRunInfo(jobID: job.id, info)
+            let updated = try current(job.id)
+            events.publish(.server(.job(updated)))
+            return try Response.json(updated)
         }
 
         worker.post("jobs/:id/steps") { request, context in
@@ -126,14 +139,45 @@ extension HangarServerApp {
     /// the machine's slot and the app's in-flight build, for as long as the machine keeps reporting.
     private func failUntrackedJobs(_ jobs: [Job], machine: Machine, reported: Set<UUID>, now: Date) throws {
         for job in jobs where job.status == .running && !reported.contains(job.id) {
+            let reason = Self.lostJobReason(job, machineName: machine.name, at: now)
             guard let startedAt = job.startedAt, now.timeIntervalSince(startedAt) > configuration.untrackedJobGrace,
                 try builds.transitionJob(
-                    id: job.id, from: [.running], to: .failed, at: now, failureReason: "worker lost track of the job",
-                    machineID: machine.id)
+                    id: job.id, from: [.running], to: .failed, at: now, failureReason: reason, machineID: machine.id)
             else { continue }
+            // The step it was in ends there, instead of running on forever on the build page.
+            if let step = job.steps.last(where: { $0.status == .running }) {
+                try builds.upsertStep(jobID: job.id, StepUpdate(
+                    name: step.name, status: .failed, at: now, detail: "The worker on \(machine.name) lost this job"))
+            }
             cancelRequests.clear(job.id)
             _ = try publishChange(of: job)
         }
+    }
+
+    /// Why a running job the machine's heartbeat no longer lists failed: which Mac, when, and what was running.
+    /// "The worker on rurzomac-mini no longer had this job at 11:09:52, 4 min into archive: it restarted or was
+    /// stopped. Rebuild to run it again."
+    static func lostJobReason(_ job: Job, machineName: String, at now: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "HH:mm:ss"
+        var text = "The worker on \(machineName) no longer had this job at \(formatter.string(from: now))"
+        if let step = job.steps.last(where: { $0.status == .running }) {
+            text += step.startedAt.map { ", \(Self.elapsed(now.timeIntervalSince($0))) into \(step.name)" } ?? ", during \(step.name)"
+        } else if let startedAt = job.startedAt {
+            text += ", \(Self.elapsed(now.timeIntervalSince(startedAt))) after it started"
+        }
+        return text + ": it restarted or was stopped. Rebuild to run it again."
+    }
+
+    /// "35 s", "4 min", "1 h 5 min".
+    static func elapsed(_ seconds: TimeInterval) -> String {
+        let total = max(Int(seconds.rounded()), 0)
+        if total < 60 { return "\(total) s" }
+        let minutes = total / 60
+        if minutes < 60 { return "\(minutes) min" }
+        return minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
     }
 
     /// The oldest job assigned to the machine, or, failing that, the first one assigned within `wait` (on the

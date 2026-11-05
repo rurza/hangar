@@ -43,7 +43,8 @@ public struct Checkout: Sendable {
             }
             try await git(["-C", repository, "fetch", "--prune", "--tags", "--force", "origin"], token: token, log: log)
         } else {
-            try await git(["clone", repoURL, repository], token: token, log: log)
+            // `--`: a URL that starts with a dash (`--upload-pack=...`) is a repository, never an option.
+            try await git(["clone", "--", repoURL, repository], token: token, log: log)
         }
 
         // Tracked files edited by an earlier build's scripts must neither block the checkout nor carry over.

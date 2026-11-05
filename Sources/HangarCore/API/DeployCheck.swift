@@ -10,12 +10,42 @@ public struct DeployCheck: Codable, Equatable, Sendable {
     /// Each machine (pinned: only that one) as the scheduler sees it now: online by the server's clock, and why it
     /// cannot take any of this workflow's actions.
     public var machines: [DeployCheckMachine]
+    /// Problems in the repository or App Store Connect the build is likely to hit, found before it runs. They never
+    /// block the deploy. Empty from an older server.
+    public var notices: [DeployCheckNotice]
 
-    public init(canDeploy: Bool, blocking: [DeployCheckAction], warnings: [DeployCheckAction], machines: [DeployCheckMachine]) {
+    public init(
+        canDeploy: Bool, blocking: [DeployCheckAction], warnings: [DeployCheckAction], machines: [DeployCheckMachine],
+        notices: [DeployCheckNotice] = []
+    ) {
         self.canDeploy = canDeploy
         self.blocking = blocking
         self.warnings = warnings
         self.machines = machines
+        self.notices = notices
+    }
+
+    private enum CodingKeys: String, CodingKey { case canDeploy, blocking, warnings, machines, notices }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        canDeploy = try container.decode(Bool.self, forKey: .canDeploy)
+        blocking = try container.decode([DeployCheckAction].self, forKey: .blocking)
+        warnings = try container.decode([DeployCheckAction].self, forKey: .warnings)
+        machines = try container.decode([DeployCheckMachine].self, forKey: .machines)
+        notices = try container.decodeIfPresent([DeployCheckNotice].self, forKey: .notices) ?? []
+    }
+}
+
+/// One pre-deploy warning: `code` for the UI (`undefined-variables`, `script-not-executable`,
+/// `beta-app-description-missing`), `message` a sentence that says what to do.
+public struct DeployCheckNotice: Codable, Equatable, Sendable {
+    public var code: String
+    public var message: String
+
+    public init(code: String, message: String) {
+        self.code = code
+        self.message = message
     }
 }
 

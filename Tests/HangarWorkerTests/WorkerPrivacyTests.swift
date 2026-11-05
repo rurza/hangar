@@ -46,7 +46,7 @@ import Testing
         let logger = Logger(label: "test")
 
         let fresh = parent + "/fresh/worker"
-        #expect(WorkerLoop.createPrivateDataDirectory(fresh, logger: logger))
+        #expect(WorkerLoop.createPrivateDirectory(fresh, logger: logger))
         #expect(try mode(fresh) == 0o700)
 
         let existing = parent + "/existing"
@@ -56,7 +56,7 @@ import Testing
         let cache = existing + "/workspaces"
         try FileManager.default.createDirectory(atPath: cache, withIntermediateDirectories: true)
         try WorkerPrivacy.setMode(0o755, at: cache)
-        #expect(WorkerLoop.createPrivateDataDirectory(existing, logger: logger))
+        #expect(WorkerLoop.createPrivateDirectory(existing, logger: logger))
         #expect(try mode(existing) == 0o700)
         #expect(try mode(cache) == 0o755, "the cache inside is not walked")
     }

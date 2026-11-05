@@ -1,12 +1,22 @@
 import Foundation
-import HangarCore
 
-/// Where a job's files live under the worker data directory. Pure path computation; nothing here touches the disk.
+/// Where a job's files live under the worker's work directory. Pure path computation; nothing here touches the disk.
 public struct WorkspaceLayout: Sendable, Equatable {
     private let workspace: String
     public let jobDirectory: String
+    /// The directory holding every job's `TMPDIR`, one folder per job ID.
+    public let temporaryRoot: String
+    private let jobID: UUID
 
-    public init(dataDirectory: String, appSlug: String, jobID: UUID) {
+    /// `<work directory>/tmp`: one folder per job, outside the job directory, and like the rest of the work
+    /// directory without spaces. Each worker has its own, so sweeping it at start never touches another worker's
+    /// running jobs (the per-user system temp directory is shared by every worker on the Mac).
+    public static func temporaryRoot(dataDirectory: String) -> String { dataDirectory + "/tmp" }
+
+    /// `dataDirectory` is the worker's work directory (`WorkerConfiguration.resolvedWorkDirectory`).
+    public init(dataDirectory: String, appSlug: String, jobID: UUID, temporaryRoot: String? = nil) {
+        self.jobID = jobID
+        self.temporaryRoot = temporaryRoot ?? Self.temporaryRoot(dataDirectory: dataDirectory)
         workspace = "\(dataDirectory)/workspaces/\(appSlug)"
         jobDirectory = "\(dataDirectory)/jobs/\(jobID.uuidString)"
     }
@@ -18,8 +28,8 @@ public struct WorkspaceLayout: Sendable, Equatable {
     public var export: String { "\(jobDirectory)/export" }
     public var upload: String { "\(jobDirectory)/upload" }
     public var resultBundle: String { "\(jobDirectory)/result.xcresult" }
-    /// The job's `TMPDIR`.
-    public var temporary: String { CIEnvironment.temporaryDirectory(workspace: jobDirectory) }
+    /// The job's `TMPDIR`, outside the job directory: `<temporaryRoot>/<job ID>`.
+    public var temporary: String { "\(temporaryRoot)/\(jobID.uuidString)" }
 
     public func archive(scheme: String) -> String { "\(jobDirectory)/archive/\(scheme).xcarchive" }
 }
