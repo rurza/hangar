@@ -56,14 +56,19 @@ public struct MachineReport: Codable, Equatable, Sendable {
     /// Why a headless worker's CI keychain cannot sign, in plain English ("does not unlock with the stored password");
     /// nil when it can, and for every other worker.
     public var keychainProblem: String?
+    /// The machine's VM builds (VM builds design): present when its worker is configured for them, and then every job
+    /// on it runs in a VM. Nil for a machine that builds on the host, and from an older worker.
+    public var vm: VMReport?
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
         canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
         xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = [],
-        binarySHA256: String? = nil, runningUser: String? = nil, headless: Bool? = nil, keychainProblem: String? = nil
+        binarySHA256: String? = nil, runningUser: String? = nil, headless: Bool? = nil, keychainProblem: String? = nil,
+        vm: VMReport? = nil
     ) {
+        self.vm = vm
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
         self.chip = chip
@@ -87,7 +92,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
         case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities, binarySHA256
-        case runningUser, headless, keychainProblem
+        case runningUser, headless, keychainProblem, vm
     }
 
     /// An older worker sends none of the newer fields (`signingIdentities`, `xcodeAccountSignedIn`,
@@ -112,6 +117,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
         runningUser = try container.decodeIfPresent(String.self, forKey: .runningUser)
         headless = try container.decodeIfPresent(Bool.self, forKey: .headless)
         keychainProblem = try container.decodeIfPresent(String.self, forKey: .keychainProblem)
+        vm = try container.decodeIfPresent(VMReport.self, forKey: .vm)
     }
 }
 
