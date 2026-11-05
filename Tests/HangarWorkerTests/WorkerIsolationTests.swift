@@ -55,13 +55,15 @@ fileprivate final class Lines: Sendable {
     static let server = URL(string: "http://studio:8787")!
     static let start = Date(timeIntervalSince1970: 2_000_000_000)
 
-    /// An administrator's home with an enrolled worker: plist, configuration, a build cache and a leftover job.
+    /// An administrator's home with an enrolled worker in the 0.6 layout: plist, configuration, and in the work
+    /// directory `~/.hangar/worker` a build cache, a leftover job and a leftover job `TMPDIR`.
     struct Fixture {
         let root: String
         let invoker: IsolationInvoker
         let binary: String
         let staging: String
         var oldData: String { invoker.home + "/Library/Application Support/Hangar/worker" }
+        var oldWork: String { invoker.home + "/.hangar/worker" }
 
         init(withOldAgent: Bool = true, withConfig: Bool = true, isAdmin: Bool = true, name: String = "adam", uid: UInt32 = 501) throws {
             root = NSTemporaryDirectory() + "hangar-isolate-test-" + UUID().uuidString
@@ -74,9 +76,13 @@ fileprivate final class Lines: Sendable {
             files.createFile(atPath: binary, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
             try files.createDirectory(atPath: home + "/Library/LaunchAgents", withIntermediateDirectories: true)
             let data = home + "/Library/Application Support/Hangar/worker"
-            try files.createDirectory(atPath: data + "/workspaces/legilo/DerivedData", withIntermediateDirectories: true)
-            try files.createDirectory(atPath: data + "/jobs/old-job", withIntermediateDirectories: true)
+            let work = home + "/.hangar/worker"
+            try files.createDirectory(atPath: work + "/workspaces/legilo/DerivedData", withIntermediateDirectories: true)
+            try files.createDirectory(atPath: work + "/jobs/old-job", withIntermediateDirectories: true)
+            try files.createDirectory(atPath: work + "/tmp/old-job", withIntermediateDirectories: true)
+            try files.createDirectory(atPath: data, withIntermediateDirectories: true)
             if withConfig {
+                // workDirectory as `hangar-worker setup` leaves it: unset, so the default under this home applies.
                 try WorkerConfiguration(serverURL: WorkerIsolationTests.server, token: "secret-token", dataDirectory: data)
                     .write(to: invoker.defaultConfig)
             }
@@ -168,14 +174,18 @@ fileprivate final class Lines: Sendable {
             "/usr/bin/sudo /usr/bin/dscl . <<< <redacted>",
             "/usr/bin/sudo /usr/sbin/createhomedir -c -u hangar",
             "/bin/launchctl bootout gui/501/app.hangar.worker",
-            "/usr/bin/sudo /usr/bin/install -d -o hangar -g staff -m 700 '\(home)/Library/Application Support' '\(home)/Library/Application Support/Hangar' \(support) \(home)/Library/Logs \(home)/Library/Logs/Hangar",
+            "/usr/bin/sudo /usr/bin/install -d -o hangar -g staff -m 700 '\(home)/Library/Application Support' '\(home)/Library/Application Support/Hangar' \(support) \(home)/.hangar \(home)/.hangar/worker \(home)/.hangar/worker/workspaces \(home)/Library/Logs \(home)/Library/Logs/Hangar",
             "/usr/bin/sudo /usr/bin/install -d -o hangar -g staff -m 755 \(home)/.local \(home)/.local/bin \(home)/Library/LaunchAgents",
             "/usr/bin/sudo /usr/bin/install -o hangar -g staff -m 755 \(IsolationCommand.quote(URL(fileURLWithPath: fixture.binary).resolvingSymlinksInPath().path)) \(home)/.local/bin/hangar-worker",
             "/usr/bin/sudo /usr/bin/install -o hangar -g staff -m 600 \(IsolationCommand.quote(fixture.staging + "/config.json")) '\(home)/Library/Application Support/Hangar/worker/config.json'",
-            "/usr/bin/sudo /bin/test -e '\(home)/Library/Application Support/Hangar/worker/workspaces'",
-            "/usr/bin/sudo /bin/mv \(IsolationCommand.quote(fixture.oldData + "/workspaces")) '\(home)/Library/Application Support/Hangar/worker/workspaces'",
-            "/usr/bin/sudo /usr/sbin/chown -R hangar:staff '\(home)/Library/Application Support/Hangar/worker/workspaces'",
-            "/usr/bin/sudo /bin/rm -rf \(IsolationCommand.quote(fixture.oldData + "/jobs"))",
+            "/usr/bin/sudo /bin/test -e \(home)/.hangar/worker/workspaces/legilo",
+            "/usr/bin/sudo /bin/mv \(IsolationCommand.quote(fixture.oldWork + "/workspaces/legilo")) \(home)/.hangar/worker/workspaces/legilo",
+            "/bin/rmdir \(IsolationCommand.quote(fixture.oldWork + "/workspaces"))",
+            "/usr/bin/sudo /bin/rm -rf \(home)/.hangar/worker/workspaces/legilo/DerivedData/Build \(home)/.hangar/worker/workspaces/legilo/DerivedData/SourcePackages/workspace-state.json \(home)/.hangar/worker/workspaces/legilo/DerivedData/SourcePackages/artifacts \(home)/.hangar/worker/workspaces/legilo/DerivedData/SourcePackages/checkouts",
+            "/usr/bin/sudo /usr/sbin/chown -R hangar:staff \(home)/.hangar/worker/workspaces",
+            "/usr/bin/sudo /bin/rm -rf \(IsolationCommand.quote(fixture.oldWork + "/jobs"))",
+            "/usr/bin/sudo /bin/rm -rf \(IsolationCommand.quote(fixture.oldWork + "/tmp"))",
+            "/bin/rmdir \(IsolationCommand.quote(fixture.oldWork))",
             "/usr/bin/sudo /bin/chmod -N /Users/hangar",
             "/usr/bin/sudo /bin/chmod 700 /Users/hangar",
             "/usr/bin/sudo /usr/bin/install -o hangar -g staff -m 644 \(IsolationCommand.quote(fixture.staging + "/agent.plist")) /Users/hangar/Library/LaunchAgents/app.hangar.worker.plist",
@@ -225,7 +235,104 @@ fileprivate final class Lines: Sendable {
         #expect(configuration.token == "secret-token")
         #expect(configuration.serverURL == Self.server)
         #expect(configuration.dataDirectory == "/Users/hangar/Library/Application Support/Hangar/worker")
+        #expect(configuration.workDirectory == "/Users/hangar/.hangar/worker")
+        #expect(configuration.resolvedWorkDirectory == "/Users/hangar/.hangar/worker")
         #expect(!FileManager.default.fileExists(atPath: fixture.staging + "/config.json"), "the staged copy is removed")
+    }
+
+    @Test func anOlderWorkersCacheInTheDataDirectoryMovesTooAndTheAccountsOwnAppsAreKept() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let files = FileManager.default
+        // A worker that ran before the work directory existed left apps in the data directory; legilo is in both.
+        try files.createDirectory(atPath: fixture.oldData + "/workspaces/legilo/DerivedData", withIntermediateDirectories: true)
+        try files.createDirectory(atPath: fixture.oldData + "/workspaces/other/DerivedData", withIntermediateDirectories: true)
+        try files.createDirectory(atPath: fixture.oldWork + "/workspaces/kept", withIntermediateDirectories: true)
+        try files.createDirectory(atPath: fixture.oldData + "/jobs/older-job", withIntermediateDirectories: true)
+        let runner = ScriptedRunner()
+        // hangar already has kept/ from an earlier run.
+        runner.on { command, _ in
+            command.arguments == ["/usr/bin/sudo", "/bin/test", "-e", "/Users/hangar/.hangar/worker/workspaces/kept"]
+                ? IsolationResult(exitCode: 0) : nil
+        }
+        Self.freshMac(runner)
+        let output = Lines()
+        _ = try await Self.isolation(fixture, runner: runner, output: output).run()
+
+        let destination = "/Users/hangar/.hangar/worker/workspaces"
+        let moves = runner.changes.filter { $0.contains("/bin/mv ") }
+        #expect(moves == [
+            "/usr/bin/sudo /bin/mv \(IsolationCommand.quote(fixture.oldWork + "/workspaces/legilo")) \(destination)/legilo",
+            "/usr/bin/sudo /bin/mv \(IsolationCommand.quote(fixture.oldData + "/workspaces/other")) \(destination)/other",
+        ])
+        #expect(output.text.contains("hangar already has \(destination)/kept"))
+        #expect(output.text.contains("hangar already has \(destination)/legilo; leaving \(fixture.oldData)/workspaces/legilo"))
+        let drop = try #require(runner.changes.first { $0.hasPrefix("/usr/bin/sudo /bin/rm -rf \(destination)") })
+        #expect(drop.contains("\(destination)/legilo/DerivedData/Build") && drop.contains("\(destination)/other/DerivedData/Build"))
+        #expect(!drop.contains("kept"), "an app hangar already had is not touched")
+        #expect(!drop.contains("repositories"), "the git mirrors stay")
+        #expect(runner.changes.contains("/usr/bin/sudo /bin/rm -rf \(IsolationCommand.quote(fixture.oldData + "/jobs"))"))
+        #expect(runner.changes.contains("/usr/bin/sudo /usr/sbin/chown -R hangar:staff \(destination)"))
+    }
+
+    @Test func theDroppedCachesAreWorkDirectoryMigrations() {
+        #expect(WorkDirectoryMigration.pathBoundCaches == [
+            "DerivedData/Build",
+            "DerivedData/SourcePackages/workspace-state.json",
+            "DerivedData/SourcePackages/artifacts",
+            "DerivedData/SourcePackages/checkouts",
+        ])
+    }
+
+    @Test func anOldWorkDirectoryComesFromTheConfigurationOrTheDefaultUnderTheInvokersHome() {
+        let data = "/Users/adam/Library/Application Support/Hangar/worker"
+        let plain = WorkerConfiguration(serverURL: Self.server, token: "t", dataDirectory: data)
+        #expect(WorkerIsolation.oldWorkDirectory(of: plain, home: "/Users/adam") == "/Users/adam/.hangar/worker")
+        let custom = WorkerConfiguration(serverURL: Self.server, token: "t", dataDirectory: data, workDirectory: "/Volumes/Fast/ci/")
+        #expect(WorkerIsolation.oldWorkDirectory(of: custom, home: "/Users/adam") == "/Volumes/Fast/ci")
+    }
+
+    @Test func aRunningAgentIsStoppedWithSIGTERMAndTheNewProcessIsAwaited() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let runner = ScriptedRunner()
+        runner.on { command, _ in command.arguments == ["/usr/bin/id", "-u", "hangar"] ? IsolationResult(exitCode: 0, output: "502") : nil }
+        // pid 700 until two polls after the SIGTERM, then launchd's KeepAlive has started pid 701.
+        runner.on { command, seen in
+            guard command.arguments.contains("print") else { return nil }
+            guard let kill = seen.firstIndex(where: { $0.arguments.contains("SIGTERM") }) else {
+                return IsolationResult(exitCode: 0, output: "state = running\npid = 700")
+            }
+            let after = seen[(kill + 1)...].filter { $0.arguments.contains("print") }.count
+            return IsolationResult(exitCode: 0, output: after > 2 ? "state = running\npid = 701" : "state = running\npid = 700")
+        }
+        Self.freshMac(runner, sessionAfterPolls: 0)
+        _ = try await Self.isolation(fixture, runner: runner).run()
+        let launchctl = runner.changes.filter { $0.contains("launchctl") && !$0.contains("print") }
+        #expect(launchctl == [
+            "/bin/launchctl bootout gui/501/app.hangar.worker",
+            "/usr/bin/sudo /bin/launchctl kill SIGTERM gui/502/app.hangar.worker",
+        ], "the new process is already running: no kickstart")
+    }
+
+    @Test func anAgentThatIgnoresSIGTERMIsRestartedForcibly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let runner = ScriptedRunner()
+        runner.on { command, _ in command.arguments == ["/usr/bin/id", "-u", "hangar"] ? IsolationResult(exitCode: 0, output: "502") : nil }
+        runner.on { command, _ in
+            command.arguments.contains("print") ? IsolationResult(exitCode: 0, output: "state = running\npid = 700") : nil
+        }
+        Self.freshMac(runner, sessionAfterPolls: 0)
+        let output = Lines()
+        _ = try await Self.isolation(fixture, runner: runner, output: output).run()
+        #expect(runner.changes.contains("/usr/bin/sudo /bin/launchctl kickstart -k gui/502/app.hangar.worker"))
+        #expect(output.text.contains("did not stop after SIGTERM"))
+    }
+
+    @Test func aPidComesFromLaunchctlPrint() {
+        #expect(WorkerIsolation.pid(launchctlPrint: "gui/502/app.hangar.worker = {\n\tstate = running\n\tpid = 4242\n}") == 4242)
+        #expect(WorkerIsolation.pid(launchctlPrint: "state = not running") == nil)
     }
 
     @Test func anExistingLoggedInAccountIsReusedWithoutANewPassword() async throws {
@@ -241,7 +348,9 @@ fileprivate final class Lines: Sendable {
         #expect(store.saved.withLock { $0.isEmpty })
         #expect(outcome.generatedPassword == nil && !outcome.createdAccount)
         #expect(!output.text.contains("log in as hangar once"), "already logged in: no instructions")
-        #expect(runner.changes.contains("/usr/bin/sudo /bin/launchctl kickstart -k gui/502/app.hangar.worker"), "restarted onto the new binary")
+        // Restarted onto the new binary with SIGTERM, which the worker handles gracefully; never killed outright.
+        #expect(runner.changes.contains("/usr/bin/sudo /bin/launchctl kill SIGTERM gui/502/app.hangar.worker"))
+        #expect(!runner.changes.contains { $0.contains("kickstart -k") })
         #expect(!runner.changes.contains { $0.contains("bootstrap") })
     }
 
@@ -480,8 +589,9 @@ fileprivate final class Lines: Sendable {
         #expect(outcome.movedWorker)
         // Nothing on disk changed.
         #expect(FileManager.default.fileExists(atPath: fixture.invoker.plist))
-        #expect(FileManager.default.fileExists(atPath: fixture.oldData + "/workspaces/legilo/DerivedData"))
-        #expect(FileManager.default.fileExists(atPath: fixture.oldData + "/jobs/old-job"))
+        #expect(FileManager.default.fileExists(atPath: fixture.oldWork + "/workspaces/legilo/DerivedData"))
+        #expect(FileManager.default.fileExists(atPath: fixture.oldWork + "/jobs/old-job"))
+        #expect(printed.text.contains("would run: /usr/bin/sudo /bin/rm -rf /Users/hangar/.hangar/worker/workspaces/legilo/DerivedData/Build"))
     }
 
     // MARK: Pieces

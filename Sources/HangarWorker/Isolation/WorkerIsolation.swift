@@ -16,6 +16,10 @@ public struct IsolationLayout: Sendable, Equatable {
     public var supportDirectory: String { home + "/Library/Application Support/Hangar" }
     public var dataDirectory: String { supportDirectory + "/worker" }
     public var config: String { dataDirectory + "/config.json" }
+    /// Checkouts, DerivedData, job directories and each job's `TMPDIR`: the work directory a worker with the
+    /// default data directory uses (`WorkerConfiguration.defaultWorkDirectory`), without spaces.
+    public var workDirectory: String { home + "/.hangar/worker" }
+    public var workspaces: String { workDirectory + "/workspaces" }
     public var launchAgents: String { home + "/Library/LaunchAgents" }
     public var plist: String { launchAgents + "/" + WorkerLaunchAgent.label + ".plist" }
     public var logs: String { home + "/Library/Logs/Hangar" }
@@ -81,8 +85,9 @@ public struct IsolationError: Error, CustomStringConvertible, Equatable {
 ///
 /// Run by an administrator in Terminal, without sudo; it asks sudo for each privileged step. In order: create the
 /// account with a generated password (stored in the administrator's login keychain and shown once), install a copy
-/// of the worker, the configuration (same machine token, data directory rewritten) and the DerivedData cache into
-/// that account, lock its home to 0700, write its launch agent, then wait for the one step macOS does not allow a
+/// of the worker, the configuration (same machine token, data and work directories rewritten) and the build cache
+/// (checkouts and DerivedData, moved into the account's work directory as `WorkDirectoryMigration` would) into that
+/// account, lock its home to 0700, write its launch agent, then wait for the one step macOS does not allow a
 /// script to do: a graphical login as `hangar` (fast user switching). That login unlocks the account's login keychain
 /// and starts the agent; `isolate` then confirms the agent runs and the server sees the machine heartbeat as `hangar`,
 /// and removes the old agent and configuration. Each step is idempotent, so running it again resumes.
@@ -248,7 +253,7 @@ public struct WorkerIsolation: Sendable {
             "copy hangar-worker into \(layout.binDirectory)")
         if let source {
             try installConfiguration(source)
-            try moveCache(from: source.dataDirectory)
+            try moveCache(from: source)
         } else {
             guard dryRun || runner.succeeds(.sudo("/bin/test", "-f", layout.config)) else {
                 throw IsolationError("There is no worker configuration to move and \(layout.user) has none either. Install with the curl command from Hangar › Machines › Add Mac; it enrolls this Mac and runs this step.")
@@ -388,7 +393,7 @@ public struct WorkerIsolation: Sendable {
         let owner = ["-o", layout.user, "-g", "staff"]
         let privateDirectories = [
             layout.home + "/Library/Application Support", layout.supportDirectory, layout.dataDirectory,
-            layout.home + "/Library/Logs", layout.logs,
+            layout.home + "/.hangar", layout.workDirectory, layout.workspaces, layout.home + "/Library/Logs", layout.logs,
         ]
         try require(
             IsolationCommand(["/usr/bin/sudo", "/usr/bin/install", "-d"] + owner + ["-m", "700"] + privateDirectories, kind: .change),
@@ -400,11 +405,12 @@ public struct WorkerIsolation: Sendable {
             "create \(layout.binDirectory)")
     }
 
-    /// The same machine token and server; the data directory is rewritten into the account's home (a custom one
-    /// outside it is how files stayed readable, so it is not kept).
+    /// The same machine token and server; the data and work directories are rewritten into the account's home (a
+    /// custom one outside it is how files stayed readable, so it is not kept).
     private func installConfiguration(_ source: WorkerConfiguration) throws {
         var moved = source
         moved.dataDirectory = layout.dataDirectory
+        moved.workDirectory = layout.workDirectory
         let staged = try stage("config.json") { try moved.write(to: $0) }
         defer { try? FileManager.default.removeItem(atPath: staged) }
         try require(
@@ -412,27 +418,71 @@ public struct WorkerIsolation: Sendable {
             "install the worker configuration")
     }
 
-    /// Moves `workspaces/` (checkouts and DerivedData) so the next build is warm; leftover `jobs/` are removed.
-    private func moveCache(from oldDataDirectory: String) throws {
-        let old = URL(fileURLWithPath: oldDataDirectory).standardizedFileURL.path
-        guard old != layout.dataDirectory else { return }
-        let oldWorkspaces = old + "/workspaces"
-        let newWorkspaces = layout.dataDirectory + "/workspaces"
-        if FileManager.default.fileExists(atPath: oldWorkspaces) {
-            if !dryRun && runner.succeeds(.sudo("/bin/test", "-e", newWorkspaces)) {
-                say("\(layout.user) already has \(newWorkspaces); leaving \(oldWorkspaces) where it is.")
-            } else if Self.sameVolume(old, (layout.home as NSString).deletingLastPathComponent) {
-                say("Moving the build cache (checkouts and DerivedData)...")
-                try require(.sudo("/bin/mv", oldWorkspaces, newWorkspaces), "move the build cache")
-            } else {
-                say("Copying the build cache to another volume; it takes twice its size until the copy is removed.")
-                try require(.sudo("/usr/bin/ditto", oldWorkspaces, newWorkspaces), "copy the build cache")
-                try require(.sudo("/bin/rm", "-rf", oldWorkspaces), "remove the old build cache")
+    /// The work directory the invoker's worker used: its configured one, else the default for its data directory
+    /// under the invoker's home (`~/.hangar/worker` for the usual one).
+    static func oldWorkDirectory(of source: WorkerConfiguration, home: String) -> String {
+        if let work = source.workDirectory, !work.isEmpty { return URL(fileURLWithPath: work).standardizedFileURL.path }
+        return WorkerConfiguration.defaultWorkDirectory(for: source.dataDirectory, home: home)
+    }
+
+    /// Moves the build cache (each app's checkout and DerivedData) into the account's work directory so the next
+    /// build fetches instead of cloning. Like `WorkDirectoryMigration` within one user: from the old work directory,
+    /// and from the old data directory for a worker that never ran with a separate one; an app the account already
+    /// has keeps its copy; after the move the parts of DerivedData that name the old absolute path are dropped
+    /// (`WorkDirectoryMigration.pathBoundCaches`; the git mirrors in `SourcePackages/repositories` stay). Then all of
+    /// it is given to the account. Leftover `jobs/` and `tmp/` are removed.
+    private func moveCache(from source: WorkerConfiguration) throws {
+        let oldData = URL(fileURLWithPath: source.dataDirectory).standardizedFileURL.path
+        let oldWork = Self.oldWorkDirectory(of: source, home: invoker.home)
+        let roots = oldWork == oldData ? [oldWork] : [oldWork, oldData]
+        let files = FileManager.default
+        var present = Set<String>()
+        var moved: [String] = []
+        for root in roots where root + "/workspaces" != layout.workspaces {
+            let workspaces = root + "/workspaces"
+            var isDirectory: ObjCBool = false
+            guard files.fileExists(atPath: workspaces, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            let names = ((try? files.contentsOfDirectory(atPath: workspaces)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
+            let sameVolume = Self.sameVolume(workspaces, (layout.home as NSString).deletingLastPathComponent)
+            for name in names {
+                let from = workspaces + "/" + name
+                let to = layout.workspaces + "/" + name
+                if present.contains(name) || (!dryRun && runner.succeeds(.sudo("/bin/test", "-e", to))) {
+                    say("\(layout.user) already has \(to); leaving \(from) where it is.")
+                    present.insert(name)
+                    continue
+                }
+                if moved.isEmpty { say("Moving the build cache (checkouts and DerivedData) to \(layout.workDirectory)...") }
+                if sameVolume {
+                    try require(.sudo("/bin/mv", from, to), "move the build cache of \(name)")
+                } else {
+                    say("Copying \(name) to another volume; it takes twice its size until the copy is removed.")
+                    try require(.sudo("/usr/bin/ditto", from, to), "copy the build cache of \(name)")
+                    try require(.sudo("/bin/rm", "-rf", from), "remove the old build cache of \(name)")
+                }
+                present.insert(name)
+                moved.append(to)
             }
-            try require(.sudo("/usr/sbin/chown", "-R", "\(layout.user):staff", newWorkspaces), "give the build cache to \(layout.user)")
+            // Gone when everything moved; an app left in place keeps it.
+            _ = try runner.run(IsolationCommand(["/bin/rmdir", workspaces], kind: .change, quiet: true))
         }
-        if FileManager.default.fileExists(atPath: old + "/jobs") {
-            try require(.sudo("/bin/rm", "-rf", old + "/jobs"), "remove leftover job directories")
+        if !moved.isEmpty {
+            say("Dropping the parts of DerivedData that name the old path; the next build redoes them once.")
+            let pathBound = moved.flatMap { workspace in WorkDirectoryMigration.pathBoundCaches.map { workspace + "/" + $0 } }
+            try require(
+                IsolationCommand(["/usr/bin/sudo", "/bin/rm", "-rf"] + pathBound, kind: .change),
+                "drop the path-bound DerivedData caches")
+            try require(
+                .sudo("/usr/sbin/chown", "-R", "\(layout.user):staff", layout.workspaces),
+                "give the build cache to \(layout.user)")
+        }
+        var leftovers = [oldWork + "/jobs", oldWork + "/tmp"]
+        if oldData != oldWork { leftovers.append(oldData + "/jobs") }
+        for path in leftovers where files.fileExists(atPath: path) {
+            try require(.sudo("/bin/rm", "-rf", path), "remove leftover job files in \(path)")
+        }
+        if oldWork != oldData, files.fileExists(atPath: oldWork) {
+            _ = try runner.run(IsolationCommand(["/bin/rmdir", oldWork], kind: .change, quiet: true))
         }
     }
 
@@ -524,7 +574,7 @@ public struct WorkerIsolation: Sendable {
         var bootstrapped = false
         if sessionExisted {
             if runner.succeeds(print) {
-                try require(.sudo("/bin/launchctl", "kickstart", "-k", target), "restart \(layout.user)'s worker agent")
+                try await restartGracefully(print: print, target: target)
             } else {
                 try require(.sudo("/bin/launchctl", "bootstrap", "gui/\(uid)", layout.plist), "start \(layout.user)'s worker agent")
             }
@@ -547,6 +597,37 @@ public struct WorkerIsolation: Sendable {
               launchctl bootstrap gui/\(invoker.uid) \(IsolationCommand.quote(invoker.plist))
             starts it again.
             """)
+    }
+
+    /// Restarts a running agent onto the new binary the way launchd stops it: SIGTERM, which the worker handles by
+    /// cancelling a running build with the reason and cleaning up. Once the old process (its pid in `launchctl print`)
+    /// is gone, launchd's KeepAlive starts the new binary; `kickstart` only nudges it when it is not running yet. Only
+    /// a worker that does not exit in time is killed with `kickstart -k`.
+    private func restartGracefully(print: IsolationCommand, target: String) async throws {
+        let oldPID = (try? runner.run(print)).flatMap { Self.pid(launchctlPrint: $0.output) }
+        say("Restarting \(layout.user)'s worker on the new binary; a build in flight stops and reports why.")
+        try require(.sudo("/bin/launchctl", "kill", "SIGTERM", target), "stop \(layout.user)'s worker agent")
+        for _ in 0..<timing.oldAgentPolls {
+            let result = try? runner.run(print)
+            let pid = result.flatMap { $0.succeeded ? Self.pid(launchctlPrint: $0.output) : nil }
+            if oldPID == nil || pid != oldPID {
+                if !(result.map { $0.succeeded && Self.isRunning(launchctlPrint: $0.output) } ?? false) {
+                    _ = try runner.run(IsolationCommand(["/usr/bin/sudo", "/bin/launchctl", "kickstart", target], kind: .change, quiet: true))
+                }
+                return
+            }
+            await dependencies.sleep(timing.poll)
+        }
+        say("warning: \(layout.user)'s worker did not stop after SIGTERM; restarting it forcibly.")
+        try require(.sudo("/bin/launchctl", "kickstart", "-k", target), "restart \(layout.user)'s worker agent")
+    }
+
+    static func pid(launchctlPrint output: String) -> Int? {
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("pid = ") { return Int(trimmed.dropFirst("pid = ".count)) }
+        }
+        return nil
     }
 
     static func isRunning(launchctlPrint output: String) -> Bool {
