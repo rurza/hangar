@@ -314,7 +314,13 @@ struct VMCommand: AsyncParsableCommand {
                     return
                 }
                 try VMCommand.sudo(commands, tolerateFailure: { $0.contains("bootout") })
-                VMCommand.say(filter.problem().map { "warning: \($0)" } ?? "the VM network filter is loaded")
+                // launchd runs the loader after bootstrap returns; give it a few seconds to write the marker.
+                var problem = filter.problem()
+                for _ in 0..<20 where problem != nil {
+                    try await Task.sleep(for: .milliseconds(250))
+                    problem = filter.problem()
+                }
+                VMCommand.say(problem.map { "warning: \($0)" } ?? "the VM network filter is loaded")
             }
         }
 
