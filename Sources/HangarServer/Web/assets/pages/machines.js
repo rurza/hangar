@@ -1,6 +1,6 @@
 // The Machines page: a widget per build Mac with its latest heartbeat report, the Add Mac sheet (the one-line
 // install command and a pairing code; it waits for the new Mac to connect), the manual Add Machine sheet (which
-// shows the new machine's token once, with the install commands) and Remove.
+// shows the new machine's token once, with the install commands), Pause/Resume Builds and Remove.
 
 import { api, events, seg } from '../api.js';
 import { addLeaveGuard } from '../router.js';
@@ -9,6 +9,7 @@ import {
   plusIcon, selectContents, sheet, spinner, toast,
 } from '../ui.js';
 import { isOnline } from './build.js';
+import { isServerMac, loadText, pauseButtonLabel, pauseToast } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
@@ -27,6 +28,9 @@ export async function machinesPage(params, context) {
   const addButton = button('Add Mac', { kind: 'primary', onClick: () => addMac() });
   // What each running job is ("Legilo 88 · macOS"), for the widgets; refreshed when a machine reports jobs.
   const jobs = runningJobs(context.signal, () => widgets.forEach((widget) => widget.refresh()));
+  // The Mac the server runs on, to mark its card; known once /setup answers.
+  let serverHostName = null;
+  const serverMac = (machine) => isServerMac(machine, serverHostName);
 
   function render() {
     machines.sort((a, b) => a.name.localeCompare(b.name));
@@ -47,7 +51,7 @@ export async function machinesPage(params, context) {
     const nodes = machines.map((machine) => {
       let widget = widgets.get(machine.id);
       if (!widget) {
-        widget = machineWidget(machine, { onRemove: remove, jobInfo: jobs.info });
+        widget = machineWidget(machine, { onRemove: remove, onPause: setPaused, jobInfo: jobs.info, serverMac });
         widgets.set(machine.id, widget);
       } else {
         widget.update(machine);
@@ -95,7 +99,22 @@ export async function machinesPage(params, context) {
     }
   }
 
+  /** Turns builds on `machine` off or on again; no confirmation, since it is undone with one click. */
+  async function setPaused(machine, paused) {
+    try {
+      const updated = await api.post(`/machines/${seg(machine.id)}/${paused ? 'pause' : 'resume'}`);
+      toast(pauseToast(updated), 'success');
+      upsert(updated);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
   render();
+  api.get('/setup', { signal: context.signal }).then((setup) => {
+    serverHostName = setup?.localHostName ?? null;
+    if (serverHostName) widgets.forEach((widget) => widget.refresh());
+  }, () => {});
   if (context.query.get('add') === '1') {
     history.replaceState(null, '', '/machines');
     addMac();
@@ -143,20 +162,39 @@ export async function removeMachine(machine) {
 
 // MARK: Widget
 
-/** A machine's widget. `update(machine)` redraws it with new data, `tick()` re-evaluates the online state. */
-export function machineWidget(initial, { onRemove, jobInfo }) {
+/**
+ * A machine's widget. `update(machine)` redraws it with new data, `tick()` re-evaluates the online state.
+ * `onPause(machine, paused)` adds the Pause/Resume Builds button; `serverMac(machine)` marks the server's own Mac.
+ */
+export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac }) {
   let machine = initial;
   const title = h('h2', { class: 'machine-name' });
   const status = h('p', { class: 'machine-status' });
+  const tags = h('div', { class: 'machine-tags' });
   const body = h('div', { class: 'machine-body' });
   const removeButton = button('Remove', {
     kind: 'plain-destructive', class: 'button button-plain-destructive button-small',
     onClick: () => onRemove(machine),
   });
+  let pausing = false;
+  const pauseButton = onPause ? button('', {
+    class: 'button button-secondary button-small machine-pause',
+    onClick: async () => {
+      if (pausing) return;
+      pausing = true;
+      pauseButton.disabled = true;
+      try {
+        await onPause(machine, !machine.paused);
+      } finally {
+        pausing = false;
+        pauseButton.disabled = false;
+      }
+    },
+  }) : null;
   const element = card({ class: 'machine-card' },
-    h('div', { class: 'machine-head' }, h('div', { class: 'machine-heading' }, title, status)),
+    h('div', { class: 'machine-head' }, h('div', { class: 'machine-heading' }, title, status), tags),
     body,
-    h('div', { class: 'card-actions' }, removeButton));
+    h('div', { class: 'card-actions' }, pauseButton, removeButton));
 
   function tick() {
     const online = isOnline(machine);
@@ -172,6 +210,16 @@ export function machineWidget(initial, { onRemove, jobInfo }) {
     machine = next;
     title.textContent = machine.name;
     removeButton.setAttribute('aria-label', `Remove ${machine.name}`);
+    element.classList.toggle('machine-paused', Boolean(machine.paused));
+    if (pauseButton) {
+      pauseButton.textContent = pauseButtonLabel(machine.paused);
+      pauseButton.setAttribute('aria-label', `${pauseButtonLabel(machine.paused)} on ${machine.name}`);
+    }
+    replaceChildren(tags,
+      serverMac?.(machine)
+        ? h('span', { class: 'tag', title: 'Hangar’s server runs on this Mac' }, 'Server')
+        : null,
+      machine.paused ? h('span', { class: 'badge badge-paused' }, h('span', { class: 'badge-dot', 'aria-hidden': 'true' }), 'Paused') : null);
     replaceChildren(body, machine.report ? reportView(machine, jobInfo) : waitingView());
     tick();
   }
@@ -191,11 +239,12 @@ function reportView(machine, jobInfo) {
   const runningIDs = Array.isArray(report.runningJobIDs) ? report.runningJobIDs : [];
   const running = runningIDs.length;
   const jobs = max === 1 ? 'job' : 'jobs';
+  const load = loadText({ running, max, paused: Boolean(machine.paused) });
   // "Building Legilo 88 · macOS" as links to the builds, once known.
   const known = runningIDs.map((id) => jobInfo?.(id)).filter(Boolean);
   const verb = known.length && known.every((info) => info.kind === 'test') ? 'Testing' : 'Building';
-  const activity = running === 0
-    ? h('p', { class: 'card-headline' }, 'Idle')
+  const activity = load.headline
+    ? h('p', { class: 'card-headline' }, load.headline)
     : known.length
       ? h('p', { class: 'card-headline machine-activity' }, `${verb} `, known.map((info, index) => [
         index ? ', ' : null,
@@ -213,7 +262,7 @@ function reportView(machine, jobInfo) {
       ring(running / max, `${running} of ${max} ${jobs} running`),
       h('div', { class: 'machine-load-text' },
         activity,
-        h('p', { class: 'card-detail' }, `${running} of ${max} ${jobs} running`))),
+        h('p', { class: 'card-detail' }, load.detail))),
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),

@@ -193,13 +193,14 @@ public actor SchedulerLoop {
         guard let report = machine.report else {
             return MachineSnapshot(
                 id: machine.id, name: machine.name, isOnline: false, freeSlots: freeSlots, runningJobs: runningJobs,
-                xcodeVersions: [], tools: [], freeDiskGB: 0, performanceCores: 0, onACPower: false, canSign: false)
+                xcodeVersions: [], tools: [], freeDiskGB: 0, performanceCores: 0, onACPower: false, canSign: false,
+                paused: machine.paused)
         }
         return MachineSnapshot(
             id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now), freeSlots: freeSlots,
             runningJobs: runningJobs, xcodeVersions: report.xcodes.map(\.version), tools: Set(report.tools.keys),
             freeDiskGB: report.freeDiskGB, performanceCores: report.performanceCores, onACPower: report.onACPower,
             canSign: report.canSignWithoutPrompt, simulatorRuntimes: report.simulatorRuntimes,
-            capabilities: Set(report.capabilities), headless: report.headless ?? false)
+            capabilities: Set(report.capabilities), headless: report.headless ?? false, paused: machine.paused)
     }
 }

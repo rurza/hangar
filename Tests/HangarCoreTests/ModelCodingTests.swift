@@ -113,6 +113,22 @@ struct ModelCodingTests {
         #expect(object == ["code": "not_found", "message": "no"])
     }
 
+    @Test func machinePausedRoundTripsAndAnOlderServersMachineIsNot() throws {
+        let paused = Machine(id: UUID(), name: "m", createdAt: Self.when, paused: true)
+        let data = try JSONCoding.encoder.encode(paused)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""paused":true"#))
+        #expect(try JSONCoding.decoder.decode(Machine.self, from: data) == paused)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "paused")
+        let old = try JSONCoding.decoder.decode(Machine.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(!old.paused && old.name == "m")
+
+        let machine = DeployCheckMachine(id: "x", name: "m", online: true, problems: [], waits: [])
+        var check = try #require(JSONSerialization.jsonObject(with: JSONCoding.encoder.encode(machine)) as? [String: Any])
+        check.removeValue(forKey: "paused")
+        #expect(try JSONCoding.decoder.decode(DeployCheckMachine.self, from: JSONSerialization.data(withJSONObject: check)) == machine)
+    }
+
     @Test func machineOnlineWindow() {
         let machine = Machine(id: UUID(), name: "m", lastSeenAt: Self.when, createdAt: Self.when)
         #expect(machine.isOnline(now: Self.when.addingTimeInterval(90)))

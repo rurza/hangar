@@ -253,4 +253,32 @@ private struct FixedSource: KnownNumberSource {
         }
         #expect(assignments.count == 1)
     }
+
+    @Test func aPausedMacFinishesItsJobTakesNoNewOneAndResumes() async throws {
+        let (_, firstID) = try await deploy()
+        try await loop.tick()
+        #expect(try builds.job(id: firstID)?.machineID == macBook.id)
+        try builds.setJobStatus(id: firstID, status: .running, at: now)
+
+        _ = try machines.setPaused(id: macBook.id, true)
+        let (_, secondID) = try await deploy()
+        try await loop.tick()
+        #expect(try builds.job(id: secondID)?.queueNote == "MacBook Pro: builds paused, busy")
+
+        // Still reporting while paused: the running job is not lost.
+        await advance(seconds: 100)
+        try report(macBook)
+        try await loop.tick()
+        #expect(try builds.job(id: firstID)?.status == .running)
+        try builds.setJobStatus(id: firstID, status: .succeeded, at: now)
+        try await loop.tick()
+        let waiting = try #require(try builds.job(id: secondID))
+        #expect(waiting.status == .queued)
+        #expect(waiting.queueNote == "MacBook Pro: builds paused")
+
+        _ = try machines.setPaused(id: macBook.id, false)
+        try await loop.tick()
+        let assigned = try #require(try builds.job(id: secondID))
+        #expect(assigned.status == .assigned && assigned.machineID == macBook.id && assigned.queueNote == nil)
+    }
 }

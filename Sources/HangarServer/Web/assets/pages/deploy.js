@@ -4,6 +4,7 @@
 // server's call (`deploy-check`, the scheduler's own rules and clock), asked again as machines change.
 
 import { api, events, seg } from '../api.js';
+import { deployMachineLine } from '../machine-status.js';
 import { withQuery } from '../query.js';
 import { navigate } from '../router.js';
 import { h, replaceChildren, sheet, spinner } from '../ui.js';
@@ -334,12 +335,19 @@ export function openDeploySheet(app) {
     return null;
   }
 
-  /** Waits the build will have (busy, low disk), which do not block it. */
+  /** Waits the build will have (busy, low disk, builds paused), which do not block it. */
   function waitText() {
     if (!check || machineBlocker()) return null;
     const pinned = check.machines.find((machine) => machine.id === selectedMachineID());
+    if (pinned?.paused) return `It will wait until builds are resumed on ${pinned.name} (Machines page).`;
     if (pinned) return pinned.waits.length ? `It will wait: ${pinned.name} is ${listText(pinned.waits)}.` : null;
-    return check.warnings.length ? `It will wait for a free Mac: ${blockingText(check.warnings)}.` : null;
+    if (!check.warnings.length) return null;
+    // Every Mac that could run it has builds turned off: say that, not each action's reasons.
+    const capable = check.machines.filter((machine) => machine.online && machine.problems.length === 0);
+    if (capable.length && capable.every((machine) => machine.paused)) {
+      return `It will wait until builds are resumed on ${listText(capable.map((machine) => machine.name))} (Machines page).`;
+    }
+    return `It will wait for a free Mac: ${blockingText(check.warnings)}.`;
   }
 
   function renderWhere() {
@@ -351,8 +359,12 @@ export function openDeploySheet(app) {
         h('span', { class: 'where-title' }, title, dot ? h('span', { class: ['online-dot', dot], 'aria-hidden': 'true' }) : null),
         h('span', { class: 'where-detail' }, detail)));
     const machines = check?.machines ?? [];
-    const able = machines.filter((machine) => machine.online && machine.problems.length === 0);
-    const automaticDetail = able.length === 0 ? 'The first free Mac that can build it.'
+    const capable = machines.filter((machine) => machine.online && machine.problems.length === 0);
+    const able = capable.filter((machine) => !machine.paused);
+    const paused = capable.filter((machine) => machine.paused);
+    const automaticDetail = able.length === 0 && paused.length
+      ? `Waits until builds are resumed on ${listText(paused.map((machine) => machine.name))}.`
+      : able.length === 0 ? 'The first free Mac that can build it.'
       : able.length === 1 ? `Runs on ${able[0].name}, the Mac that can build it.`
         : `The first free of ${listText(able.map((machine) => machine.name))}.`;
     const noMachines = check ? machines.length === 0 : machineCount === 0;
@@ -370,10 +382,7 @@ export function openDeploySheet(app) {
       replaceChildren(whereOptions,
         option('', 'Automatic', automaticDetail),
         machines.map((machine) => {
-          const detail = !machine.online ? 'Offline'
-            : machine.problems.length ? `Online · ${listText(machine.problems)}`
-              : machine.waits.length ? `Online · ${listText(machine.waits)}` : 'Online · can build it';
-          const dot = !machine.online ? 'offline' : machine.problems.length ? 'warning' : 'online';
+          const { detail, dot } = deployMachineLine(machine);
           return option(machine.id, machine.name, detail, dot);
         }),
         waitingFor ? h('p', { class: 'field-hint' }, waitingFor) : null,

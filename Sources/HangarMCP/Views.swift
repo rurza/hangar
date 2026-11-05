@@ -85,6 +85,8 @@ enum Views {
         var id: UUID
         var name: String
         var online: Bool
+        /// Builds are turned off on this Mac: it takes no new jobs (the owner resumes it on the Machines page).
+        var paused: Bool
         var runningJobs: Int
         var maxConcurrentJobs: Int
         var lastSeenAt: Date?
@@ -162,7 +164,7 @@ enum Views {
     static func machine(_ machine: Machine, now: Date) -> MachineView {
         let report = machine.report
         return MachineView(
-            id: machine.id, name: machine.name, online: machine.isOnline(now: now),
+            id: machine.id, name: machine.name, online: machine.isOnline(now: now), paused: machine.paused,
             runningJobs: report?.runningJobIDs.count ?? 0, maxConcurrentJobs: machine.maxConcurrentJobs,
             lastSeenAt: machine.lastSeenAt, macOS: report?.macOSVersion, chip: report?.chip,
             xcodes: report?.xcodes.map { "\($0.version) (\($0.build))" }, freeDiskGB: report?.freeDiskGB,

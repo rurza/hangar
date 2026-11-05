@@ -21,13 +21,48 @@ import Testing
         _ name: String, isOnline: Bool = true, freeSlots: Int = 1, runningJobs: Int = 0,
         xcodeVersions: [String] = ["27.2.1"], tools: Set<String> = ["git"], freeDiskGB: Double = 100,
         performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = [],
-        capabilities: Set<String> = [WorkerCapability.testActions], headless: Bool = false
+        capabilities: Set<String> = [WorkerCapability.testActions], headless: Bool = false, paused: Bool = false
     ) -> MachineSnapshot {
         MachineSnapshot(
             id: UUID(), name: name, isOnline: isOnline, freeSlots: freeSlots, runningJobs: runningJobs,
             xcodeVersions: xcodeVersions, tools: tools, freeDiskGB: freeDiskGB, performanceCores: performanceCores,
             onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes,
-            capabilities: capabilities, headless: headless)
+            capabilities: capabilities, headless: headless, paused: paused)
+    }
+
+    @Test func aPausedMacGetsNoJobAndTheJobWaits() throws {
+        let queued = job()
+        let paused = machine("Mini", performanceCores: 12, paused: true)
+        let plan = Scheduler.plan(jobs: [queued], machines: [paused], minFreeDiskGB: 20)
+        #expect(plan.assignments.isEmpty)
+        let reasons = try #require(plan.waiting[queued.id])
+        #expect(reasons == ["Mini": [.paused]])
+        #expect(Scheduler.queueNote(reasons) == "Mini: builds paused")
+        // Another Mac takes it, though the paused one ranks higher.
+        let laptop = machine("MacBook", performanceCores: 4)
+        #expect(Scheduler.plan(jobs: [queued], machines: [paused, laptop], minFreeDiskGB: 20).assignments
+            == [Assignment(jobID: queued.id, machineID: laptop.id)])
+        // A job pinned to the paused Mac waits for it.
+        let pinned = job(pinned: paused.id)
+        let pinnedPlan = Scheduler.plan(jobs: [pinned], machines: [paused, laptop], minFreeDiskGB: 20)
+        #expect(pinnedPlan.assignments.isEmpty)
+        #expect(pinnedPlan.waiting[pinned.id] == ["Mini": [.paused], "MacBook": [.notPinned]])
+    }
+
+    @Test func pausedComesFirstAndOtherReasonsStillShow() {
+        let busy = machine("Mini", freeSlots: 0, runningJobs: 1, xcodeVersions: ["26.1"], paused: true)
+        #expect(Scheduler.ineligibility(of: job(), on: busy, minFreeDiskGB: 20)
+            == [.paused, .busy, .xcodeMissing("27.2")])
+        #expect(Scheduler.queueNote(["Mini": [.paused, .busy]]) == "Mini: builds paused, busy")
+        // Offline says only that, as before.
+        #expect(Scheduler.ineligibility(of: job(), on: machine("Mini", isOnline: false, paused: true), minFreeDiskGB: 20)
+            == [.offline])
+    }
+
+    @Test func pausedDelaysLikeBusyAndLowDisk() {
+        #expect(HangarServerApp.passingReasons(.paused))
+        #expect(HangarServerApp.passingReasons(.busy))
+        #expect(!HangarServerApp.passingReasons(.offline))
     }
 
     @Test func anArchiveWithAnIndividualKeySkipsAHeadlessMac() throws {

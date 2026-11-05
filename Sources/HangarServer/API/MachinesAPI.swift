@@ -32,6 +32,19 @@ extension HangarServerApp {
             try machines.delete(id: machine.id)
             return Response(status: .noContent)
         }
+        // Pause: the scheduler gives the machine no new jobs; a running one finishes, and the worker keeps reporting.
+        api.post("machines/:id/pause") { _, context in try setPaused(context, true) }
+        api.post("machines/:id/resume") { _, context in try setPaused(context, false) }
+    }
+
+    private func setPaused(_ context: HangarRequestContext, _ paused: Bool) throws -> Response {
+        let key = try context.parameters.require("id")
+        guard let found = try machines.find(nameOrID: key), let machine = try machines.setPaused(id: found.id, paused)
+        else { throw APIError(code: "machine_not_found", message: "No machine '\(key)'.") }
+        events.publish(.server(.machine(machine)))
+        // Resumed: queued jobs may go to it now rather than at the next tick; paused: queue notes say why they wait.
+        scheduler.poke()
+        return try Response.json(machine)
     }
 
     func validateMachine(name: String, maxConcurrentJobs: Int) throws {

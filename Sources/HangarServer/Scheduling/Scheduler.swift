@@ -51,12 +51,15 @@ public struct MachineSnapshot: Sendable {
     public var capabilities: Set<String>
     /// The worker runs without a login session (`MachineReport.headless`), so it has no Xcode account.
     public var headless: Bool
+    /// Builds are turned off on this Mac (`Machine.paused`).
+    public var paused: Bool
 
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
         tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
-        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false
+        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false, paused: Bool = false
     ) {
+        self.paused = paused
         self.simulatorRuntimes = simulatorRuntimes
         self.capabilities = capabilities
         self.headless = headless
@@ -89,11 +92,14 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case workerOutdated
     /// An archive with an individual App Store Connect key, on a headless worker: there is no Xcode account to sign with.
     case needsTeamKey
+    /// Its owner turned builds off on this Mac. Like busy, it passes: the job waits until the machine is resumed.
+    case paused
 
     public var description: String {
         switch self {
         case .offline: "offline"
         case .busy: "busy"
+        case .paused: "builds paused"
         case .xcodeMissing(let version): "Xcode \(version) not installed"
         case .lowDisk(let free, let minimum): "only \(Self.gigabytes(free)) GB free (needs \(Self.gigabytes(minimum)) GB)"
         case .toolMissing(let tool): "\(tool) not installed"
@@ -173,6 +179,8 @@ public enum Scheduler {
         // An outdated worker could not even read the assignment; its other data says nothing about this job.
         guard job.requiredCapabilities.isSubset(of: machine.capabilities) else { return [.workerOutdated] }
         var reasons: [Ineligibility] = []
+        // First, so a queue note reads "mini: builds paused, Xcode 27.2 not installed".
+        if machine.paused { reasons.append(.paused) }
         if machine.freeSlots <= 0 { reasons.append(.busy) }
         if !machine.xcodeVersions.contains(where: { XcodeVersion.matches(requested: job.xcode, installed: $0) }) {
             reasons.append(.xcodeMissing(job.xcode))

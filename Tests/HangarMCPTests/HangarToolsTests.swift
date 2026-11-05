@@ -29,6 +29,19 @@ import Testing
         #expect(!output.text.contains(Fixtures.token))
     }
 
+    @Test func listMachinesSaysWhichArePaused() async throws {
+        var paused = Fixtures.machine
+        paused.paused = true
+        transport.on("GET machines", json: [paused])
+        let output = try await Fixtures.call("list_machines", tools)
+        #expect(!output.isError)
+        guard case .array(let machines) = try JSONCoding.decoder.decode(JSONValue.self, from: Data(output.text.utf8)),
+            case .object(let machine) = machines.first
+        else { Issue.record("not a list: \(output.text)"); return }
+        #expect(machine["paused"] == .bool(true))
+        #expect(machine["online"] != nil)
+    }
+
     @Test func serverErrorsExplainTokenProblems() {
         let revoked = HangarAPIError.server(APIError(code: "invalid_api_token", message: "The API token is unknown or was revoked."), status: 401)
         #expect(HangarTools.describe(revoked, server: Fixtures.server).contains("Settings › Agent Access"))

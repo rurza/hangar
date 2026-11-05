@@ -172,6 +172,42 @@ import Testing
         #expect(result.out.hasSuffix("Save this token now; it is not shown again.\n"))
     }
 
+    @Test func machinesPauseAndResume() async throws {
+        let running = MachineReport(
+            macOSVersion: "26.1", xcodes: [], chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: 100,
+            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [UUID()])
+        let paused = Machine(id: H.machineID, name: "mini", report: running, createdAt: H.t0, paused: true)
+        let pause = await H(responses: [try H.json(paused)]).run(["machines", "pause", "mini"])
+        #expect(pause.exitCode == 0)
+        #expect(pause.requests.map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" } == ["POST /api/v1/machines/mini/pause"])
+        #expect(pause.out == """
+            Paused mini: it takes no new builds; the job it is running finishes first.
+            Turn builds back on with: hangar machines resume mini
+
+            """)
+
+        var resumed = paused
+        resumed.paused = false
+        let resume = await H(responses: [try H.json(resumed)]).run(["machines", "resume", "mini"])
+        #expect(resume.exitCode == 0)
+        #expect(resume.requests.map { $0.url?.path ?? "" } == ["/api/v1/machines/mini/resume"])
+        #expect(resume.out == "Resumed mini: it takes builds again.\n")
+
+        let missing = await H(responses: [try H.json(APIError(code: "machine_not_found", message: "No machine 'nope'."), status: 404)])
+            .run(["machines", "pause", "nope"])
+        #expect(missing.exitCode != 0)
+        #expect(missing.err.contains("No machine 'nope'."))
+    }
+
+    @Test func machinesListShowsPaused() {
+        let online = Machine(id: UUID(), name: "mini", lastSeenAt: H.t0, createdAt: H.t0, paused: true)
+        let offline = Machine(id: UUID(), name: "studio", createdAt: H.t0)
+        let text = Machines.List.render([online, offline], now: H.t0, timeZone: H.utc)
+        let lines = text.split(separator: "\n").map(String.init)
+        #expect(lines.contains { $0.hasPrefix("mini") && $0.contains("online, paused") })
+        #expect(lines.contains { $0.hasPrefix("studio") && $0.contains("offline") && !$0.contains("paused") })
+    }
+
     @Test func logsFallsBackFromJobToBuild() async throws {
         let entry = LogEntry(t: H.t0, step: "archive", line: "Compiling")
         let harness = H(responses: [

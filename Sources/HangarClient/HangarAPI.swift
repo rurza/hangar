@@ -165,6 +165,15 @@ public struct HangarAPI: Sendable {
 
     public func deleteMachine(_ machine: String) async throws { try await sendEmpty("DELETE", "machines/\(segment(machine))") }
 
+    /// Turns builds on `machine` (name or ID) off: it takes no new jobs until `resumeMachine`.
+    public func pauseMachine(_ machine: String) async throws -> Machine {
+        try await send("POST", "machines/\(segment(machine))/pause")
+    }
+
+    public func resumeMachine(_ machine: String) async throws -> Machine {
+        try await send("POST", "machines/\(segment(machine))/resume")
+    }
+
     // MARK: - Plumbing
 
     private struct Empty: Encodable {}

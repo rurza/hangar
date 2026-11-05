@@ -122,6 +122,48 @@ private struct DescriptionASC: AppStoreConnectClient {
         #expect(check.machines.first?.problems == [])
     }
 
+    @Test func aPausedMachineIsAWarningNotABlocker() async throws {
+        let fixture = try fixture()
+        let machine = try addMachine(fixture, "mini", report: report())
+        _ = try fixture.server.machines.setPaused(id: machine.id, true)
+        let answer = try await check(fixture)
+        #expect(answer.canDeploy)
+        #expect(answer.blocking.isEmpty)
+        #expect(answer.warnings.map(\.action) == ["Archive – macOS · Legilo", "Archive – iOS · LegiloMobile"])
+        #expect(answer.warnings.first?.reasons == ["mini": ["builds paused"]])
+        let judged = try #require(answer.machines.first)
+        #expect(judged.paused && judged.online)
+        #expect(judged.problems.isEmpty && judged.waits == ["builds paused"])
+
+        // Pinned to it, the build waits too.
+        let pinned = try await check(fixture, "workflow=testflight&ref=main&machine=mini")
+        #expect(pinned.canDeploy && pinned.blocking.isEmpty && pinned.warnings.count == 2)
+    }
+
+    @Test func aPausedMachineStillBlocksForWhatItLacks() async throws {
+        let fixture = try fixture()
+        let machine = try addMachine(fixture, "mini", report: report(xcode: "26.1"))
+        _ = try fixture.server.machines.setPaused(id: machine.id, true)
+        let answer = try await check(fixture)
+        #expect(!answer.canDeploy)
+        #expect(answer.blocking.first?.reasons["mini"] == ["builds paused", "Xcode 27.2 not installed"])
+        #expect(answer.machines.first?.problems == ["Xcode 27.2 not installed"])
+        #expect(answer.machines.first?.waits == ["builds paused"])
+    }
+
+    @Test func aDeployToOnlyPausedMachinesQueuesAndWaits() async throws {
+        let fixture = try fixture()
+        let machine = try addMachine(fixture, "mini", report: report())
+        _ = try fixture.server.machines.setPaused(id: machine.id, true)
+        let build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: "testflight", ref: "main"))
+        try await fixture.server.scheduler.tick()
+        for job in build.jobs {
+            let waiting = try #require(try fixture.server.builds.job(id: job.id))
+            #expect(waiting.status == .queued)
+            #expect(waiting.queueNote == "mini: builds paused")
+        }
+    }
+
     @Test func aPinnedMachineIsJudgedAlone() async throws {
         let fixture = try fixture()
         _ = try addMachine(fixture, "good", report: report())

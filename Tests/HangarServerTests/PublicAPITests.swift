@@ -426,6 +426,43 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         }
     }
 
+    @Test func pauseAndResumeTurnBuildsOffAndOnAndPublishTheMachine() async throws {
+        let fixture = try APIFixture()
+        let (machine, _) = try fixture.server.machines.create(name: "studio")
+        let stream = fixture.server.events.subscribe()
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/machines/studio/pause", method: .post) { response throws in
+                #expect(response.status == .ok)
+                let paused = try decode(Machine.self, response)
+                #expect(paused.id == machine.id && paused.paused)
+            }
+            try await client.execute(uri: "/api/v1/machines", method: .get) { response throws in
+                #expect(try decode([Machine].self, response).map(\.paused) == [true])
+            }
+            // Pausing twice is harmless; the UUID works as well as the name.
+            try await client.execute(uri: "/api/v1/machines/\(machine.id.uuidString)/pause", method: .post) {
+                #expect($0.status == .ok)
+            }
+            try await client.execute(uri: "/api/v1/machines/studio/resume", method: .post) { response throws in
+                #expect(response.status == .ok)
+                #expect(try decode(Machine.self, response).paused == false)
+            }
+            for action in ["pause", "resume"] {
+                try await client.execute(uri: "/api/v1/machines/nope/\(action)", method: .post) { response throws in
+                    #expect(response.status == .notFound)
+                    #expect(try decode(APIError.self, response).code == "machine_not_found")
+                }
+            }
+        }
+        var published: [Bool] = []
+        for await event in stream {
+            guard case .server(.machine(let changed)) = event, changed.id == machine.id else { continue }
+            published.append(changed.paused)
+            if published.count == 3 { break }
+        }
+        #expect(published == [true, true, false])
+    }
+
     @Test func healthReportsVersion() async throws {
         try await APIFixture().test { client in
             try await client.execute(uri: "/api/v1/health", method: .get) { response throws in

@@ -36,4 +36,25 @@ import Testing
         try machines.delete(id: machine.id)
         #expect(try machines.all().isEmpty)
     }
+
+    @Test func pausedIsStoredAndMachinesFromBeforeV7AreNotPaused() throws {
+        let database = try HangarServer.Database(path: ":memory:")
+        try Migrations.migrator.migrate(database.pool, upTo: "v6")
+        try database.write { db in
+            try db.execute(
+                sql: "INSERT INTO machines (id, name, token_hash, max_concurrent_jobs, created_at) VALUES (?, ?, ?, ?, ?)",
+                arguments: [UUID().uuidString, "old", String(repeating: "0", count: 64), 1, 1_800_000_000])
+        }
+        try database.migrate()
+        #expect(try database.read { try Migrations.migrator.appliedIdentifiers($0) }.contains("v7"))
+        let machines = MachineRepository(database: database)
+        let old = try #require(try machines.find(nameOrID: "old"))
+        #expect(!old.paused)
+
+        let paused = try #require(try machines.setPaused(id: old.id, true))
+        #expect(paused.paused && paused.name == "old")
+        #expect(try machines.find(nameOrID: "old")?.paused == true)
+        #expect(try machines.setPaused(id: old.id, false)?.paused == false)
+        #expect(try machines.setPaused(id: UUID(), true) == nil)
+    }
 }

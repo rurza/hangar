@@ -4,8 +4,8 @@ import Hummingbird
 
 /// `GET /apps/{id}/deploy-check`: the scheduler's verdict on a deploy before it is made, so the Deploy sheet never
 /// spends a build number on a build no machine can run. Reads the workflow as a deploy does and judges every action
-/// with `Scheduler.ineligibility` against the machines as a tick sees them (online by the server's clock). Busy and
-/// low disk pass with time: they are warnings, not blockers.
+/// with `Scheduler.ineligibility` against the machines as a tick sees them (online by the server's clock). Busy, low
+/// disk and a paused machine pass with time: they are warnings, not blockers.
 extension HangarServerApp {
     func addDeployCheckRoutes(to api: APIGroup) {
         api.get("apps/:id/deploy-check") { request, context in
@@ -50,7 +50,7 @@ extension HangarServerApp {
     /// Reasons that pass with time: the job waits in the queue.
     static func passingReasons(_ reason: Ineligibility) -> Bool {
         switch reason {
-        case .busy, .lowDisk: true
+        case .busy, .lowDisk, .paused: true
         default: false
         }
     }
@@ -93,7 +93,7 @@ extension HangarServerApp {
             machines: snapshots.map {
                 DeployCheckMachine(
                     id: $0.id.uuidString, name: $0.name, online: $0.isOnline, problems: problems[$0.id] ?? [],
-                    waits: waits[$0.id] ?? [])
+                    waits: waits[$0.id] ?? [], paused: $0.paused)
             })
     }
 

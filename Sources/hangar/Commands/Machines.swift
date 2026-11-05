@@ -5,7 +5,8 @@ import HangarCore
 
 struct Machines: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "List, add and remove worker machines.", subcommands: [List.self, Add.self, Remove.self])
+        abstract: "List, add, pause and remove worker machines.",
+        subcommands: [List.self, Add.self, Pause.self, Resume.self, Remove.self])
 
     struct List: HangarCommand {
         static let configuration = CommandConfiguration(abstract: "List machines with their latest reports.")
@@ -23,7 +24,7 @@ struct Machines: AsyncParsableCommand {
                 let report = machine.report
                 return [
                     machine.name,
-                    machine.isOnline(now: now) ? "online" : "offline",
+                    (machine.isOnline(now: now) ? "online" : "offline") + (machine.paused ? ", paused" : ""),
                     "\(report?.runningJobIDs.count ?? 0)/\(machine.maxConcurrentJobs)",
                     report?.macOSVersion ?? "-",
                     report.map { $0.xcodes.map(\.version).joined(separator: ", ") } ?? "-",
@@ -48,6 +49,35 @@ struct Machines: AsyncParsableCommand {
             cli.print("Added machine \(created.machine.name).")
             cli.print("Worker token: \(created.token)")
             cli.print("Save this token now; it is not shown again.")
+        }
+    }
+
+    struct Pause: HangarCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Turn builds off on a machine: it takes no new jobs until resumed.",
+            discussion: "A job it is running finishes. The worker stays installed and keeps reporting.")
+        @OptionGroup var global: GlobalOptions
+        @Argument(help: "The machine's name or ID.") var machine: String
+
+        func run(_ cli: CLI) async throws {
+            let paused = try await cli.api.pauseMachine(machine)
+            if cli.json { return try cli.printJSON(paused) }
+            let running = paused.report?.runningJobIDs.count ?? 0
+            cli.print("Paused \(paused.name): it takes no new builds"
+                + (running > 0 ? "; the \(running == 1 ? "job" : "jobs") it is running \(running == 1 ? "finishes" : "finish") first." : "."))
+            cli.print("Turn builds back on with: hangar machines resume \(paused.name)")
+        }
+    }
+
+    struct Resume: HangarCommand {
+        static let configuration = CommandConfiguration(abstract: "Turn builds on again on a paused machine.")
+        @OptionGroup var global: GlobalOptions
+        @Argument(help: "The machine's name or ID.") var machine: String
+
+        func run(_ cli: CLI) async throws {
+            let resumed = try await cli.api.resumeMachine(machine)
+            if cli.json { return try cli.printJSON(resumed) }
+            cli.print("Resumed \(resumed.name): it takes builds again.")
         }
     }
 

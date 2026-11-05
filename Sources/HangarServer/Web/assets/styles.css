@@ -627,6 +627,7 @@ a.row:hover { text-decoration: none; background: var(--fill); }
 .badge-failed { --tone: var(--failure); }
 .badge-running, .badge-assigned { --tone: var(--running); }
 .badge-running .badge-dot { animation: pulse 1.6s ease-in-out infinite; }
+.badge-paused { --tone: var(--warning); }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent); }
@@ -1421,6 +1422,8 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .online-dot.online { background: var(--success); }
 .online-dot.warning { background: var(--warning); }
 .online-dot.none { visibility: hidden; }
+/* Builds turned off: a ring, not a dot, since the Mac itself is fine. */
+.online-dot.paused { background: transparent; box-shadow: inset 0 0 0 1.5px var(--warning); }
 
 .deploy-number {
   display: flex;
@@ -1725,6 +1728,9 @@ li + li > .artifact-link::before {
 .machine-card .card-actions { margin-top: 0; padding-top: 0; justify-content: flex-end; }
 .machine-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-1); }
 .machine-heading { min-width: 0; display: grid; gap: 2px; }
+.machine-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; padding-top: 2px; }
+.machine-tags:empty { display: none; }
+.machine-card .card-actions > .machine-pause { margin-inline-end: auto; }
 .machine-name { font: var(--headline); font-size: 19px; line-height: 24px; letter-spacing: -0.3px; overflow-wrap: anywhere; }
 .machine-status { display: flex; align-items: center; gap: 6px; color: var(--secondary); font: var(--footnote); letter-spacing: -0.08px; }
 .machine-body { display: grid; gap: var(--space-2); min-width: 0; }

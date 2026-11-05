@@ -128,6 +128,8 @@ import Testing
             (.post, "/api/v1/machines", try body(CreateMachineRequest(name: "m"))),
             (.post, "/api/v1/machines/pairings", nil),
             (.delete, "/api/v1/machines/m", nil),
+            (.post, "/api/v1/machines/m/pause", nil),
+            (.post, "/api/v1/machines/m/resume", nil),
             (.get, "/api/v1/setup/asc-keys", nil),
             (.post, "/api/v1/setup/local-worker", nil),
             (.get, "/api/v1/api-tokens", nil),

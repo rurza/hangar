@@ -122,10 +122,13 @@ public struct Machine: Codable, Equatable, Sendable, Identifiable {
     public var lastSeenAt: Date?
     public var report: MachineReport?
     public var createdAt: Date
+    /// Builds are turned off on this Mac: the scheduler gives it no new jobs. A job it is already running finishes,
+    /// and the worker keeps reporting (and updating itself). False from an older server.
+    public var paused: Bool
 
     public init(
         id: UUID, name: String, maxConcurrentJobs: Int = 1, lastSeenAt: Date? = nil,
-        report: MachineReport? = nil, createdAt: Date
+        report: MachineReport? = nil, createdAt: Date, paused: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -133,6 +136,20 @@ public struct Machine: Codable, Equatable, Sendable, Identifiable {
         self.lastSeenAt = lastSeenAt
         self.report = report
         self.createdAt = createdAt
+        self.paused = paused
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, maxConcurrentJobs, lastSeenAt, report, createdAt, paused }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        maxConcurrentJobs = try container.decode(Int.self, forKey: .maxConcurrentJobs)
+        lastSeenAt = try container.decodeIfPresent(Date.self, forKey: .lastSeenAt)
+        report = try container.decodeIfPresent(MachineReport.self, forKey: .report)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        paused = try container.decodeIfPresent(Bool.self, forKey: .paused) ?? false
     }
 
     public func isOnline(now: Date, timeout: TimeInterval = 90) -> Bool {

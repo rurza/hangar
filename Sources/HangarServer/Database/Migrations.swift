@@ -125,6 +125,10 @@ enum Migrations {
         migrator.registerMigration("v6") { db in
             try db.execute(sql: "ALTER TABLE jobs ADD COLUMN run_info_json TEXT")
         }
+        // A paused machine takes no new jobs (its owner turned builds off on that Mac); 0 for every existing one.
+        migrator.registerMigration("v7") { db in
+            try db.execute(sql: "ALTER TABLE machines ADD COLUMN paused INTEGER NOT NULL DEFAULT 0")
+        }
         return migrator
     }
 }

@@ -67,14 +67,29 @@ public struct DeployCheckMachine: Codable, Equatable, Sendable {
     public var online: Bool
     /// What keeps it from some action of the workflow for good (not busy or low disk); empty when it can run them all.
     public var problems: [String]
-    /// Passing reasons: busy, low disk.
+    /// Passing reasons: busy, low disk, builds paused.
     public var waits: [String]
+    /// Builds are turned off on this Mac; jobs wait for it until it is resumed. False from an older server.
+    public var paused: Bool
 
-    public init(id: String, name: String, online: Bool, problems: [String], waits: [String]) {
+    public init(id: String, name: String, online: Bool, problems: [String], waits: [String], paused: Bool = false) {
         self.id = id
         self.name = name
         self.online = online
         self.problems = problems
         self.waits = waits
+        self.paused = paused
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, online, problems, waits, paused }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        online = try container.decode(Bool.self, forKey: .online)
+        problems = try container.decode([String].self, forKey: .problems)
+        waits = try container.decode([String].self, forKey: .waits)
+        paused = try container.decodeIfPresent(Bool.self, forKey: .paused) ?? false
     }
 }
