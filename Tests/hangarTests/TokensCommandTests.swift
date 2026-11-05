@@ -41,4 +41,22 @@ private typealias H = CLIHarness
         #expect(result.exitCode != 0)
         #expect(result.requests.isEmpty)
     }
+
+    @Test func mcpNeedsAnAPITokenInTheEnvironment() async {
+        let missing = await H().run(["mcp"])
+        #expect(missing.exitCode == 1)
+        #expect(missing.err.contains("HANGAR_API_TOKEN"))
+        let wrong = await H(environment: ["HANGAR_API_TOKEN": "machine-token"]).run(["mcp"])
+        #expect(wrong.exitCode == 1)
+        #expect(wrong.err.contains("start with hgr_"))
+    }
+
+    @Test func mcpServerOffersEveryTool() {
+        let server = MCP.server(api: HangarAPI(baseURL: URL(string: "http://mini:8787")!, transport: StubTransport()))
+        #expect(server.tools.count == 23)
+        #expect(Set(server.tools.map(\.name)).isSuperset(of: [
+            "list_apps", "inspect_repo", "add_app", "get_workflows", "set_workflow", "list_branches", "deploy_check",
+            "start_build", "get_build", "get_build_log", "list_artifacts", "list_machines", "list_testflight_groups",
+        ]))
+    }
 }
