@@ -41,19 +41,6 @@ enum Views {
         }
     }
 
-    struct TestSummary: Encodable {
-        var passed: Int?
-        var failed: Int?
-        var skipped: Int?
-        var total: Int?
-        var failures: [TestFailure]?
-    }
-
-    struct TestFailure: Codable {
-        var name: String
-        var message: String
-    }
-
     struct JobView: Encodable {
         var id: UUID
         var action: String
@@ -64,7 +51,7 @@ enum Views {
         var steps: [String]
         var queueNote: String?
         var failureReason: String?
-        var tests: TestSummary?
+        var tests: TestOutputs?
         var startedAt: Date?
         var finishedAt: Date?
         /// The last lines of the failed step's log, for a failed job.
@@ -138,24 +125,13 @@ enum Views {
     /// "Archive – iOS · Legilo".
     static func label(_ action: WorkflowAction) -> String { "\(action.kindLabel) · \(action.scheme)" }
 
-    static func tests(_ outputs: [String: String]) -> TestSummary? {
-        guard outputs.keys.contains(where: { $0.hasPrefix("test.") }) else { return nil }
-        let failures = outputs["test.failures"].flatMap {
-            try? JSONDecoder().decode([TestFailure].self, from: Data($0.utf8))
-        }
-        return TestSummary(
-            passed: outputs["test.passed"].flatMap(Int.init), failed: outputs["test.failed"].flatMap(Int.init),
-            skipped: outputs["test.skipped"].flatMap(Int.init), total: outputs["test.total"].flatMap(Int.init),
-            failures: failures)
-    }
-
     static func job(_ job: Job, machines: [UUID: String], excerpt: [String]? = nil) -> JobView {
         JobView(
             id: job.id, action: label(job.action), status: job.status, machine: job.machineID.flatMap { machines[$0] },
             currentStep: job.steps.first { $0.status == .running }?.name,
             failedStep: job.steps.first { $0.status == .failed }?.name,
             steps: job.steps.map { "\($0.name): \($0.status.rawValue)" }, queueNote: job.queueNote,
-            failureReason: job.failureReason, tests: tests(job.outputs), startedAt: job.startedAt,
+            failureReason: job.failureReason, tests: TestOutputs(job.outputs), startedAt: job.startedAt,
             finishedAt: job.finishedAt, logExcerpt: excerpt)
     }
 
