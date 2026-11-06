@@ -103,6 +103,46 @@ import Testing
         #expect(vm.note.contains("cold-booted") && vm.note.contains("did not come up"))
     }
 
+    /// The Secure Enclave refuses to decrypt a saved state while a screen is locked ("permission denied"): the job
+    /// cold-boots as the slot, and the state stays, because it restores again once the Mac is unlocked.
+    @Test func aStateUnreadableWhileTheScreenIsLockedIsKept() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        try fixture.saveSlot(0)
+        let engine = FakeEngine(restoreErrors: [.stateUnreadable("failed to restore with error “permission denied”")])
+        var launcher = VMLauncher(host: fixture.host(engine, screenIsLocked: { true }))
+        launcher.pollInterval = .milliseconds(10)
+        let job = fixture.storage.job(UUID())
+        let slot = try fixture.image().directory.slot(0)
+        let vm = try await launcher.bootJob(image: try fixture.image(), slot: 0, job: job, user: "builder")
+
+        #expect(engine.machines.map(\.calls) == [[.restore(slot.state), .stop], [.start]])
+        #expect(engine.machines[1].spec.macAddress == VMMACAddress.forSlot(0, machine: fixture.machineName))
+        #expect(engine.machines[1].spec.machineIdentifier == Data("slot-0".utf8))
+        #expect(FileManager.default.contents(atPath: job.disk) == Data("disk".utf8))
+        #expect(FileManager.default.fileExists(atPath: slot.state))
+        #expect(!vm.slotIsStale)
+        #expect(vm.note.contains("cold-booted") && vm.note.contains("screen is locked"))
+    }
+
+    /// "Permission denied" with every screen unlocked is not the lock: the state goes and is saved again, as any
+    /// state that does not restore.
+    @Test func aStateUnreadableWithTheScreenUnlockedIsSavedAgain() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        try fixture.saveSlot(0)
+        let engine = FakeEngine(restoreErrors: [.stateUnreadable("permission denied")])
+        var launcher = VMLauncher(host: fixture.host(engine, screenIsLocked: { false }))
+        launcher.pollInterval = .milliseconds(10)
+        let slot = try fixture.image().directory.slot(0)
+        let vm = try await launcher.bootJob(image: try fixture.image(), slot: 0, job: fixture.storage.job(UUID()), user: "builder")
+
+        #expect(engine.machines.map(\.calls) == [[.restore(slot.state), .stop], [.start]])
+        #expect(!FileManager.default.fileExists(atPath: slot.state))
+        #expect(vm.slotIsStale)
+        #expect(vm.note.contains("did not restore"))
+    }
+
     /// Two macOS VMs already run: the job waits for room (`bootWaitingForRoom`), and the slot's state is kept.
     @Test func aRestoreRefusedForWantOfRoomKeepsTheState() async throws {
         let fixture = try VMFixture()
@@ -400,6 +440,27 @@ struct ImmediateClock: Clock {
         #expect(setup.engine.machines.count == 2)
         #expect(setup.engine.machines[1].calls.contains { if case .save = $0 { true } else { false } })
         #expect(FileManager.default.fileExists(atPath: try setup.fixture.image().directory.slot(0).state))
+    }
+
+    /// While the screen is locked, a job that could not read the slot's state does not save it again afterwards:
+    /// that held the slot for minutes after every job and made a state just as unreadable until the Mac is unlocked.
+    @Test func aSlotUnreadableWhileLockedIsNotSavedAgainAfterTheJob() async throws {
+        let setup = try Setup(script: Self.succeeding)
+        defer { setup.fixture.cleanUp() }
+        let engine = FakeEngine(restoreErrors: [.stateUnreadable("permission denied")])
+        var launcher = VMLauncher(host: setup.fixture.host(engine, runner: setup.runner, screenIsLocked: { true }))
+        launcher.pollInterval = .milliseconds(10)
+        launcher.host.clock = ImmediateClock()
+        let jobRunner = VMJobRunner(
+            launcher: launcher, connection: setup.connection, serverURL: URL(string: "http://mini:8787")!,
+            identity: setup.identity, slots: setup.pool, workerBinary: "/bin/true", sessions: setup.launcher,
+            cancelGrace: .seconds(1))
+        let result = await jobRunner.run(Self.archive(), cancelled: { false }, stopReason: { nil })
+        #expect(result.status == .succeeded)
+        #expect(engine.machines.map { $0.calls.first } == [.restore(try setup.fixture.image().directory.slot(0).state), .start])
+        #expect(!engine.machines.contains { $0.calls.contains { if case .save = $0 { true } else { false } } })
+        #expect(FileManager.default.fileExists(atPath: try setup.fixture.image().directory.slot(0).state))
+        #expect(setup.pool.acquire() == 0)
     }
 
     @Test func aMacAlreadyRunningTwoVMsMakesTheJobWaitNotFail() async throws {

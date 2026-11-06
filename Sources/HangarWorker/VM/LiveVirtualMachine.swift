@@ -92,9 +92,25 @@ public struct LiveVirtualMachineEngine: VirtualMachineEngine {
         guard error.domain == VZErrorDomain else { return .failed(error.localizedDescription) }
         switch error.code {
         case VZError.Code.virtualMachineLimitExceeded.rawValue: return .tooManyVMs
+        case VZError.Code.restore.rawValue where restoring && isPermissionDenied(error):
+            return .stateUnreadable(error.localizedDescription)
         case VZError.Code.restore.rawValue where restoring: return .stateIncompatible(error.localizedDescription)
         default: return .failed("\(error.localizedDescription) (VZErrorDomain \(error.code))")
         }
+    }
+}
+
+extension LiveVirtualMachineEngine {
+    /// EACCES or EPERM anywhere in the error's chain, or the words: macOS 27.2 reports a restore the Secure Enclave
+    /// refused as "The virtual machine failed to restore with error “permission denied”." in the description alone.
+    static func isPermissionDenied(_ error: NSError) -> Bool {
+        var current: NSError? = error
+        while let error = current {
+            if error.domain == NSPOSIXErrorDomain, error.code == Int(EACCES) || error.code == Int(EPERM) { return true }
+            if error.localizedDescription.localizedCaseInsensitiveContains("permission denied") { return true }
+            current = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
 }
 
