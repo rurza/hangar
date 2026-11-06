@@ -45,6 +45,7 @@ extension HangarServerApp {
                 app: app, workflow: workflow, commit: resolved,
                 token: entries.first { $0.name == BuildService.tokenVariable }?.value,
                 definedNames: Set(entries.map(\.name)), onlyFor: Self.restrictedNames(own, links),
+                notReceived: try variables.globalSecretsNotReceived(appID: app.id),
                 appStoreConnect: { try appStoreConnectClient() })
             check.notices += Self.unknownWorkflowNotices(own, links, workflows: Set(file.workflows.keys))
             return try Response.json(check)

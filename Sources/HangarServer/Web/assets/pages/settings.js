@@ -65,7 +65,8 @@ export async function settingsPage(params, context) {
     }, signing.element),
     section({
       title: 'GitHub',
-      footer: 'Hangar reads your app repositories and their private Swift packages with it.',
+      footer: 'Hangar reads your app repositories and their private Swift packages with it. Jobs of an app without its '
+        + 'own HANGAR_GITHUB_TOKEN clone with it too: give each app a fine-grained, read-only token of its own.',
     }, github.element),
     advanced(),
     section({
@@ -75,7 +76,8 @@ export async function settingsPage(params, context) {
     }, agentTokensEditor({ signal })),
     section({
       title: 'Global Variables',
-      footer: 'Every job of every app gets these. An app variable with the same name replaces one of these.',
+      footer: 'Every job of every app gets the plain ones. A secret reaches only the apps that receive it: choose them '
+        + 'under Global Secrets on each app’s page. An app variable with the same name replaces one of these.',
     }, variablesEditor({ scope: 'global', signal }).element),
     section({
       title: 'Variable Groups',

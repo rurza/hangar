@@ -162,12 +162,23 @@ public enum CIScriptsCheck {
     /// not executable.
     /// `onlyFor` maps a name the app sets only for some workflows to those workflows: the sentence says so, as the
     /// deployed workflow is not among them.
+    /// `notReceived`: global secrets the app does not get (they are opt-in per app); a script that uses one is told
+    /// where to choose it rather than to define it.
     public static func sentences(
-        _ warnings: Warnings, directory: String = "ci_scripts", onlyFor: [String: [String]] = [:]
+        _ warnings: Warnings, directory: String = "ci_scripts", onlyFor: [String: [String]] = [:],
+        notReceived: Set<String> = []
     ) -> [String] {
         var lines: [String] = []
         for script in warnings.undefined.keys.sorted() {
-            let names = warnings.undefined[script] ?? []
+            let all = warnings.undefined[script] ?? []
+            let secrets = all.filter(notReceived.contains)
+            if !secrets.isEmpty {
+                let one = secrets.count == 1
+                lines.append(
+                    "\(directory)/\(script) uses \(listText(secrets.map { "$\($0)" })), \(one ? "a global secret" : "global secrets") this app doesn’t receive: choose \(one ? "it" : "them") under Global Secrets on the app’s page, or the script sees \(one ? "it" : "them") empty.")
+            }
+            let names = all.filter { !notReceived.contains($0) }
+            if names.isEmpty { continue }
             let list = listText(names.map { "$\($0)" })
             let one = names.count == 1
             let elsewhere = names.compactMap { name in

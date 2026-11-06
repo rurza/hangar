@@ -251,6 +251,23 @@ enum Migrations {
             }
             try db.execute(sql: "DELETE FROM variables WHERE name LIKE 'HANGAR\\_ASC\\_%' ESCAPE '\\'")
         }
+        // Global secrets become opt-in per app: an app's jobs get a global secret only when the app chose it
+        // (`app_global_secrets`). Plain globals stay inherited by every app. Every existing app is granted every
+        // existing global secret, so nothing changes until someone revokes one. `HANGAR_*` names keep their own rules.
+        migrator.registerMigration("v12") { db in
+            try db.execute(sql: """
+                CREATE TABLE app_global_secrets (
+                    app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    PRIMARY KEY (app_id, name)
+                );
+
+                INSERT OR IGNORE INTO app_global_secrets (app_id, name)
+                SELECT a.id, v.name FROM apps a
+                JOIN variables v ON v.scope = 'global' AND v.owner_id = '' AND v.is_secret = 1
+                WHERE v.name NOT LIKE 'HANGAR\\_%' ESCAPE '\\';
+                """)
+        }
         return migrator
     }
 }

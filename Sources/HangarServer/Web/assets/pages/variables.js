@@ -45,7 +45,7 @@ function workflowQuery(workflows) {
  * read): a variable can then be limited to some, and a name that is not among them is flagged. `signal` (optional)
  * cancels loading when the page is left.
  */
-export function variablesEditor({ scope, signal, workflows = Promise.resolve(null) }) {
+export function variablesEditor({ scope, signal, workflows = Promise.resolve(null), onChange }) {
   const isGlobal = scope === 'global';
   const isApp = !isGlobal && scope.app !== undefined;
   const isGroup = !isGlobal && scope.group !== undefined;
@@ -144,6 +144,7 @@ export function variablesEditor({ scope, signal, workflows = Promise.resolve(nul
       toast(error.message, 'error');
     }
     load();
+    onChange?.();
   }
 
   /**
@@ -300,6 +301,7 @@ export function variablesEditor({ scope, signal, workflows = Promise.resolve(nul
             valueControl.value = '';
             toast(`Saved ${name}`, 'success');
             load();
+            onChange?.();
           },
         },
       ],
@@ -512,6 +514,102 @@ export function linkedGroupsEditor({ app, signal, workflows = Promise.resolve(nu
         },
       ],
     });
+  }
+
+  load();
+  return { element, reload: load };
+}
+
+/**
+ * An app's share of the global secrets: plain global variables reach every app, a global secret only the apps that
+ * chose it. One row per global secret with Receive or Stop Receiving, and first the GitHub token the app's jobs clone
+ * with, which warns while it is the one in Settings (it reaches every repository that token can).
+ */
+export function globalSecretsEditor({ app, signal }) {
+  const base = `/apps/${seg(app.slug)}/global-secrets`;
+  const element = h('div', { class: 'variables global-secrets' });
+  let state = { secrets: [], gitHubToken: 'none' };
+
+  async function load() {
+    replaceChildren(element, h('div', { class: 'list list-loading' }, spinner('Loading global secrets')));
+    try {
+      state = await api.get(base, { signal });
+      render();
+    } catch (error) {
+      if (error.code === 'aborted') return;
+      replaceChildren(element,
+        h('div', { class: 'list inline-error' },
+          h('p', { class: 'inline-error-message' }, error.message),
+          button('Try Again', { kind: 'plain', onClick: load })));
+    }
+  }
+
+  function tokenRow() {
+    const own = state.gitHubToken === 'app';
+    const global = state.gitHubToken === 'global';
+    return h('li', { class: 'row variable-row' },
+      h('div', { class: 'row-main' },
+        h('div', { class: 'variable-name mono' }, 'HANGAR_GITHUB_TOKEN'),
+        h('div', { class: 'variable-meta' },
+          h('span', { class: ['tag', global ? 'tag-secret' : null] },
+            own ? 'This App’s Own' : global ? 'From Settings' : 'None'),
+          h('span', { class: 'row-detail' }, 'Clones the repository and its private packages')),
+        global
+          ? h('p', { class: 'variable-hint' },
+            'The token in Settings reaches every repository it can read, and maybe write. Give this app its own '
+            + 'fine-grained token instead: only this repository (and its private packages), Contents read-only. '
+            + 'Add it under Environment as HANGAR_GITHUB_TOKEN.')
+          : null));
+  }
+
+  function render() {
+    const rows = state.secrets.map((secret) => h('li', { class: 'row variable-row' },
+      h('div', { class: 'row-main' },
+        h('div', { class: 'variable-name mono' }, secret.name),
+        h('div', { class: 'variable-meta' },
+          h('span', { class: ['tag', secret.granted ? 'tag-secret' : null] }, secret.granted ? 'Received' : 'Not Received'),
+          secret.asFile ? h('span', { class: 'tag' }, 'File') : null)),
+      h('div', { class: 'row-actions' },
+        secret.granted
+          ? button('Stop Receiving', {
+            kind: 'plain-destructive', 'aria-label': `Stop giving ${secret.name} to ${app.name}`, onClick: () => revoke(secret),
+          })
+          : button('Receive', {
+            kind: 'plain', 'aria-label': `Give ${secret.name} to ${app.name}`, onClick: () => grant(secret),
+          }))));
+    replaceChildren(element,
+      h('ul', { class: 'list' },
+        tokenRow(),
+        rows.length === 0
+          ? h('li', { class: 'row' }, h('p', { class: 'row-detail' }, 'No global secrets. Add them in Settings › Variables.'))
+          : rows));
+  }
+
+  async function grant(secret) {
+    try {
+      await api.put(`${base}/${seg(secret.name)}`);
+      toast(`${app.name} receives ${secret.name}`, 'success');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+    load();
+  }
+
+  async function revoke(secret) {
+    const confirmed = await confirm({
+      title: `Stop giving ${secret.name} to ${app.name}?`,
+      message: `Jobs of ${app.name} no longer get ${secret.name}. The secret stays in Settings for the other apps.`,
+      confirmLabel: 'Stop Receiving',
+      destructive: true,
+    });
+    if (!confirmed) return;
+    try {
+      await api.del(`${base}/${seg(secret.name)}`);
+      toast(`${app.name} no longer receives ${secret.name}`, 'success');
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+    load();
   }
 
   load();
