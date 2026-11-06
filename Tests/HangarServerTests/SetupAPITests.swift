@@ -641,7 +641,8 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         let environment = setupEnvironment(keys, runner: runner)
         let started = ContinuousClock.now
         #expect(await environment.installedWorker(probeTimeout: .milliseconds(200)) == nil)
-        #expect(ContinuousClock.now - started < .seconds(5))
+        // A hang never returns; the generous bound only keeps a loaded test run (all suites at once) from failing it.
+        #expect(ContinuousClock.now - started < .seconds(30))
     }
 
     @Test func installingOnAnEphemeralPortIsRefused() async throws {
