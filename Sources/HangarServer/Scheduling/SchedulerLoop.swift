@@ -9,15 +9,19 @@ public struct SchedulerConfig: Sendable {
     /// An assigned job not started this long goes back to the queue.
     public var assignmentTimeout: TimeInterval
     public var tickInterval: Duration
+    /// Ticks further apart than this (or a clock that went back) mean the server was not running meanwhile: stopped,
+    /// upgrading or asleep. Machines then get a whole `machineTimeout` to report again before they count as lost.
+    public var resumeGap: TimeInterval
 
     public init(
         minFreeDiskGB: Double = 20, machineTimeout: TimeInterval = 120, assignmentTimeout: TimeInterval = 60,
-        tickInterval: Duration = .seconds(2)
+        tickInterval: Duration = .seconds(2), resumeGap: TimeInterval = 30
     ) {
         self.minFreeDiskGB = minFreeDiskGB
         self.machineTimeout = machineTimeout
         self.assignmentTimeout = assignmentTimeout
         self.tickInterval = tickInterval
+        self.resumeGap = resumeGap
     }
 }
 
@@ -37,6 +41,9 @@ public actor SchedulerLoop {
     private let logger = Logger(label: "app.hangar.server.scheduler")
     private let wakes: AsyncStream<Void>
     private let wake: AsyncStream<Void>.Continuation
+    private var lastTickAt: Date?
+    /// Since when the server has been ticking without a gap: a machine silent only since then is not lost yet.
+    private var listeningSince: Date?
 
     public init(
         builds: BuildRepository, machines: MachineRepository, events: EventBus, config: SchedulerConfig = .init(),
@@ -76,6 +83,9 @@ public actor SchedulerLoop {
     /// update still guards against any other writer.
     public func tick() async throws {
         let now = now()
+        let resumed = lastTickAt.map { now < $0 || now.timeIntervalSince($0) > config.resumeGap } ?? true
+        if resumed { listeningSince = now }
+        lastTickAt = now
         let all = try machines.all()
         let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
         // Worker loss before requeue: a lost machine's assigned job fails rather than going back to the queue.
@@ -88,11 +98,17 @@ public actor SchedulerLoop {
         do { try await tick() } catch { logger.error("scheduler tick failed: \(error)") }
     }
 
+    /// Silent for `machineTimeout` while the server listened: workers back off to a heartbeat a minute while it is
+    /// away, so a restart or a sleep longer than the timeout must not fail every build in flight.
     private func failJobsOfLostMachines(_ machines: [UUID: Machine], now: Date) throws {
         for job in try builds.jobs(status: [.assigned, .running]) {
             guard let machineID = job.machineID else { continue }
             let machine = machines[machineID]
-            if let seen = machine?.lastSeenAt, now.timeIntervalSince(seen) <= config.machineTimeout { continue }
+            if let machine, let listeningSince,
+                now.timeIntervalSince(max(machine.lastSeenAt ?? .distantPast, listeningSince)) <= config.machineTimeout
+            {
+                continue
+            }
             let name = machine?.name ?? machineID.uuidString
             // Conditional: a job that finished meanwhile keeps its result.
             guard try builds.transitionJob(
@@ -103,15 +119,28 @@ public actor SchedulerLoop {
         }
     }
 
+    /// A job its machine never picked up goes back to the queue after `assignmentTimeout`. One it was handed stays
+    /// while the machine's reports list it: a VM job is `assigned` through the slot wait and the boot, minutes. It
+    /// goes back only once a report made after the hand-out leaves it out (the worker restarted, or the response was
+    /// lost on the way).
     private func requeueStaleAssignments(_ machines: [UUID: Machine], now: Date) throws {
         for job in try builds.jobs(status: [.assigned]) {
             guard let assignedAt = job.assignedAt, now.timeIntervalSince(assignedAt) > config.assignmentTimeout,
-                let machineID = job.machineID, machines[machineID]?.isOnline(now: now) == true,
-                try builds.unassign(jobID: job.id)
+                let machineID = job.machineID, let machine = machines[machineID], machine.isOnline(now: now)
             else { continue }
+            if let dispatchedAt = try builds.dispatchedAt(jobID: job.id) {
+                guard let seen = machine.lastSeenAt, seen.timeIntervalSince(dispatchedAt) > Self.reportLag,
+                    machine.report?.runningJobIDs.contains(job.id) != true
+                else { continue }
+            }
+            guard try builds.unassign(jobID: job.id) else { continue }
             try publishChange(jobID: job.id, buildID: job.buildID)
         }
     }
+
+    /// How long a worker may take to put together a report it then sends: a report that arrives sooner after a
+    /// hand-out may have been made before the worker had the job.
+    static let reportLag: TimeInterval = 15
 
     private func assignQueuedJobs(_ machines: [Machine], now: Date) throws {
         let running = try Self.runningCounts(builds)
@@ -179,7 +208,8 @@ public actor SchedulerLoop {
             simulatorPlatform: action.kind == .test && action.platform != .macOS ? action.platform : nil,
             requiredCapabilities: workflow.needsCapabilities(for: action),
             needsXcodeAccount: action.kind == .archive && !teamKey,
-            signingProblem: action.kind == .archive ? signingProblem : nil)
+            signingProblem: action.kind == .archive ? signingProblem : nil,
+            signsOnHost: action.kind == .archive || action.platform == .macOS)
     }
 
     /// Whether `entries` (an app's resolved variables) hold a team key: a non-empty `HANGAR_ASC_ISSUER_ID`, as the
@@ -195,8 +225,8 @@ public actor SchedulerLoop {
     }
 
     /// Machines without a report are offline for scheduling. A machine that reports `vm` runs every job in a VM and is
-    /// judged by it: its ready slots, its images' Xcode versions and simulator runtimes, its VM storage, and no Xcode
-    /// account (the guest has none), whatever the host has.
+    /// judged by it: its ready slots, its images' Xcode versions and simulator runtimes, its VM storage, no Xcode
+    /// account (the guest has none) and the server's signing identity, whatever the host has or its keychain can do.
     static func snapshot(_ machine: Machine, runningJobs: Int, now: Date) -> MachineSnapshot {
         let freeSlots = max(0, machine.maxConcurrentJobs - runningJobs)
         guard let report = machine.report else {
@@ -210,7 +240,7 @@ public actor SchedulerLoop {
                 id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now),
                 freeSlots: max(0, vm.slots - runningJobs), runningJobs: runningJobs, xcodeVersions: vm.xcodeVersions,
                 tools: [], freeDiskGB: vm.storageFreeGB, performanceCores: report.performanceCores,
-                onACPower: report.onACPower, canSign: report.canSignWithoutPrompt,
+                onACPower: report.onACPower, canSign: true,
                 simulatorRuntimes: Array(Set(vm.images.flatMap(\.simulatorRuntimes))).sorted(),
                 capabilities: Set(report.capabilities), headless: true, paused: machine.paused, vm: true,
                 vmNotReady: vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready"), vmOwnIdentity: vm.ownIdentity)

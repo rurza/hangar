@@ -56,13 +56,26 @@ private struct FixedSource: KnownNumberSource {
         await clock.advance(by: .seconds(seconds))
     }
 
-    func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil) throws {
+    /// Ticks `loop` every 2 s on the wall clock for `seconds`, as the running server does.
+    func tickThrough(seconds: Int, _ loop: SchedulerLoop? = nil) async throws {
+        var left = seconds
+        while left > 0 {
+            let step = min(2, left)
+            await advance(seconds: step)
+            try await (loop ?? self.loop).tick()
+            left -= step
+        }
+    }
+
+    func report(
+        _ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil, running: [UUID] = []
+    ) throws {
         try machines.updateReport(
             id: machine.id,
             report: MachineReport(
                 macOSVersion: "26.0", xcodes: [InstalledXcode(version: "27.2", build: "A1", path: "/Applications/Xcode.app")],
                 chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: freeDiskGB, onACPower: true, tools: ["git": "2.45"],
-                canSignWithoutPrompt: true, runningJobIDs: [], headless: headless, vm: vm),
+                canSignWithoutPrompt: true, runningJobIDs: running, headless: headless, vm: vm),
             seenAt: now)
     }
 
@@ -168,12 +181,10 @@ private struct FixedSource: KnownNumberSource {
         try builds.setJobStatus(id: jobID, status: .running, at: now)
         _ = await drain(stream)
 
-        await advance(seconds: 100)
-        try await loop.tick()
+        try await tickThrough(seconds: 120)
         #expect(try builds.job(id: jobID)?.status == .running)
 
-        await advance(seconds: 21)
-        try await loop.tick()
+        try await tickThrough(seconds: 1)
         let failed = try #require(try builds.job(id: jobID))
         #expect(failed.status == .failed)
         #expect(failed.failureReason == "worker lost: MacBook Pro stopped reporting")
@@ -196,11 +207,40 @@ private struct FixedSource: KnownNumberSource {
             clock: clock, now: { [current] in current.date })
         let (_, jobID) = try await deploy()
         try await loop.tick()
-        await advance(seconds: 61)
-        try await loop.tick()
+        try await tickThrough(seconds: 61, loop)
         let job = try #require(try builds.job(id: jobID))
         #expect(job.status == .failed)
         #expect(job.failureReason == "worker lost: MacBook Pro stopped reporting")
+    }
+
+    /// Workers back off to a heartbeat a minute while the server is away: after a restart, or a sleep, a machine last
+    /// heard of long ago gets a whole timeout to report again before its jobs fail.
+    @Test func aRestartOrASleepGivesMachinesATimeoutToReportAgain() async throws {
+        let (_, jobID) = try await deploy()
+        try await loop.tick()
+        try builds.setJobStatus(id: jobID, status: .running, at: now)
+
+        // The server was down for five minutes: a new loop's first tick sees a report 300 s old.
+        await advance(seconds: 300)
+        let restarted = SchedulerLoop(
+            builds: builds, machines: machines, events: events, config: SchedulerConfig(), clock: clock,
+            now: { [current] in current.date })
+        try await restarted.tick()
+        #expect(try builds.job(id: jobID)?.status == .running)
+        try await tickThrough(seconds: 60, restarted)
+        try report(macBook)
+
+        // Asleep for ten minutes: the first tick after waking is late, and the machine again gets its timeout.
+        await advance(seconds: 600)
+        try await restarted.tick()
+        try await tickThrough(seconds: 120, restarted)
+        #expect(try builds.job(id: jobID)?.status == .running)
+
+        // Still silent once the server has listened for longer than the timeout: lost.
+        try await tickThrough(seconds: 2, restarted)
+        let lost = try #require(try builds.job(id: jobID))
+        #expect(lost.status == .failed)
+        #expect(lost.failureReason == "worker lost: MacBook Pro stopped reporting")
     }
 
     @Test func requeuesAssignedJobNotStartedWithin60s() async throws {
@@ -228,6 +268,38 @@ private struct FixedSource: KnownNumberSource {
         #expect(published.contains(.job(job)))
         #expect(published.contains { if case .job(let j) = $0 { j.id == jobID && j.queueNote == nil } else { false } })
         #expect(try builds.build(id: job.buildID)?.status == .queued)
+    }
+
+    /// A job the worker was handed stays assigned while it prepares (a VM boots for minutes) and the machine's
+    /// reports list it. It goes back to the queue only once a report made after the hand-out leaves it out.
+    @Test func aHandedOutJobIsNotRequeuedWhileTheMachineReportsIt() async throws {
+        let (_, jobID) = try await deploy()
+        try await loop.tick()
+        await advance(seconds: 50)
+        #expect(try builds.markDispatched(jobID: jobID, machineID: macBook.id, at: now))
+        let dispatchedAt = now
+
+        // Too soon after the hand-out to tell: this report may have been made before the worker had the job.
+        await advance(seconds: 11)
+        try report(macBook)
+        try await loop.tick()
+        #expect(try builds.dispatchedAt(jobID: jobID) == dispatchedAt)
+
+        for _ in 0..<4 {
+            await advance(seconds: 30)
+            try report(macBook, running: [jobID])
+            try await loop.tick()
+            #expect(try builds.job(id: jobID)?.status == .assigned)
+            #expect(try builds.dispatchedAt(jobID: jobID) == dispatchedAt)
+        }
+
+        // The worker restarted and no longer has it: assigned anew, to be handed out again.
+        await advance(seconds: 30)
+        try report(macBook)
+        try await loop.tick()
+        let job = try #require(try builds.job(id: jobID))
+        #expect(job.status == .assigned && job.assignedAt == now)
+        #expect(try builds.dispatchedAt(jobID: jobID) == nil)
     }
 
     @Test func waitingNoteIsPublishedOnceAndNoMachinesIsExplained() async throws {

@@ -111,6 +111,7 @@ private final class Shared<Value: Sendable>: Sendable {
         var assignment: JobAssignment
         /// Set by `makeHeadless()`: the worker then runs as a LaunchDaemon would.
         var keychain: CIKeychain?
+        var jobTimeout: Duration?
 
         init(xcode: String = "27.2", connection: FakeServerConnection = FakeServerConnection()) throws {
             self.connection = connection
@@ -173,7 +174,7 @@ private final class Shared<Value: Sendable>: Sendable {
                     credentials.update { $0.append(received) }
                     return appStoreConnect
                 },
-                keychain: keychain)
+                keychain: keychain, jobTimeout: jobTimeout)
             return await jobRunner.run(assignment, cancelled: cancelled, stopReason: stopReason)
         }
 
@@ -759,6 +760,32 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.logLines.contains("job stopped: \(reason); stopped archive"))
     }
 
+    /// A hung xcodebuild, a codesign prompt or a wedged simctl does not hold the Mac for good: the job is stopped at
+    /// its timeout, as a VM job is, and says so.
+    @Test func aJobPastItsTimeoutIsStoppedAndSaysWhy() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.jobTimeout = .seconds(60)
+        fixture.runner.recording.scriptHang(Self.isArchive)
+        let archiveStarted = Shared(false)
+        fixture.runner.whenRunning { if Self.isArchive($0) { archiveStarted.update { $0 = true } } }
+        // The clock moves only once the archive hangs, so the timeout falls inside it.
+        let ticker = Task { [clock = fixture.clock] in
+            while !Task.isCancelled {
+                if archiveStarted.get() { await clock.advance(by: .seconds(60)) }
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        defer { ticker.cancel() }
+
+        let result = await fixture.run()
+
+        let reason = "the job ran longer than 1 min, the job timeout on Studio"
+        #expect(result == JobResult(status: .cancelled, failureReason: reason + " during archive"))
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == "Stopped: " + reason)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+    }
+
     @Test func failureReasonAndOutputsAreMasked() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
@@ -869,5 +896,22 @@ private final class Shared<Value: Sendable>: Sendable {
         defer { terminal.removeAll() }
         _ = await terminal.runTicking(cancelled: { false })
         #expect(terminal.connection.finishAttempts == 1)
+    }
+
+    /// A 409 at start: the job was handed out twice, or moved or ended meanwhile. The copy that does run it must not
+    /// be failed by this one's finish; any other start error is reported.
+    @Test func aJobTheServerWouldNotStartHereIsNotFinished() async throws {
+        let conflict = ServerConnectionError.status(409, method: "POST", path: "/api/v1/worker/jobs/x/start")
+        let refused = try Fixture(connection: FakeServerConnection(startError: conflict))
+        defer { refused.removeAll() }
+        let result = await refused.runTicking(cancelled: { false })
+        #expect(result.status == .failed)
+        #expect(refused.connection.events == [.start])
+        #expect(refused.connection.finishAttempts == 0)
+
+        let down = try Fixture(connection: FakeServerConnection(startError: FakeServerConnection.Unavailable()))
+        defer { down.removeAll() }
+        _ = await down.runTicking(cancelled: { false })
+        #expect(down.connection.result?.status == .failed)
     }
 }

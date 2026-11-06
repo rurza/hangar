@@ -46,11 +46,13 @@ public struct Doctor: Sendable {
         self.signTimeout = signTimeout
     }
 
+    /// With VM builds on, the host's keychain signs nothing (each VM gets the server's identity): it is neither
+    /// unlocked nor probed, and the report lists no identities and no signing problem.
     public func report(runningJobIDs: [UUID]) async -> MachineReport {
         // First, so the identities below come from an unlocked CI keychain: after a reboot nothing else unlocks it.
-        let keychainProblem = await keychain?.problem(runner: runner)
-        let identities = await signingIdentities()
-        async let signing = signing(identities: identities, keychainProblem: keychainProblem)
+        let keychainProblem = vm == nil ? await keychain?.problem(runner: runner) : nil
+        let identities = vm == nil ? await signingIdentities() : []
+        async let signing = vm == nil ? signing(identities: identities, keychainProblem: keychainProblem) : (false, nil)
         async let xcodeAccount = xcodeAccountSignedIn()
         let bytes = Int(await sysctl("hw.memsize")) ?? 0
         let (canSign, problem) = await signing

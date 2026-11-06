@@ -65,6 +65,8 @@ struct JobPipeline {
     let cancelled: @Sendable () -> Bool
     /// Why the worker itself stopped the job (it is shutting down); nil for a cancel the server asked for.
     let stopReason: @Sendable () -> String?
+    /// Applied to every step detail before it leaves the machine: an error's description may quote a secret.
+    let masker: SecretMasker
     private let logger = Logger(label: "app.hangar.worker.pipeline")
 
     private(set) var failureReason: String?
@@ -76,8 +78,10 @@ struct JobPipeline {
 
     init(
         jobID: UUID, connection: any ServerConnection, log: JobLog, clock: any Clock<Duration>,
-        cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String? = { nil }
+        cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String? = { nil },
+        masker: SecretMasker = SecretMasker(secrets: [])
     ) {
+        self.masker = masker
         self.jobID = jobID
         self.connection = connection
         self.log = log
@@ -147,11 +151,16 @@ struct JobPipeline {
         await report(name, .skipped)
     }
 
-    /// Best effort: a step update the server did not take is logged here and does not change the job.
+    /// Best effort: a step update the server did not take is logged here and does not change the job. Details,
+    /// the stages' too, are masked: an App Store Connect error body or a git URL may carry a secret.
     func report(_ name: String, _ status: StepStatus, detail: String? = nil, stages: [StepStage]? = nil) async {
+        let stages = stages?.map { stage in
+            StepStage(name: stage.name, status: stage.status, detail: stage.detail.map(masker.mask))
+        }
         do {
             try await connection.step(
-                jobID: jobID, StepUpdate(name: name, status: status, at: Date(), detail: detail, stages: stages))
+                jobID: jobID,
+                StepUpdate(name: name, status: status, at: Date(), detail: detail.map(masker.mask), stages: stages))
         } catch {
             logger.warning("could not report step \(name) as \(status.rawValue): \(error)", metadata: ["job": "\(jobID)"])
         }

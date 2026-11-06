@@ -116,22 +116,27 @@ public struct VMLauncher: Sendable {
         }
         let started = ContinuousClock.now
         if staleness == nil, let metadata {
+            try VMVolume.clone(slotDirectory.disk, to: job.disk)
+            try VMVolume.clone(slotDirectory.nvram, to: job.nvram)
+            let machine = try host.engine.make(try spec(image, metadata: metadata, disk: job.disk, nvram: job.nvram, share: job.share))
             do {
-                try VMVolume.clone(slotDirectory.disk, to: job.disk)
-                try VMVolume.clone(slotDirectory.nvram, to: job.nvram)
-                let machine = try host.engine.make(try spec(image, metadata: metadata, disk: job.disk, nvram: job.nvram, share: job.share))
-                do {
-                    try await machine.restore(from: slotDirectory.state)
-                } catch {
-                    await machine.stop()
-                    throw error
-                }
+                try await machine.restore(from: slotDirectory.state)
                 let address = try await waitForSSH(machine, mac: metadata.macAddress, user: user, image: image, deadline: restoreDeadline)
                 return RunningVM(
                     machine: machine, address: address,
                     note: "restored slot \(slot)'s saved state in \(Self.seconds(since: started))", slotIsStale: false)
-            } catch VMError.stateIncompatible(let detail) {
-                staleness = "the saved state did not restore: \(detail)"
+            } catch {
+                // Stopped on every path: the clone is deleted under it, and it would count against the two VMs.
+                await machine.stop()
+                if error is CancellationError { throw error }
+                if case VMError.tooManyVMs = error { throw error }
+                // A state that does not restore, or a guest that does not come back from it, would fail every job
+                // of the slot the same way: it goes, and this job cold-boots.
+                if case VMError.stateIncompatible(let detail) = error {
+                    staleness = "the saved state did not restore: \(detail)"
+                } else {
+                    staleness = "the restored VM did not come up: \(error)"
+                }
                 try? FileManager.default.removeItem(atPath: slotDirectory.state)
                 for file in [job.disk, job.nvram] { try? FileManager.default.removeItem(atPath: file) }
             }

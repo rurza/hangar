@@ -121,7 +121,7 @@ public struct BuildRepository: Sendable {
         try database.write { db in
             try db.execute(
                 sql: """
-                    UPDATE jobs SET status = 'assigned', machine_id = ?, assigned_at = ?
+                    UPDATE jobs SET status = 'assigned', machine_id = ?, assigned_at = ?, dispatched_at = NULL
                     WHERE id = ? AND status = 'queued'
                     """,
                 arguments: [machineID.uuidString, dbTime(date), jobID.uuidString])
@@ -135,11 +135,33 @@ public struct BuildRepository: Sendable {
         try database.write { db in
             try db.execute(
                 sql: """
-                    UPDATE jobs SET status = 'queued', machine_id = NULL, assigned_at = NULL
+                    UPDATE jobs SET status = 'queued', machine_id = NULL, assigned_at = NULL, dispatched_at = NULL
                     WHERE id = ? AND status = 'assigned'
                     """,
                 arguments: [jobID.uuidString])
             return db.changesCount == 1
+        }
+    }
+
+    /// True when this call handed the assigned job to its machine; false when it was handed out already, started, or
+    /// moved. The one claim per assignment that keeps `jobs/next` from giving a job out twice.
+    public func markDispatched(jobID: UUID, machineID: UUID, at date: Date) throws -> Bool {
+        try database.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE jobs SET dispatched_at = ?
+                    WHERE id = ? AND status = 'assigned' AND machine_id = ? AND dispatched_at IS NULL
+                    """,
+                arguments: [dbTime(date), jobID.uuidString, machineID.uuidString])
+            return db.changesCount == 1
+        }
+    }
+
+    /// When the job was handed to its machine in its current assignment; nil while it waits to be picked up.
+    public func dispatchedAt(jobID: UUID) throws -> Date? {
+        try database.read { db in
+            dbDate(try Double.fetchOne(
+                db, sql: "SELECT dispatched_at FROM jobs WHERE id = ?", arguments: [jobID.uuidString]))
         }
     }
 

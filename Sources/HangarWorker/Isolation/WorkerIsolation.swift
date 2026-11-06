@@ -778,6 +778,8 @@ public enum WorkerLaunchAgent {
                 <true/>
                 <key>KeepAlive</key>
                 <true/>
+                <key>ExitTimeOut</key>
+                <integer>\(WorkerLaunchDaemon.exitTimeout)</integer>
                 <key>LimitLoadToSessionType</key>
                 <string>Aqua</string>
                 <key>ProcessType</key>
@@ -798,9 +800,13 @@ public enum WorkerLaunchAgent {
 /// bootstrapped into the `system` domain. A daemon gets no login environment, so HOME, USER, LOGNAME and the PATH a
 /// launch agent gets are set here; `SessionCreate` gives it a security session of its own for the CI keychain, and
 /// `InitGroups` the user's groups. KeepAlive starts it again after an exit; the idle self-update re-execs in place.
+/// `ExitTimeOut` gives a stopping worker time to cancel its jobs, let a VM guest report (`VMJobRunner.cancelGrace`)
+/// and report each result, before launchd's SIGKILL; its default, 20 s, lost the results.
 public enum WorkerLaunchDaemon {
     public static let label = WorkerLaunchAgent.label
     public static let directory = "/Library/LaunchDaemons"
+    /// Seconds from SIGTERM to SIGKILL.
+    public static let exitTimeout = 120
 
     public static func plist(binary: String, user: String, home: String, logs: String) -> String {
         func escape(_ text: String) -> String {
@@ -842,6 +848,8 @@ public enum WorkerLaunchDaemon {
                 <true/>
                 <key>KeepAlive</key>
                 <true/>
+                <key>ExitTimeOut</key>
+                <integer>\(exitTimeout)</integer>
                 <key>ProcessType</key>
                 <string>Standard</string>
                 <key>StandardOutPath</key>

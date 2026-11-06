@@ -80,6 +80,43 @@ import Testing
         #expect(engine.machines.first?.calls == [.start, .stop])
     }
 
+    /// A restored guest that never answers SSH is stopped, and its slot's state goes: every later job would restore it
+    /// and fail the same way. This job cold-boots instead.
+    @Test func aRestoreThatNeverAnswersSSHStopsTheVMAndColdBoots() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        try fixture.saveSlot(0)
+        let engine = FakeEngine()
+        let runner = RecordingProcessRunner()
+        // SSH answers only once a VM was cold-booted.
+        runner.script(
+            { $0.executable == "/usr/bin/ssh" && !engine.machines.contains { $0.calls.contains(.start) } }, lines: [],
+            exitCode: 255)
+        var launcher = Self.launcher(fixture, engine, runner: runner)
+        launcher.restoreDeadline = .milliseconds(200)
+        let slot = try fixture.image().directory.slot(0)
+        let vm = try await launcher.bootJob(image: try fixture.image(), slot: 0, job: fixture.storage.job(UUID()), user: "builder")
+
+        #expect(engine.machines.map(\.calls) == [[.restore(slot.state), .stop], [.start]])
+        #expect(!FileManager.default.fileExists(atPath: slot.state))
+        #expect(vm.slotIsStale)
+        #expect(vm.note.contains("cold-booted") && vm.note.contains("did not come up"))
+    }
+
+    /// Two macOS VMs already run: the job waits for room (`bootWaitingForRoom`), and the slot's state is kept.
+    @Test func aRestoreRefusedForWantOfRoomKeepsTheState() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        try fixture.saveSlot(0)
+        let engine = FakeEngine(restoreErrors: [.tooManyVMs])
+        await #expect(throws: VMError.tooManyVMs) {
+            try await Self.launcher(fixture, engine).bootJob(
+                image: try fixture.image(), slot: 0, job: fixture.storage.job(UUID()), user: "builder")
+        }
+        #expect(engine.machines.map(\.calls) == [[.restore(try fixture.image().directory.slot(0).state), .stop]])
+        #expect(FileManager.default.fileExists(atPath: try fixture.image().directory.slot(0).state))
+    }
+
     @Test func preparingASlotGivesItItsOwnIdentityAndSavesItsState() async throws {
         let fixture = try VMFixture()
         defer { fixture.cleanUp() }
@@ -405,6 +442,28 @@ struct ImmediateClock: Clock {
         #expect(!report.ownIdentity)
         try identity.save(p12: Data("p12".utf8), password: SensitiveText("pw"))
         #expect(doctor.report(runningJobs: 0).ownIdentity)
+    }
+
+    /// With VM builds on, the host's keychain signs nothing: the heartbeat neither unlocks it nor runs codesign, and
+    /// reports no signing problem.
+    @Test func aVMHostSkipsTheKeychainProbes() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        let keychain = try CIKeychainTests.Fixture()
+        defer { keychain.cleanUp() }
+        let runner = DoctorTests.scriptedRunner()
+        runner.script(DoctorTests.isFindIdentity, lines: [DoctorTests.identityLine])
+        let vm = VMDoctor(host: fixture.host(FakeEngine()), identity: VMIdentityStore(dataDirectory: fixture.root),
+            networkFilterProblem: { nil })
+        let report = await Doctor(
+            runner: runner, locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: "/nonexistent"),
+            dataDirectory: NSTemporaryDirectory(), keychain: keychain.keychain, vm: vm
+        ).report(runningJobIDs: [])
+        #expect(report.vm?.slots == 1)
+        #expect(report.headless == true)
+        #expect(report.keychainProblem == nil && report.signingIdentities.isEmpty)
+        #expect(!runner.commands.contains { $0.standardInput != nil })
+        #expect(!runner.commands.contains { DoctorTests.isFindIdentity($0) || $0.executable.hasSuffix("codesign") })
     }
 
     @Test func aBaseImageAloneIsNotEnough() throws {

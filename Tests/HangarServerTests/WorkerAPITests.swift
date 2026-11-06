@@ -110,6 +110,34 @@ final class ManualNow: Sendable {
         }
     }
 
+    /// A worker with a free slot polls again while its first job still prepares (a VM boots): it gets the next job,
+    /// never the same one again. A job that went back to the queue and was assigned anew is handed out once more.
+    @Test func nextHandsEachAssignmentOutOnce() async throws {
+        let setup = try await Setup()
+        let server = setup.fixture.server
+        try await setup.fixture.test { client in
+            var handed: [UUID] = []
+            for _ in 0..<2 {
+                handed.append(try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) {
+                    try decode(JobAssignment.self, $0).job.id
+                })
+            }
+            #expect(Set(handed) == Set(setup.build.jobs.map(\.id)))
+            try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) { response in
+                #expect(response.status == .noContent)
+            }
+
+            let first = handed[0]
+            #expect(try server.builds.unassign(jobID: first))
+            #expect(try server.builds.dispatchedAt(jobID: first) == nil)
+            #expect(try server.builds.assign(jobID: first, to: setup.machine.id, at: Self.t0))
+            let again = try await client.execute(uri: "/api/v1/worker/jobs/next?wait=0", method: .get, headers: setup.auth) {
+                try decode(JobAssignment.self, $0).job.id
+            }
+            #expect(again == first)
+        }
+    }
+
     @Test func nextReturnsAssignmentWithResolvedSecrets() async throws {
         let setup = try await Setup()
         let server = setup.fixture.server

@@ -39,6 +39,9 @@ public struct JobRunner: Sendable {
     private let keychain: CIKeychain?
     /// The first line of the `checkout` step's log, before anything else is prepared: how a job's VM came up.
     private let preparationNote: String?
+    /// A job still running after this is stopped, as a worker stop is, with the timeout as its reason. Nil: none (in
+    /// a VM, whose host enforces its own).
+    private let jobTimeout: Duration?
     private let logger = Logger(label: "app.hangar.worker.job")
 
     public init(
@@ -50,8 +53,10 @@ public struct JobRunner: Sendable {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
         },
         keychain: CIKeychain? = nil,
-        preparationNote: String? = nil
+        preparationNote: String? = nil,
+        jobTimeout: Duration? = nil
     ) {
+        self.jobTimeout = jobTimeout
         self.keychain = keychain
         self.preparationNote = preparationNote
         self.connection = connection
@@ -89,9 +94,16 @@ public struct JobRunner: Sendable {
         let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
         let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock, fullLogPath: layout.fullLog)
         let materializer = SecretsMaterializer(directory: layout.secrets)
+        // What the job's scripts leave running (`./mock-server &`) lives until the job ends, as in an Xcode Cloud VM.
+        let leftovers = ProcessGroups()
 
         do {
             try await connection.start(jobID: jobID)
+        } catch ServerConnectionError.status(409, _, _) {
+            // Started elsewhere, moved or ended: the job is not this run's, and a finish could fail the copy that
+            // does run it.
+            logger.error("the server would not start the job here; leaving it alone", metadata: ["job": "\(jobID)"])
+            return JobResult(status: .failed, failureReason: "start: the server no longer has this job for this machine")
         } catch {
             logger.error("could not start job: \(error)", metadata: ["job": "\(jobID)"])
             let result = JobResult(status: .failed, failureReason: masker.mask("start: \(error)"))
@@ -101,8 +113,22 @@ public struct JobRunner: Sendable {
 
         await reportInfo(jobID: jobID, JobRunInfo(workerVersion: Self.workerVersion))
 
+        // The timeout stops the job the way a worker stop does: the step it was in ends, and the job says why.
+        let timedOut = Captured(false)
+        let timer = jobTimeout.map { timeout in
+            Task { [clock] in
+                guard (try? await clock.sleep(for: timeout)) != nil else { return }
+                timedOut.set(true)
+            }
+        }
+        defer { timer?.cancel() }
+        let overdue: @Sendable () -> Bool = { timedOut.get() }
+        let timeoutReason = jobTimeout.map { [machineName] in
+            "the job ran longer than \($0.components.seconds / 60) min, the job timeout on \(machineName)"
+        }
         var pipeline = JobPipeline(
-            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason)
+            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: { cancelled() || overdue() },
+            stopReason: { stopReason() ?? (overdue() ? timeoutReason : nil) }, masker: masker)
         let prepared = await pipeline.step(StepName.checkout) { [self] in
             let prepared = try await prepare(assignment, layout: layout, materializer: materializer, log: log.lines(StepName.checkout))
             try await Checkout(runner: runner, layout: layout).run(
@@ -114,7 +140,8 @@ public struct JobRunner: Sendable {
         var outputs: [String: String] = [:]
         if let prepared {
             outputs = await build(
-                assignment, prepared: prepared, layout: layout, log: log, masker: masker, pipeline: &pipeline)
+                assignment, prepared: prepared, layout: layout, log: log, masker: masker, leftovers: leftovers,
+                pipeline: &pipeline)
         } else {
             let sequence = StepName.sequence(
                 for: assignment.job.action, postActions: assignment.workflow.postActions.map(\.name))
@@ -131,7 +158,8 @@ public struct JobRunner: Sendable {
         }
 
         await pipeline.report(StepName.cleanup, .running)
-        let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
+        let cleanedUp = await cleanup(
+            layout: layout, materializer: materializer, leftovers: leftovers, log: log.lines(StepName.cleanup))
         await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
         await log.finalFlush()
 
@@ -317,14 +345,14 @@ public struct JobRunner: Sendable {
     /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs.
     private func build(
         _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog, masker: SecretMasker,
-        pipeline: inout JobPipeline
+        leftovers: ProcessGroups, pipeline: inout JobPipeline
     ) async -> [String: String] {
         let workflow = assignment.workflow
         let action = assignment.job.action
         let environment = prepared.environment
         let projectDirectory = workflow.projectDirectory
         let scripts = layout.repository + (projectDirectory == "." ? "" : "/" + projectDirectory) + "/ci_scripts"
-        let hooks = HookRunner(runner: runner)
+        let hooks = HookRunner(runner: runner, leftovers: leftovers)
         let archivePath = layout.archive(scheme: action.scheme)
         let absent: (HookOutcome) -> Bool = { $0 == .absent }
 
@@ -469,7 +497,10 @@ public struct JobRunner: Sendable {
 
     /// Wipes the secrets, cleans the repository and removes the job directory. Every problem is logged and the rest
     /// still runs; returns whether all of it worked.
-    private func cleanup(layout: WorkspaceLayout, materializer: SecretsMaterializer, log: @escaping @Sendable (String) -> Void) async -> Bool {
+    private func cleanup(
+        layout: WorkspaceLayout, materializer: SecretsMaterializer, leftovers: ProcessGroups,
+        log: @escaping @Sendable (String) -> Void
+    ) async -> Bool {
         var succeeded = true
         func attempt(_ what: String, _ body: () async throws -> Void) async {
             do { try await body() } catch {
@@ -477,6 +508,9 @@ public struct JobRunner: Sendable {
                 succeeded = false
             }
         }
+        // First: they hold the job's secrets in their environment, and may still write to the workspace.
+        let stopped = await leftovers.stopAll()
+        if stopped > 0 { log("stopped what ci_scripts left running (\(stopped) process group\(stopped == 1 ? "" : "s"))") }
         await attempt("wipe secrets") { try materializer.wipe() }
         if FileManager.default.fileExists(atPath: layout.repository) {
             await attempt("clean the repository") {

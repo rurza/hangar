@@ -13,6 +13,8 @@
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ExitTimeOut</key>
+    <integer>120</integer>
     <key>LimitLoadToSessionType</key>
     <string>Aqua</string>
     <key>ProcessType</key>

@@ -22,12 +22,14 @@ public enum HookError: Error, Equatable, CustomStringConvertible {
 }
 
 /// Runs a repository's Xcode Cloud `ci_scripts` hooks the way Xcode Cloud does: from inside `ci_scripts`, with the
-/// given environment and nothing else.
+/// given environment and nothing else. What a hook leaves running goes to `leftovers`, to be stopped with the job.
 public struct HookRunner: Sendable {
     private let runner: any ProcessRunner
+    private let leftovers: ProcessGroups?
 
-    public init(runner: any ProcessRunner) {
+    public init(runner: any ProcessRunner, leftovers: ProcessGroups? = nil) {
         self.runner = runner
+        self.leftovers = leftovers
     }
 
     /// `scriptsDirectory` is `<repository>/<projectDirectory>/ci_scripts`. A missing hook (or a directory with its
@@ -44,11 +46,13 @@ public struct HookRunner: Sendable {
         let command: ProcessCommand
         if FileManager.default.isExecutableFile(atPath: script) {
             command = ProcessCommand(
-                executable: script, arguments: [], environment: environment, currentDirectory: scriptsDirectory)
+                executable: script, arguments: [], environment: environment, currentDirectory: scriptsDirectory,
+                leftovers: leftovers)
         } else {
             log("warning: ci_scripts/\(hook.rawValue) is not executable; running it with /bin/sh (Xcode Cloud requires chmod +x)")
             command = ProcessCommand(
-                executable: "/bin/sh", arguments: [script], environment: environment, currentDirectory: scriptsDirectory)
+                executable: "/bin/sh", arguments: [script], environment: environment, currentDirectory: scriptsDirectory,
+                leftovers: leftovers)
         }
         let outcome = try await runner.run(command, onLine: log)
         guard outcome.exitCode == 0 else { throw HookError.failed(hook: hook, exitCode: outcome.exitCode) }

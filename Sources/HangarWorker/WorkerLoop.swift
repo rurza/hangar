@@ -43,7 +43,8 @@ public struct LiveWorkerUpdater: WorkerUpdating {
 ///
 /// `stop(reason:)` (SIGTERM) stops asking for jobs, raises the cancel flag of every running job with the reason, and
 /// returns from `run()` once they have reported their result and cleaned up. A long poll in flight is cancelled: a job
-/// the server assigned meanwhile stays assigned there and is handed to the worker's next run.
+/// the server assigned meanwhile stays assigned there, and goes to the worker's next run (once a heartbeat no longer
+/// lists it, if the poll had already been handed it).
 ///
 /// A worker update only re-executes while nothing runs and no poll is in flight: polling pauses while the update
 /// downloads, the poll in flight is cancelled and waited for, and a job it still brought back is run instead (the
@@ -238,7 +239,7 @@ public actor WorkerLoop {
                 case .success(let assignment?):
                     backoff.reset()
                     if stopReason != nil {
-                        // It stays assigned on the server and goes to the worker's next run.
+                        // It stays assigned on the server, which requeues it once a heartbeat no longer lists it.
                         logger.info("not starting a job while stopping", metadata: ["job": "\(assignment.job.id)"])
                     } else {
                         running += 1

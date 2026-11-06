@@ -11,17 +11,36 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
     public var workDirectory: String?
     /// VM builds (VM builds design): set, every job runs in a fresh macOS VM and none on the host. Nil: host builds.
     public var vm: VMSettings?
+    /// How long a job on the host may run before it is stopped. Nil: `defaultJobTimeoutMinutes`. VM jobs use
+    /// `vm.jobTimeoutMinutes`.
+    public var jobTimeoutMinutes: Int?
+
+    public static let defaultJobTimeoutMinutes = VMSettings.defaultJobTimeoutMinutes
 
     public init(
         serverURL: URL, token: String, maxConcurrentJobs: Int = 1, dataDirectory: String, workDirectory: String? = nil,
-        vm: VMSettings? = nil
+        vm: VMSettings? = nil, jobTimeoutMinutes: Int? = nil
     ) {
+        self.jobTimeoutMinutes = jobTimeoutMinutes
         self.vm = vm
         self.serverURL = serverURL
         self.token = token
         self.maxConcurrentJobs = maxConcurrentJobs
         self.dataDirectory = dataDirectory
         self.workDirectory = workDirectory
+    }
+
+    /// What `hangar-worker setup` writes: the server, token and data directory given, over what `existing` set up on
+    /// this Mac. Its work directory, job limit, job timeout and VM builds stay unless replaced: re-running setup (the installer's
+    /// re-enroll) must not quietly turn VM builds off and put the Mac back to building on the host.
+    public static func setup(
+        serverURL: URL, token: String, maxConcurrentJobs: Int?, dataDirectory: String, workDirectory: String?,
+        existing: WorkerConfiguration?
+    ) -> WorkerConfiguration {
+        WorkerConfiguration(
+            serverURL: serverURL, token: token, maxConcurrentJobs: maxConcurrentJobs ?? existing?.maxConcurrentJobs ?? 1,
+            dataDirectory: dataDirectory, workDirectory: workDirectory ?? existing?.workDirectory, vm: existing?.vm,
+            jobTimeoutMinutes: existing?.jobTimeoutMinutes)
     }
 
     /// The work directory in use: the configured one, else `defaultWorkDirectory(for:home:)`.
@@ -62,7 +81,11 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
         dataDirectory = try container.decode(String.self, forKey: .dataDirectory)
         workDirectory = try container.decodeIfPresent(String.self, forKey: .workDirectory)
         vm = try container.decodeIfPresent(VMSettings.self, forKey: .vm)
+        jobTimeoutMinutes = try container.decodeIfPresent(Int.self, forKey: .jobTimeoutMinutes)
     }
+
+    /// The host job timeout in use.
+    public var jobTimeout: Duration { .seconds(max(jobTimeoutMinutes ?? Self.defaultJobTimeoutMinutes, 1) * 60) }
 
     public struct LoadError: Error, CustomStringConvertible, Equatable {
         public var description: String

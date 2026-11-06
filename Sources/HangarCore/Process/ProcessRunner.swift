@@ -12,11 +12,15 @@ public struct ProcessCommand: Sendable, Equatable {
     /// Written to the child's standard input, which is then closed; nil gives it /dev/null. For a password a tool
     /// would otherwise take on its command line (`security -i`).
     public var standardInput: SensitiveText?
+    /// Where the child's process group goes when processes of it outlive the child (a script's `server &`), to be
+    /// stopped with the job.
+    public var leftovers: ProcessGroups?
 
     public init(
         executable: String, arguments: [String], environment: [String: String] = [:], currentDirectory: String? = nil,
-        discardsStandardError: Bool = false, standardInput: SensitiveText? = nil
+        discardsStandardError: Bool = false, standardInput: SensitiveText? = nil, leftovers: ProcessGroups? = nil
     ) {
+        self.leftovers = leftovers
         self.executable = executable
         self.arguments = arguments
         self.environment = environment
@@ -44,16 +48,55 @@ public protocol ProcessRunner: Sendable {
     func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome
 }
 
+/// Process groups whose leader exited while other processes of them still ran: what a job's scripts left behind.
+/// `Process` starts every child in a process group of its own, so a group is the child and what it started.
+public final class ProcessGroups: Sendable, Equatable {
+    private let groups = Mutex<[pid_t]>([])
+
+    public init() {}
+
+    func add(_ group: pid_t) { groups.withLock { $0.append(group) } }
+
+    /// Sends SIGTERM to every group that still has a process, then SIGKILL to those still there after `grace`.
+    /// Returns how many groups had processes left.
+    @discardableResult
+    public func stopAll(grace: Duration = .seconds(2)) async -> Int {
+        let alive = groups.withLock { groups in
+            defer { groups.removeAll() }
+            return groups
+        }.filter(Self.hasProcesses)
+        guard !alive.isEmpty else { return 0 }
+        for group in alive { kill(-group, SIGTERM) }
+        let deadline = ContinuousClock.now + grace
+        while ContinuousClock.now < deadline, alive.contains(where: Self.hasProcesses) {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        for group in alive where Self.hasProcesses(group) { kill(-group, SIGKILL) }
+        return alive.count
+    }
+
+    static func hasProcesses(_ group: pid_t) -> Bool { kill(-group, 0) == 0 }
+
+    public static func == (lhs: ProcessGroups, rhs: ProcessGroups) -> Bool { lhs === rhs }
+}
+
 /// Runs a real child process with Foundation `Process`.
 ///
 /// An executable that is not an absolute path is resolved through `/usr/bin/env` using the child's own `PATH`.
-/// On task cancellation the child gets SIGTERM, then SIGKILL after a grace period, and `CancellationError` is thrown.
+/// On task cancellation the child's process group gets SIGTERM, then SIGKILL after a grace period, and
+/// `CancellationError` is thrown.
+///
+/// After the child exits, the pipe is read to its end, but a process the child left running that keeps it open
+/// cannot hold the run: it ends once the pipe sat waiting for output for `drainLimit` in all, or brought more than
+/// can have been buffered at the exit.
 public struct LiveProcessRunner: ProcessRunner {
-    public init() {}
+    let drainLimit: Duration
+
+    public init(drainLimit: Duration = .seconds(5)) { self.drainLimit = drainLimit }
 
     public func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
         try Task.checkCancellation()
-        let session = Session()
+        let session = Session(drainLimit: drainLimit)
         let outcome = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 session.start(command, onLine: onLine, continuation: continuation)
@@ -85,9 +128,19 @@ extension LiveProcessRunner {
             var delivering = false
             /// Set once the idle cap gave up on the pipe; later chunks are ignored.
             var abandoned = false
+            /// After the exit: bytes read, time the pipe sat waiting between deliveries, and when the last one ended.
+            var drainedBytes = 0
+            var drainWaited = Duration.zero
+            var lastDelivered: ContinuousClock.Instant?
+            var leftovers: ProcessGroups?
         }
 
+        /// More than a pipe buffers: output read after the exit beyond this comes from a process still running.
+        private static let drainByteLimit = 1 << 20
+        private let drainLimit: Duration
         private let state = Mutex(State())
+
+        init(drainLimit: Duration) { self.drainLimit = drainLimit }
 
         var wasCancelled: Bool { state.withLock { $0.cancelled } }
 
@@ -119,6 +172,7 @@ extension LiveProcessRunner {
                 $0.readHandle = handle
                 $0.onLine = onLine
                 $0.continuation = continuation
+                $0.leftovers = command.leftovers
             }
             handle.readabilityHandler = { [self] handle in
                 receive(handle.availableData)
@@ -152,11 +206,14 @@ extension LiveProcessRunner {
                 state.cancelled = true
                 return state.process
             }
-            guard let process, process.isRunning else { return }
-            process.terminate()
+            // The whole group, so what the child started stops too; also once the child has exited and only those
+            // keep the pipe open.
+            guard let process, process.processIdentifier > 0 else { return }
+            let group = process.processIdentifier
+            kill(-group, SIGTERM)
             // SIGKILL after a 2 s grace period if SIGTERM was ignored.
             DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(2)) {
-                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                if ProcessGroups.hasProcesses(group) { kill(-group, SIGKILL) }
             }
         }
 
@@ -167,6 +224,10 @@ extension LiveProcessRunner {
             let batch = state.withLock { state -> (lines: [String], onLine: @Sendable (String) -> Void)? in
                 guard state.continuation != nil, !state.abandoned, let onLine = state.onLine else { return nil }
                 state.delivering = true
+                if state.exitCode != nil, !data.isEmpty {
+                    state.drainedBytes += data.count
+                    if let last = state.lastDelivered { state.drainWaited += last.duration(to: .now) }
+                }
                 var lines: [String] = []
                 if data.isEmpty {
                     state.readHandle?.readabilityHandler = nil
@@ -183,22 +244,34 @@ extension LiveProcessRunner {
             }
             guard let batch else { return }
             batch.lines.forEach(batch.onLine)
-            state.withLock { state in
+            let rest = state.withLock { state -> Abandoned? in
                 state.delivering = false
                 if data.isEmpty {
                     state.reachedEOF = true
                     finishIfDone(&state)
                 } else if state.exitCode != nil {
+                    // A process the child left running keeps writing: the run does not wait for it.
+                    if state.drainedBytes > Self.drainByteLimit || state.drainWaited > drainLimit {
+                        return abandon(&state)
+                    }
+                    state.lastDelivered = .now
                     // Measured from the end of delivery, so the cap only counts time the pipe sat idle.
                     armIdleTimer(&state)
                 }
+                return nil
             }
+            if let rest { finish(rest) }
         }
 
         private func terminated(_ status: Int32) {
             state.withLock { state in
                 guard state.continuation != nil else { return }
                 state.exitCode = status
+                // Processes of its group that outlive it are stopped with the job.
+                if let process = state.process, ProcessGroups.hasProcesses(process.processIdentifier) {
+                    state.leftovers?.add(process.processIdentifier)
+                }
+                if !state.delivering { state.lastDelivered = .now }
                 finishIfDone(&state)
                 if state.continuation != nil { armIdleTimer(&state) }
             }
@@ -211,24 +284,35 @@ extension LiveProcessRunner {
             current.idleGeneration += 1
             let generation = current.idleGeneration
             DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(1)) { [self] in
-                let batch = state.withLock { state -> (tail: String, onLine: @Sendable (String) -> Void)? in
-                    guard state.continuation != nil, state.idleGeneration == generation, !state.delivering,
-                        let onLine = state.onLine
-                    else { return nil }
-                    state.abandoned = true
-                    state.delivering = true
-                    state.readHandle?.readabilityHandler = nil
-                    let tail = takePartialLine(&state)
-                    if let tail { state.lines.append(tail) }
-                    return (tail ?? "", onLine)
+                let rest = state.withLock { state -> Abandoned? in
+                    guard state.idleGeneration == generation, !state.delivering else { return nil }
+                    return abandon(&state)
                 }
-                guard let batch else { return }
-                if !batch.tail.isEmpty { batch.onLine(batch.tail) }
-                state.withLock { state in
-                    state.delivering = false
-                    state.reachedEOF = true
-                    finishIfDone(&state)
-                }
+                if let rest { finish(rest) }
+            }
+        }
+
+        /// The partial line left when the pipe is given up on, and who gets it.
+        private typealias Abandoned = (tail: String?, onLine: @Sendable (String) -> Void)
+
+        /// Stops reading the pipe; later chunks are ignored. Nil when the run has ended already.
+        private func abandon(_ state: inout State) -> Abandoned? {
+            guard state.continuation != nil, let onLine = state.onLine else { return nil }
+            state.abandoned = true
+            state.delivering = true
+            state.readHandle?.readabilityHandler = nil
+            let tail = takePartialLine(&state)
+            if let tail { state.lines.append(tail) }
+            return (tail, onLine)
+        }
+
+        /// Delivers what `abandon` left, outside the lock, then ends the run.
+        private func finish(_ rest: Abandoned) {
+            if let tail = rest.tail, !tail.isEmpty { rest.onLine(tail) }
+            state.withLock { state in
+                state.delivering = false
+                state.reachedEOF = true
+                finishIfDone(&state)
             }
         }
 

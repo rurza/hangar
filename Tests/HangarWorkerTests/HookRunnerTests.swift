@@ -47,6 +47,23 @@ import Testing
         #expect(lines.all.isEmpty)
     }
 
+    /// `./mock-server &` in a hook keeps running for the steps after it, as on Xcode Cloud, until the job stops it.
+    @Test func whatAHookLeavesRunningLastsUntilTheJobStopsIt() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        try fixture.write(.preXcodebuild, "sleep 30 >/dev/null 2>&1 &\necho $!", permissions: 0o755)
+        let lines = LineSink()
+        let leftovers = ProcessGroups()
+        let outcome = try await HookRunner(runner: LiveProcessRunner(), leftovers: leftovers).run(
+            .preXcodebuild, scriptsDirectory: fixture.scripts, environment: Self.environment
+        ) { lines.append($0) }
+        #expect(outcome == .ran)
+        let server = try #require(lines.all.first.flatMap { pid_t($0) })
+        #expect(kill(server, 0) == 0)
+        #expect(await leftovers.stopAll() == 1)
+        #expect(kill(server, 0) != 0)
+    }
+
     @Test func runsWithCwdInCiScriptsAndEnv() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
