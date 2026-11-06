@@ -24,9 +24,19 @@ export function scopeLabel(value) {
   return SCOPES.find((scope) => scope.value === value)?.label ?? value;
 }
 
-/** The command that registers `hangar mcp` with Claude Code for this server and token. */
-export function claudeCommand(origin, secret) {
-  return `claude mcp add hangar --scope user --env HANGAR_SERVER=${origin} --env HANGAR_API_TOKEN=${secret} -- hangar mcp`;
+/** Where the commands below keep the agent's token. */
+const TOKEN_FILE = '~/.config/hangar/mcp-token';
+
+/**
+ * The commands that register `hangar mcp` with Claude Code for this server. The token never appears in them: the
+ * first asks for it without echoing and saves it to a private file, and Claude Code gets the file's path. A token on
+ * a command line would stay in the shell history and in Claude Code's settings.
+ */
+export function claudeCommand(origin) {
+  return [
+    `mkdir -p ~/.config/hangar && (umask 077; printf 'Paste the token: '; read -rs t; echo; printf '%s\\n' "$t" > ${TOKEN_FILE})`,
+    `claude mcp add hangar --scope user --env HANGAR_SERVER=${origin} --env HANGAR_API_TOKEN_FILE="$HOME/.config/hangar/mcp-token" -- hangar mcp`,
+  ].join('\n');
 }
 
 /** The token list with New Token and Revoke. `signal` (optional) cancels loading when the page is left. */
@@ -140,7 +150,7 @@ export function agentTokensEditor({ signal } = {}) {
 
 /** Shows the new token's secret, once, with the command that connects Claude Code. */
 function openSecretSheet({ token, secret }) {
-  const command = claudeCommand(location.origin, secret);
+  const command = claudeCommand(location.origin);
   const secretBlock = h('pre', { class: 'code-block token-block', tabindex: '0', 'aria-label': 'Token' }, h('code', null, secret));
   const commandBlock = h('pre', { class: 'code-block token-block', tabindex: '0', 'aria-label': 'Claude Code command' },
     h('code', null, command));
@@ -180,8 +190,9 @@ function openSecretSheet({ token, secret }) {
           h('span', { class: 'field-label' }, 'Connect Claude Code'),
           button('Copy Command', { kind: 'plain', class: 'button button-plain button-small', onClick: () => copy(command, commandBlock, 'command') })),
         h('p', { class: 'field-hint' },
-          'Run it on the Mac where Claude Code runs, with hangar on its PATH. Other agents start hangar mcp with '
-          + 'HANGAR_SERVER and HANGAR_API_TOKEN set.'),
+          'Run these in Terminal on the Mac where Claude Code runs, with hangar on its PATH. When asked, paste the '
+          + 'token (Copy Token above): it is saved to a private file, so it stays out of your shell history. Other '
+          + 'agents start hangar mcp with HANGAR_SERVER and HANGAR_API_TOKEN_FILE set.'),
         commandBlock)),
     actions: [{ label: 'Done', kind: 'primary' }],
   });
