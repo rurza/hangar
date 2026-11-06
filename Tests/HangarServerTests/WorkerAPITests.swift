@@ -1,5 +1,6 @@
 import Clocks
 import Foundation
+import HangarAppStoreConnect
 import HangarCore
 import Hummingbird
 import HummingbirdTesting
@@ -38,9 +39,12 @@ final class ManualNow: Sendable {
 
         init(
             clock: any Clock<Duration> = ContinuousClock(), now: @escaping @Sendable () -> Date = { WorkerAPITests.t0 },
-            assign: Bool = true, workflow: String = "testflight", workerBinaryPath: String? = nil
+            assign: Bool = true, workflow: String = "testflight", workerBinaryPath: String? = nil,
+            appStoreConnectFactory: (@Sendable (ASCCredentials) -> any AppStoreConnectClient)? = nil
         ) async throws {
-            fixture = try APIFixture(clock: clock, now: now, workerBinaryPath: workerBinaryPath)
+            fixture = try appStoreConnectFactory.map {
+                try APIFixture(clock: clock, appStoreConnectFactory: $0, now: now, workerBinaryPath: workerBinaryPath)
+            } ?? APIFixture(clock: clock, now: now, workerBinaryPath: workerBinaryPath)
             try fixture.createApp()
             (machine, token) = try fixture.server.machines.create(name: "studio")
             build = try await fixture.server.buildService.deploy(DeployRequest(app: "legilo", workflow: workflow, ref: "main"))

@@ -48,8 +48,8 @@ workflows both would cover), so a workflow never has two values at the same leve
 
 ## Reserved names
 
-The `HANGAR_*` names keep their rules: the App Store Connect key is global and set in Settings; `HANGAR_GITHUB_TOKEN`
-is global or per app. The server reads them without a workflow, so:
+The `HANGAR_*` names keep their rules: the App Store Connect key is set in Settings (since 2026-11-06 a server
+setting, not a variable); `HANGAR_GITHUB_TOKEN` is global or per app. The server reads them without a workflow, so:
 
 - a `HANGAR_*` app variable cannot be limited to workflows (`400` `reserved_variable`);
 - a group cannot hold a `HANGAR_*` name (`400` `reserved_variable`).
@@ -144,6 +144,26 @@ workflows, never values.
   values. It deviates from the MCP spec's "variables are not in scope": API tokens could already list variable names
   with any `GET`, and an agent reading an `undefined-variables` notice needs to see where a name is set. Changing
   variables stays outside every token scope.
+
+## Global secrets are opt-in per app (2026-11-06)
+
+Added after the security review of 2026-11-06 (C1): a global *secret* reached every job of every app.
+
+- **Plain globals stay inherited** by every app, as before.
+- **A global secret reaches only the apps that receive it** (`app_global_secrets (app_id, name)`). The app page's
+  **Global Secrets** section lists every global secret with Receive / Stop Receiving; `GET/PUT/DELETE
+  /apps/{id}/global-secrets[/{name}]` does the same (names only; no API token may change it).
+- **The precedence is unchanged** for what an app does get: layer 5 counts only a global secret the app receives.
+  An app variable or a linked group of the same name needs no grant and wins as before.
+- **Migration `v12`** grants every existing app every existing global secret, so nothing changes until someone
+  stops one. Afterwards a new global secret reaches no app until it is chosen; a plain global that becomes secret
+  keeps reaching every app that had it (all of them); deleting a global secret deletes its grants.
+- **The deploy check** names a global secret a script reads that the app does not receive, and says where to
+  choose it.
+- **Reserved names keep their rules.** The App Store Connect key is no longer a variable at all (`HANGAR_ASC_*` is
+  refused at every scope; it is a server setting, see the VM builds design, decision 23). `HANGAR_GITHUB_TOKEN`
+  is not opt-in: checkout needs it. The app's own variable wins, and the app page warns while jobs clone with the
+  global one and recommends a fine-grained, read-only token for the app's repository.
 
 ## Not in scope
 

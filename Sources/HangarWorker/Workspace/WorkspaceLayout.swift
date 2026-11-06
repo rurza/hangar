@@ -25,6 +25,8 @@ public struct WorkspaceLayout: Sendable, Equatable {
     public var repository: String { "\(workspace)/repository" }
     public var derivedData: String { "\(workspace)/DerivedData" }
     public var secrets: String { "\(jobDirectory)/secrets" }
+    /// The App Store Connect key's `.p8`, only while a step that uses it runs (`AppStoreConnectKeyFile`).
+    public var keyDirectory: String { "\(jobDirectory)/asc-key" }
     public var export: String { "\(jobDirectory)/export" }
     public var upload: String { "\(jobDirectory)/upload" }
     public var resultBundle: String { "\(jobDirectory)/result.xcresult" }

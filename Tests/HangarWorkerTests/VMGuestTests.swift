@@ -86,16 +86,27 @@ import Testing
         #expect(keychain.path == directory + "/kc/job.keychain-db")
         let inputs = runner.commands.compactMap(\.standardInput?.value)
         #expect(inputs.first == "create-keychain -p kcpw \"\(keychain.path)\"\n")
-        let importLine = try #require(inputs.first { $0.hasPrefix("import ") })
-        #expect(importLine.contains("-P \"id \\\"pw\\\"\""))
-        #expect(importLine.contains("-T /usr/bin/codesign"))
+        // The .p12 is split first: `-x` is ignored for a .p12, so the key is imported on its own.
+        let openssl = runner.commands.filter { $0.executable == "/usr/bin/openssl" }
+        #expect(openssl.map { Array($0.arguments.prefix(1)) } == [["pkcs12"], ["rsa"], ["pkcs12"]])
+        #expect(openssl.filter { $0.arguments.contains("-passin") }.allSatisfy {
+            $0.arguments.contains("stdin") && $0.standardInput?.value == "id \"pw\"\n"
+        })
+        let imports = inputs.filter { $0.hasPrefix("import ") }
+        #expect(imports.count == 2)
+        let key = try #require(imports.first)
+        #expect(key.contains("identity-key.pem") && key.contains("-t priv -f openssl -x -T /usr/bin/codesign\n"))
+        #expect(!imports.contains { $0.contains("/usr/bin/security") || $0.contains("-P ") })
+        #expect(imports.last?.contains("identity-certificates.pem\" -k") == true)
+        #expect(imports.last?.hasSuffix("-t cert -f pemseq\n") == true)
         #expect(inputs.contains { $0.hasPrefix("set-key-partition-list -S apple-tool:,apple:,codesign:") })
         #expect(runner.commands.contains { $0.arguments == ["set-keychain-settings", keychain.path] })
         #expect(runner.commands.contains { $0.arguments.starts(with: ["default-keychain", "-d", "user", "-s"]) })
         #expect(!runner.commands.contains { $0.arguments.joined().contains("kcpw") || $0.arguments.joined().contains("pw\"") })
-        // The .p12 does not outlive the import.
-        #expect(!FileManager.default.fileExists(atPath: directory + "/kc/identity.p12"))
-        #expect(try FileManager.default.attributesOfItem(atPath: keychain.passwordFile)[.posixPermissions] as? Int == 0o600)
+        // Nothing but the keychain is left: no .p12, no key or certificate file, and no password file.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory + "/kc") == ["job.keychain-db"])
+        #expect(keychain.passwordFile.isEmpty)
+        #expect(try keychain.readPassword() == SensitiveText("kcpw"))
     }
 
     @Test func aTestJobGetsAKeychainWithoutAnIdentity() async throws {
@@ -178,12 +189,16 @@ import Testing
         let bundle = GuestJobBundle(
             assignment: assignment, token: "hgj_t", serverURL: URL(string: "http://127.0.0.1:8787")!, identity: nil,
             vmNote: "VM: restored slot 0's saved state in 4.5 s on mini", machineName: "mini (VM)")
-        let result = await GuestJobRunner(runner: runner, home: home).run(
+        let outcome = await GuestJobRunner(runner: runner, home: home).run(
             bundle, cancelled: { false }, stopReason: { nil },
             connection: { url, token in
                 made.withLock { $0 = (url, token) }
                 return connection
             })
+        guard case .finished(let result) = outcome else {
+            Issue.record("the guest handed off a job that failed at checkout")
+            return
+        }
         #expect(made.withLock { $0?.0 } == URL(string: "http://127.0.0.1:8787")!)
         #expect(made.withLock { $0?.1 } == "hgj_t")
         #expect(result.status == .failed)

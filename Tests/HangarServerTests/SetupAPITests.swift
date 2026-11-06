@@ -230,7 +230,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
             }
         }
         #expect(built.withLock { $0 } == 0)
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_ID") == nil)
+        #expect(try fixture.server.ascKeys.key(.main) == nil)
     }
 
     @Test func anIndividualKeyIsTestedThenSaved() async throws {
@@ -250,12 +250,9 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
                 #expect(try decode(SetupStatus.self, response).appStoreConnect == ASCKeyStatus(keyID: "F2MREDK7DC", issuerID: nil))
             }
         }
-        let summaries = try fixture.server.variables.summaries(scope: .global)
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_PATH") == pem)
-        #expect(summaries.first { $0.name == "HANGAR_ASC_KEY_PATH" }?.isSecret == true)
-        #expect(summaries.first { $0.name == "HANGAR_ASC_KEY_PATH" }?.asFile == true)
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_ID") == "F2MREDK7DC")
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_ISSUER_ID") == nil)
+        #expect(try fixture.server.ascKeys.key(.main) == AppStoreConnectKey(keyID: "F2MREDK7DC", issuerID: nil, privateKey: pem))
+        // A setting, not a variable: no job's environment gets it.
+        #expect(try fixture.server.variables.summaries(scope: .global).isEmpty)
     }
 
     @Test func aTeamKeyAsksForItsIssuerID() async throws {
@@ -273,7 +270,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
                 #expect(error.code == "issuer_required")
                 #expect(error.message.contains("Issuer ID"))
             }
-            #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_ID") == nil)
+            #expect(try fixture.server.ascKeys.key(.main) == nil)
             // A wrong issuer is a rejected key, not another request for one.
             try await client.execute(
                 uri: "/api/v1/setup/asc-keys/use", method: .post, headers: jsonHeaders,
@@ -290,8 +287,8 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
                 #expect(try decode(ASCKeyTestResult.self, response) == ASCKeyTestResult(kind: .team, keyID: "TEAM123456", appCount: 3))
             }
         }
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_ISSUER_ID") == "69a6de70-issuer")
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_ID") == "TEAM123456")
+        #expect(try fixture.server.ascKeys.key(.main)?.issuerID == "69a6de70-issuer")
+        #expect(try fixture.server.ascKeys.key(.main)?.keyID == "TEAM123456")
     }
 
     @Test func settingsSavesAnUploadedKeyOnlyAfterTestingIt() async throws {
@@ -306,7 +303,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
                 #expect(response.status == .badRequest)
                 #expect(try decode(APIError.self, response).code == "asc_key_rejected")
             }
-            #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_PATH") == nil)
+            #expect(try fixture.server.ascKeys.key(.main) == nil)
             try await client.execute(
                 uri: "/api/v1/settings/asc-key", method: .post, headers: jsonHeaders,
                 body: try body(SaveASCKeyRequest(keyID: "ABC123DEFG", privateKey: "not a key"))
@@ -322,7 +319,8 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
                 #expect(try decode(ASCKeyTestResult.self, response) == ASCKeyTestResult(kind: .individual, keyID: "ABC123DEFG", appCount: 3))
             }
         }
-        #expect(try fixture.server.variables.value(global: "HANGAR_ASC_KEY_ID") == "ABC123DEFG")
+        #expect(try fixture.server.ascKeys.key(.main)?.keyID == "ABC123DEFG")
+        #expect(try fixture.server.ascKeys.key(.main)?.issuerID == nil)
     }
 
     // MARK: GitHub

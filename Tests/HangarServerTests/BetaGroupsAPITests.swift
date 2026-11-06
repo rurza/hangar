@@ -28,9 +28,7 @@ import Testing
             LiveAppStoreConnectClient(credentials: credentials, transport: transport)
         })
         if configured {
-            for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY123"), ("HANGAR_ASC_ISSUER_ID", "issuer"), ("HANGAR_ASC_KEY_PATH", key)] {
-                try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-            }
+            try fixture.storeASCKey(keyID: "KEY123", issuerID: "issuer", privateKey: key)
         }
         try fixture.createApp()  // appStoreConnectAppID "42"
         return fixture

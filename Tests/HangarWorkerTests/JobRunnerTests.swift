@@ -131,11 +131,10 @@ private final class Shared<Value: Sendable>: Sendable {
                     postActions: [PostActionSpec(name: "testflight")]),
                 workflowName: "release", buildNumber: 311, commit: String(repeating: "a", count: 40), ref: "main",
                 environment: [
-                    EnvEntry(name: "HANGAR_ASC_KEY_ID", value: "KEY123"),
-                    EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: "issuer-1"),
-                    EnvEntry(name: "HANGAR_ASC_KEY_PATH", value: JobRunnerTests.pem, isSecret: true, asFile: true),
+                    EnvEntry(name: "SIGNING_NOTES", value: "notes", isSecret: true, asFile: true),
                     EnvEntry(name: "HANGAR_GITHUB_TOKEN", value: JobRunnerTests.githubToken, isSecret: true),
-                ])
+                ],
+                appStoreConnectKey: AppStoreConnectKey(keyID: "KEY123", issuerID: "issuer-1", privateKey: JobRunnerTests.pem))
         }
 
         var layout: WorkspaceLayout {
@@ -163,10 +162,8 @@ private final class Shared<Value: Sendable>: Sendable {
             }
         }
 
-        func run(
-            cancelled: @escaping @Sendable () -> Bool = { false }, stopReason: @escaping @Sendable () -> String? = { nil }
-        ) async -> JobResult {
-            let jobRunner = JobRunner(
+        func jobRunner(mode: JobRunner.Mode = .standard) -> JobRunner {
+            JobRunner(
                 connection: connection, runner: runner,
                 locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: applications),
                 dataDirectory: dataDirectory, temporaryRoot: temporaryRoot, machineName: "Studio", clock: clock,
@@ -174,8 +171,20 @@ private final class Shared<Value: Sendable>: Sendable {
                     credentials.update { $0.append(received) }
                     return appStoreConnect
                 },
-                keychain: keychain, jobTimeout: jobTimeout)
-            return await jobRunner.run(assignment, cancelled: cancelled, stopReason: stopReason)
+                keychain: keychain, jobTimeout: jobTimeout, mode: mode)
+        }
+
+        func run(
+            cancelled: @escaping @Sendable () -> Bool = { false }, stopReason: @escaping @Sendable () -> String? = { nil }
+        ) async -> JobResult {
+            await jobRunner().run(assignment, cancelled: cancelled, stopReason: stopReason)
+        }
+
+        /// As a VM guest runs it: the guest's copy of the assignment, which has no App Store Connect key.
+        func runGuest(_ signing: JobRunner.GuestSigning) async -> GuestRunOutcome {
+            var guestCopy = assignment
+            guestCopy.appStoreConnectKey = nil
+            return await jobRunner(mode: .guest(signing)).execute(guestCopy, cancelled: { false }, stopReason: { nil })
         }
 
         /// Runs while a ticker moves the test clock forward, for steps that wait on it.
@@ -222,10 +231,16 @@ private final class Shared<Value: Sendable>: Sendable {
         defer { fixture.removeAll() }
         // Whether the job's TMPDIR existed when the first hook ran.
         let temporaryExisted = Shared<Bool?>(nil)
+        // Whether the App Store Connect key's file existed while each hook and each xcodebuild ran.
+        let keyFileSeen = Shared<[String: Bool]>([:])
         fixture.runner.whenRunning { [layout = fixture.layout] command in
             if command.executable.hasSuffix("/" + Hook.postClone.rawValue) {
                 temporaryExisted.update { $0 = FileManager.default.fileExists(atPath: layout.temporary) }
             }
+            let name = command.executable.hasSuffix("xcodebuild")
+                ? command.arguments.first ?? "" : (command.executable as NSString).lastPathComponent
+            let exists = FileManager.default.fileExists(atPath: layout.keyDirectory + "/AuthKey_KEY123.p8")
+            keyFileSeen.update { $0[name] = ($0[name] ?? false) || exists }
         }
 
         let result = await fixture.run()
@@ -252,7 +267,8 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(postClone.environment["CI_BUILD_NUMBER"] == "311")
         #expect(postClone.environment["CI_WORKFLOW"] == "release")
         #expect(postClone.environment["CI_WORKFLOW_ID"] == "release")
-        #expect(postClone.environment["HANGAR_ASC_KEY_PATH"] == layout.secrets + "/HANGAR_ASC_KEY_PATH")
+        #expect(!postClone.environment.keys.contains { $0.hasPrefix("HANGAR_ASC_") })
+        #expect(!postClone.environment.values.contains { $0.contains(Self.pemBody) || $0.contains(layout.keyDirectory) })
         #expect(postClone.environment["DEVELOPER_DIR"] == fixture.applications + "/Xcode.app/Contents/Developer")
         #expect(postClone.environment["TMPDIR"] == fixture.temporaryRoot + "/" + fixture.assignment.job.id.uuidString)
         #expect(postClone.environment["TMPDIR"] == layout.temporary)
@@ -263,7 +279,12 @@ private final class Shared<Value: Sendable>: Sendable {
         let clone = try #require(fixture.command { $0.arguments.first == "clone" })
         #expect(clone.environment["HANGAR_GITHUB_TOKEN"] == Self.githubToken)
         let archive = try #require(fixture.command(Self.isArchive))
-        #expect(archive.arguments.contains(layout.secrets + "/HANGAR_ASC_KEY_PATH"))
+        #expect(archive.arguments.contains(layout.keyDirectory + "/AuthKey_KEY123.p8"))
+        // The key's file exists only while an xcodebuild step that uses it (or the TestFlight upload) runs.
+        let seen = keyFileSeen.get()
+        #expect(seen["archive"] == true && seen["-exportArchive"] == true)
+        for hook in Hook.allCases { #expect(seen[hook.rawValue] == false, "\(hook.rawValue) saw the key's file") }
+        #expect(seen["-resolvePackageDependencies"] == false)
         #expect(fixture.credentials.get().map(\.privateKeyPEM) == [Self.pem])
         #expect(fixture.credentials.get().map(\.keyID) == ["KEY123"])
 
@@ -416,6 +437,7 @@ private final class Shared<Value: Sendable>: Sendable {
         defer { fixture.removeAll() }
         try fixture.makeTestJob(.test(scheme: "DemoTests", platform: .macOS))
         fixture.assignment.environment = [EnvEntry(name: "HANGAR_GITHUB_TOKEN", value: Self.githubToken, isSecret: true)]
+        fixture.assignment.appStoreConnectKey = nil
 
         let result = await fixture.run()
 
@@ -487,7 +509,7 @@ private final class Shared<Value: Sendable>: Sendable {
     @Test func secretsWipedEvenOnFailure() async throws {
         let fixture = try Fixture()
         defer { fixture.removeAll() }
-        let keyFile = fixture.layout.secrets + "/HANGAR_ASC_KEY_PATH"
+        let keyFile = fixture.layout.secrets + "/SIGNING_NOTES"
         let probe = fixture.dataDirectory + "/probe"
         fixture.runner.whenRunning { command in
             // A second name for the key file's inode shows what the wipe left behind.
@@ -500,7 +522,7 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(result.status == .failed)
         #expect(!FileManager.default.fileExists(atPath: fixture.layout.secrets))
         let wiped = try Data(contentsOf: URL(fileURLWithPath: probe))
-        #expect(wiped.count == Self.pem.utf8.count)
+        #expect(wiped.count == "notes".utf8.count)
         #expect(wiped.allSatisfy { $0 == 0 })
         #expect(fixture.connection.status(of: "cleanup") == .succeeded)
     }
@@ -536,11 +558,15 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.logLines.contains("Xcode 27.2 not installed"))
     }
 
-    @Test(arguments: ["HANGAR_ASC_KEY_PATH", "HANGAR_ASC_KEY_ID"])
+    @Test(arguments: ["none", "privateKey", "keyID"])
     func missingASCKeyFailsBeforeCheckout(missing: String) async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        fixture.assignment.environment.removeAll { $0.name == missing }
+        switch missing {
+        case "none": fixture.assignment.appStoreConnectKey = nil
+        case "privateKey": fixture.assignment.appStoreConnectKey?.privateKey = ""
+        default: fixture.assignment.appStoreConnectKey?.keyID = ""
+        }
 
         let result = await fixture.run()
 
@@ -555,7 +581,7 @@ private final class Shared<Value: Sendable>: Sendable {
     @Test func individualKeyBuildsWithoutKeyArgumentsAndLogsIt() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        fixture.assignment.environment.removeAll { $0.name == "HANGAR_ASC_ISSUER_ID" }
+        fixture.assignment.appStoreConnectKey?.issuerID = nil
 
         let result = await fixture.run()
 
@@ -567,8 +593,8 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(xcodebuilds.filter { $0.arguments.contains("-allowProvisioningUpdates") }.count == 3)
         for command in xcodebuilds {
             #expect(!command.arguments.contains { $0.hasPrefix("-authenticationKey") })
-            #expect(!command.arguments.contains(fixture.layout.secrets + "/HANGAR_ASC_KEY_PATH"))
-            #expect(command.environment["HANGAR_ASC_KEY_PATH"] == nil)
+            #expect(!command.arguments.contains { $0.hasPrefix(fixture.layout.keyDirectory) })
+            #expect(!command.environment.keys.contains { $0.hasPrefix("HANGAR_ASC_") })
             #expect(!command.environment.values.contains { $0.contains(Self.pemBody) })
         }
         let notice = "No team API key; xcodebuild signs with the Xcode account on this Mac."
@@ -582,8 +608,7 @@ private final class Shared<Value: Sendable>: Sendable {
     @Test func emptyIssuerIsAnIndividualKey() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        fixture.assignment.environment.removeAll { $0.name == "HANGAR_ASC_ISSUER_ID" }
-        fixture.assignment.environment.append(EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: ""))
+        fixture.assignment.appStoreConnectKey?.issuerID = ""
 
         let result = await fixture.run()
 
@@ -672,7 +697,7 @@ private final class Shared<Value: Sendable>: Sendable {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
         try fixture.makeHeadless()
-        fixture.assignment.environment.removeAll { $0.name == "HANGAR_ASC_ISSUER_ID" }
+        fixture.assignment.appStoreConnectKey?.issuerID = nil
 
         let result = await fixture.run()
 
@@ -832,13 +857,14 @@ private final class Shared<Value: Sendable>: Sendable {
             #expect(command.environment["HANGAR_GITHUB_TOKEN"] == nil)
             #expect(command.environment["HANGAR_ASC_KEY_PATH"] == nil)
             #expect(!command.environment.values.contains { $0.contains(Self.githubToken) || $0.contains(Self.pemBody) })
-            #expect(command.environment["HANGAR_ASC_KEY_ID"] == "KEY123")
+            #expect(!command.environment.keys.contains { $0.hasPrefix("HANGAR_ASC_") })
             #expect(command.environment["CI_WORKFLOW"] == "release")
         }
         for hook in Hook.allCases {
             let command = try #require(fixture.hook(hook))
             #expect(command.environment["HANGAR_GITHUB_TOKEN"] == Self.githubToken)
-            #expect(command.environment["HANGAR_ASC_KEY_PATH"] == fixture.layout.secrets + "/HANGAR_ASC_KEY_PATH")
+            #expect(!command.environment.keys.contains { $0.hasPrefix("HANGAR_ASC_") })
+            #expect(!command.environment.values.contains { $0.contains(Self.pemBody) })
         }
     }
 
@@ -913,5 +939,156 @@ private final class Shared<Value: Sendable>: Sendable {
         defer { down.removeAll() }
         _ = await down.runTicking(cancelled: { false })
         #expect(down.connection.result?.status == .failed)
+    }
+}
+
+/// A VM archive is split: the guest archives with the server's profiles (or the development key) and hands off after
+/// post-xcodebuild; the host exports and uploads with the server's key (security review 2026-11-06, C1).
+extension JobRunnerTests {
+    private static let profile = JobProvisioningProfile(
+        bundleID: "com.acme.demo", name: "Hangar Development com.acme.demo 2026-11-06 0100", uuid: "1111-AAAA", isMac: false,
+        content: Data("profile".utf8))
+    private static let developmentKey = AppStoreConnectKey(keyID: "DEV1", issuerID: "issuer-1", privateKey: "-----BEGIN PRIVATE KEY-----\nDEVKEY\n-----END PRIVATE KEY-----\n")
+
+    @Test func aGuestArchiveSignsWithTheServersProfilesAndHandsOffWithoutAnyKey() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let outcome = await fixture.runGuest(JobRunner.GuestSigning(profiles: [Self.profile], notes: ["created development profile x"]))
+
+        let layout = fixture.layout
+        guard case .handOff(let handOff) = outcome else {
+            Issue.record("expected a hand-off, got \(outcome)")
+            return
+        }
+        #expect(handOff.archivePath == layout.archive(scheme: "Demo"))
+        #expect(handOff.resultBundlePath == layout.resultBundle)
+        #expect(handOff.testFlightDirectory == layout.repository + "/TestFlight")
+        #expect(handOff.fullLogPath == layout.fullLog)
+        let archive = try #require(fixture.command(Self.isArchive))
+        #expect(!archive.arguments.contains("-allowProvisioningUpdates"))
+        #expect(!archive.arguments.contains { $0.hasPrefix("-authenticationKey") })
+        let xcconfig = try #require(archive.arguments.firstIndex(of: "-xcconfig").map { archive.arguments[$0 + 1] })
+        let text = try String(contentsOfFile: xcconfig, encoding: .utf8)
+        #expect(text.contains("CODE_SIGN_STYLE = Manual\n"))
+        #expect(text.contains("PROVISIONING_PROFILE_SPECIFIER = $(HANGAR_PROFILE_$(PRODUCT_BUNDLE_IDENTIFIER:identifier))\n"))
+        #expect(text.contains("HANGAR_PROFILE_com_acme_demo = Hangar Development com.acme.demo 2026-11-06 0100\n"))
+        // No export in the guest, and post-xcodebuild without the exported product.
+        #expect(!fixture.runner.commands.contains { $0.arguments.contains("-exportArchive") })
+        let postXcodebuild = try #require(fixture.hook(.postXcodebuild))
+        #expect(postXcodebuild.environment["CI_XCODEBUILD_EXIT_CODE"] == "0")
+        #expect(postXcodebuild.environment["CI_APP_STORE_SIGNED_APP_PATH"] == nil)
+        #expect(fixture.connection.finalStatuses.map(\.name) == [
+            "checkout", "post-clone", "pre-xcodebuild", "archive", "stamp", "post-xcodebuild",
+        ])
+        #expect(fixture.connection.result == nil)
+        #expect(fixture.connection.uploads.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: layout.archive(scheme: "Demo")))
+        #expect(fixture.connection.logLines.contains("created development profile x"))
+        #expect(fixture.connection.logLines.contains { $0.contains("no App Store Connect key is in this VM") })
+        #expect(fixture.credentials.get().isEmpty)
+    }
+
+    @Test func aGuestArchiveWithAMissingProfileSignsWithTheDevelopmentKeyOnly() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let keyFileSeen = Shared<Bool>(false)
+        fixture.runner.whenRunning { [layout = fixture.layout] command in
+            if command.arguments.first == "archive" {
+                keyFileSeen.update { $0 = FileManager.default.fileExists(atPath: layout.keyDirectory + "/AuthKey_DEV1.p8") }
+            }
+        }
+        let outcome = await fixture.runGuest(JobRunner.GuestSigning(
+            developmentKey: Self.developmentKey, missing: [MissingProfile(bundleID: "com.acme.demo.widget", reason: "not registered")]))
+
+        guard case .handOff = outcome else { Issue.record("expected a hand-off, got \(outcome)"); return }
+        let archive = try #require(fixture.command(Self.isArchive))
+        #expect(archive.arguments.contains("-allowProvisioningUpdates"))
+        #expect(archive.arguments.contains("DEV1"))
+        #expect(!archive.arguments.contains("KEY123"))
+        #expect(keyFileSeen.get())
+        #expect(fixture.connection.logLines.contains("no development profile for com.acme.demo.widget: not registered"))
+        #expect(fixture.connection.logLines.contains { $0.contains("development key DEV1") })
+    }
+
+    @Test func aGuestArchiveThatFailsEndsInTheGuest() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.runner.recording.script(Self.isArchive, lines: ["error: nope"], exitCode: 65)
+        let outcome = await fixture.runGuest(JobRunner.GuestSigning(profiles: [Self.profile]))
+        guard case .finished(let result) = outcome else { Issue.record("expected the guest to finish, got \(outcome)"); return }
+        #expect(result.status == .failed)
+        #expect(fixture.connection.result == result)
+        #expect(fixture.connection.status(of: "export") == .skipped)
+        #expect(fixture.connection.status(of: "post-action:testflight") == .skipped)
+        #expect(fixture.connection.status(of: "post-xcodebuild") == .succeeded)
+        #expect(fixture.connection.status(of: "upload-artifacts") != nil)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+    }
+
+    /// Lays out what the host copies out of the VM: the stamped archive, the result bundle, the TestFlight notes and
+    /// the guest's full log.
+    private func handedOffFiles(_ fixture: Fixture) throws {
+        let layout = fixture.layout
+        let fileManager = FileManager.default
+        let archive = layout.archive(scheme: "Demo")
+        try fileManager.createDirectory(atPath: archive + "/Products/Applications/Demo.app", withIntermediateDirectories: true)
+        try fileManager.createDirectory(atPath: archive + "/dSYMs", withIntermediateDirectories: true)
+        try fileManager.createDirectory(atPath: layout.resultBundle, withIntermediateDirectories: true)
+        try fileManager.createDirectory(atPath: layout.repository + "/TestFlight", withIntermediateDirectories: true)
+        try "What to test".write(toFile: layout.repository + "/TestFlight/WhatToTest.en-US.txt", atomically: true, encoding: .utf8)
+        try "2026-11-06T01:00:00.000Z [archive] a guest line\n".write(toFile: layout.fullLog, atomically: true, encoding: .utf8)
+    }
+
+    @Test func theHostExportsUploadsAndReportsWithTheServersKeyAndNoJobVariables() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try handedOffFiles(fixture)
+        let result = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: true, cancelled: { false })
+
+        #expect(result == JobResult(status: .succeeded, outputs: ["testflight.buildID": "asc-build", "testflight.processingState": "VALID"]))
+        #expect(fixture.connection.result == result)
+        #expect(fixture.connection.finalStatuses.map(\.name) == ["export", "post-action:testflight", "upload-artifacts", "cleanup"])
+        #expect(fixture.connection.finalStatuses.allSatisfy { $0.status == .succeeded })
+        let exports = fixture.runner.commands.filter { $0.arguments.contains("-exportArchive") }
+        #expect(exports.count == 2)  // the export, and TestFlight's upload
+        for export in exports {
+            #expect(export.arguments.contains(fixture.layout.keyDirectory + "/AuthKey_KEY123.p8"))
+            // This Mac's own environment: none of the job's variables, no CI_ names.
+            #expect(Set(export.environment.keys).isSubset(of: Set(CIEnvironment.identityEnvironment(from: ProcessInfo.processInfo.environment).keys).union(["PATH", "DEVELOPER_DIR", "TMPDIR"])))
+            #expect(!export.environment.values.contains { $0.contains(Self.githubToken) || $0 == "notes" })
+        }
+        #expect(!fixture.runner.commands.contains { $0.arguments.first == "clone" || $0.arguments.first == "archive" })
+        #expect(fixture.connection.uploads.contains("Demo-dSYMs.zip"))
+        #expect(fixture.connection.uploads.contains("Demo.xcresult.zip"))
+        #expect(fixture.connection.uploads.contains("Demo.ipa"))
+        #expect(fixture.connection.uploads.contains(JobLog.fullLogArtifactName))
+        #expect(fixture.credentials.get().map(\.keyID) == ["KEY123"])
+        #expect(!FileManager.default.fileExists(atPath: fixture.layout.jobDirectory))
+        #expect(!FileManager.default.fileExists(atPath: fixture.layout.keyDirectory + "/AuthKey_KEY123.p8"))
+    }
+
+    @Test func aHostWithoutTheWorkflowsXcodeFailsTheExport() async throws {
+        let fixture = try Fixture(xcode: "26.4")
+        defer { fixture.removeAll() }
+        try handedOffFiles(fixture)
+        let result = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: false, cancelled: { false })
+        #expect(result.status == .failed)
+        #expect(result.failureReason == "Xcode 27.2 not installed")
+        #expect(fixture.connection.status(of: "export") == .failed)
+        #expect(fixture.connection.status(of: "post-action:testflight") == .skipped)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
+    }
+
+    @Test func theXcconfigMapsBundleIDsToProfilesAndNothingElse() {
+        let signing = JobRunner.GuestSigning(profiles: [
+            JobProvisioningProfile(bundleID: "com.acme.app.widget-ext", name: "P1", uuid: "U1", isMac: false, content: Data()),
+            JobProvisioningProfile(bundleID: "com.acme.app", name: "iOS Team Provisioning Profile: com.acme.app", uuid: "U2", isMac: false, content: Data()),
+            JobProvisioningProfile(bundleID: "com.acme.evil", name: "$(HOME)", uuid: "U3", isMac: false, content: Data()),
+        ])
+        let lines = signing.xcconfig.split(separator: "\n").map(String.init)
+        #expect(lines.contains("HANGAR_PROFILE_com_acme_app = iOS Team Provisioning Profile: com.acme.app"))
+        #expect(lines.contains("HANGAR_PROFILE_com_acme_app_widget_ext = P1"))
+        #expect(!lines.contains { $0.contains("evil") })
+        #expect(JobRunner.GuestSigning.identifier("9lives.app") == "_9lives_app")
     }
 }

@@ -108,3 +108,87 @@ public struct JobSigningIdentity: Codable, Equatable, Sendable, CustomStringConv
     public var description: String { "<identity>" }
     public var debugDescription: String { "<identity>" }
 }
+
+/// An App Store Connect API key as the server holds it (Settings › App Store Connect): never a variable, so never in
+/// a job's environment. A `JobAssignment` carries it only to a worker that runs `xcodebuild` with it itself: the host
+/// Mac's xcodebuild steps, or a VM Mac's host-side export and upload. It never enters a VM guest.
+public struct AppStoreConnectKey: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var keyID: String
+    /// Nil for an individual key; xcodebuild only accepts team keys.
+    public var issuerID: String?
+    /// The `.p8` file's contents.
+    public var privateKey: String
+
+    public init(keyID: String, issuerID: String?, privateKey: String) {
+        self.keyID = keyID
+        self.issuerID = issuerID
+        self.privateKey = privateKey
+    }
+
+    public var isTeamKey: Bool { issuerID.map { !$0.isEmpty } ?? false }
+
+    public var description: String { "<App Store Connect key \(keyID)>" }
+    public var debugDescription: String { description }
+}
+
+/// `POST /api/v1/worker/jobs/{id}/provisioning`: a VM Mac's host asks, with its machine token, what its guest needs
+/// to sign the archive without any App Store Connect key of the server's.
+public struct JobProvisioningRequest: Codable, Equatable, Sendable {
+    /// False when the host gives the guest its own identity (`vm identity import`): Hangar's profiles hold Hangar's
+    /// certificate, not that one, so none are looked up.
+    public var useServerIdentity: Bool
+
+    public init(useServerIdentity: Bool = true) { self.useServerIdentity = useServerIdentity }
+}
+
+/// A development provisioning profile for one bundle ID of the app, with the server's signing certificate in it.
+public struct JobProvisioningProfile: Codable, Equatable, Sendable {
+    public var bundleID: String
+    public var name: String
+    public var uuid: String
+    /// A macOS profile is a `.provisionprofile`, the others `.mobileprovision`.
+    public var isMac: Bool
+    /// The signed profile file; it holds no private key.
+    public var content: Data
+
+    public init(bundleID: String, name: String, uuid: String, isMac: Bool, content: Data) {
+        self.bundleID = bundleID
+        self.name = name
+        self.uuid = uuid
+        self.isMac = isMac
+        self.content = content
+    }
+}
+
+/// A bundle ID of the app that has no usable development profile, and why.
+public struct MissingProfile: Codable, Equatable, Sendable {
+    public var bundleID: String
+    public var reason: String
+
+    public init(bundleID: String, reason: String) {
+        self.bundleID = bundleID
+        self.reason = reason
+    }
+}
+
+/// What a VM archive's guest signs with. With `missing` empty the guest signs manually with `profiles`. Otherwise
+/// the optional development key (Settings › App Store Connect, Developer role) comes too, and the guest's
+/// `-allowProvisioningUpdates` uses it; without one an iOS-family archive fails before its VM boots. The server's
+/// own key is never in it.
+public struct JobProvisioning: Codable, Equatable, Sendable {
+    public var profiles: [JobProvisioningProfile]
+    public var missing: [MissingProfile]
+    public var developmentKey: AppStoreConnectKey?
+    /// What the server did, for the job's log ("created development profile …").
+    public var notes: [String]
+
+    public init(
+        profiles: [JobProvisioningProfile] = [], missing: [MissingProfile] = [], developmentKey: AppStoreConnectKey? = nil,
+        notes: [String] = []
+    ) {
+        self.profiles = profiles
+        self.missing = missing
+        self.developmentKey = developmentKey
+        self.notes = notes
+    }
+}

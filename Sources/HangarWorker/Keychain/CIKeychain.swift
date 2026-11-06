@@ -35,10 +35,20 @@ public struct CIKeychain: Sendable, Equatable {
 
     public var path: String
     public var passwordFile: String
+    /// A VM job's keychain keeps its password here instead of in a file: the build user runs the job's scripts and
+    /// must not find it on disk (`GuestKeychain`).
+    private var memoryPassword: SensitiveText?
 
     public init(path: String, passwordFile: String) {
         self.path = path
         self.passwordFile = passwordFile
+    }
+
+    /// A keychain whose password lives only in this process.
+    public init(path: String, password: SensitiveText) {
+        self.path = path
+        self.passwordFile = ""
+        self.memoryPassword = password
     }
 
     /// Where `isolate` puts them for the user whose home is `home`.
@@ -120,6 +130,7 @@ public struct CIKeychain: Sendable, Equatable {
     // MARK: Helpers
 
     func readPassword() throws -> SensitiveText {
+        if let memoryPassword { return memoryPassword }
         guard let text = try? String(contentsOfFile: passwordFile, encoding: .utf8) else {
             throw CIKeychainError.passwordUnreadable(passwordFile)
         }

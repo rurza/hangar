@@ -41,6 +41,11 @@ private struct RecordingASC: AppStoreConnectClient {
 
 /// A server on a temporary data directory and an in-memory database.
 struct APIFixture {
+    /// Stores the server's App Store Connect key, as Settings › App Store Connect does after testing it.
+    func storeASCKey(keyID: String, issuerID: String?, privateKey: String) throws {
+        try server.ascKeys.set(.main, AppStoreConnectKey(keyID: keyID, issuerID: issuerID, privateKey: privateKey))
+    }
+
     let directory: URL
     let host = FakeSourceHost()
     let server: HangarServerApp
@@ -143,9 +148,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
 
     @Test func createdAppWithoutIconGetsOneInTheBackground() async throws {
         let fixture = try APIFixture()
-        for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
-            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-        }
+        try fixture.storeASCKey(keyID: "KEY", issuerID: nil, privateKey: "PEM")
         try await fixture.test { client in
             let request = CreateAppRequest(
                 name: "Legilo", repoURL: "https://github.com/acme/legilo.git", appStoreConnectAppID: "42")
@@ -180,9 +183,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
 
     @Test func givenIconIsKeptAndListingBackfillsMissingOnes() async throws {
         let fixture = try APIFixture()
-        for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
-            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-        }
+        try fixture.storeASCKey(keyID: "KEY", issuerID: nil, privateKey: "PEM")
         let own = "https://example.com/own.png"
         _ = try fixture.server.apps.create(CreateAppRequest(
             name: "Atlas", repoURL: "https://github.com/acme/atlas.git", appStoreConnectAppID: "7", iconURL: own))
@@ -367,9 +368,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
                 #expect(response.status == .badGateway)
                 #expect(try decode(APIError.self, response).code == "app_store_connect_not_configured")
             }
-            for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_ISSUER_ID", "ISSUER"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
-                try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-            }
+            try fixture.storeASCKey(keyID: "KEY", issuerID: "ISSUER", privateKey: "PEM")
             try await client.execute(uri: "/api/v1/apps/legilo/numbers", method: .get) { response throws in
                 #expect(response.status == .ok)
                 let report = try decode(NumbersReport.self, response)
@@ -388,9 +387,7 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
             return RecordingASC(credentials: credentials)
         }
         try fixture.createApp()
-        for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_KEY_PATH", "PEM")] {
-            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-        }
+        try fixture.storeASCKey(keyID: "KEY", issuerID: nil, privateKey: "PEM")
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/apps/legilo/numbers", method: .get) { response throws in
                 #expect(response.status == .ok)

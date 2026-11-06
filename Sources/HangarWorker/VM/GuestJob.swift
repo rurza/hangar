@@ -5,7 +5,8 @@ import Synchronization
 
 /// What the host hands the guest for one job (VM builds design, *Per-job lifecycle*, step 4). It travels as the first
 /// line of the SSH session's standard input, never as a file in the share or a command-line argument: it holds the
-/// job's variables, its token and the signing identity.
+/// job's variables, its token and the signing identity. Never the server's App Store Connect key: the host removes
+/// it from the assignment, and exports and uploads an archive itself.
 public struct GuestJobBundle: Codable, Equatable, Sendable {
     public var assignment: JobAssignment
     /// Works only for this job's worker routes, through the relay.
@@ -17,11 +18,17 @@ public struct GuestJobBundle: Codable, Equatable, Sendable {
     public var vmNote: String?
     /// The host's name, for failure reasons ("rurzobuk-max (VM)").
     public var machineName: String
+    /// How an archive signs for development: the server's profiles, or the development key when one is missing.
+    public var signing: JobRunner.GuestSigning?
+    /// An archive stops after `post-xcodebuild` and hands off; the host exports it. False only for a host too old to.
+    public var handsOffArchive: Bool
 
     public init(
         assignment: JobAssignment, token: String, serverURL: URL, identity: GuestIdentity?, vmNote: String?,
-        machineName: String
+        machineName: String, signing: JobRunner.GuestSigning? = nil, handsOffArchive: Bool = true
     ) {
+        self.signing = signing
+        self.handsOffArchive = handsOffArchive
         self.assignment = assignment
         self.token = token
         self.serverURL = serverURL
@@ -57,10 +64,12 @@ public enum GuestControl: Equatable, Sendable {
 }
 
 /// The guest's side: `hangar-worker vm run-job`, as the build user, in a fresh clone. It runs the existing pipeline
-/// against its own disk with the job's token, and prints the result as the last line of standard output
-/// (`hangar-result {json}`), which the host reads.
+/// against its own disk with the job's token, and prints the outcome as the last line of standard output, which the
+/// host reads: the result (`hangar-result {json}`), or for an archive that got through `post-xcodebuild`, what the
+/// host needs to export it (`hangar-handoff {json}`).
 public struct GuestJobRunner: Sendable {
     public static let resultPrefix = "hangar-result "
+    public static let handOffPrefix = "hangar-handoff "
 
     private let runner: any ProcessRunner
     private let home: String
@@ -83,9 +92,17 @@ public struct GuestJobRunner: Sendable {
     public func run(
         _ bundle: GuestJobBundle, cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String?,
         connection makeConnection: (URL, String) -> any ServerConnection = { HTTPServerConnection(baseURL: $0, token: $1) }
-    ) async -> JobResult {
+    ) async -> GuestRunOutcome {
         let connection = makeConnection(bundle.serverURL, bundle.token)
         var assignment = bundle.assignment
+        // Never in a guest, even from a host that forgot to remove it.
+        assignment.appStoreConnectKey = nil
+        let signing = bundle.signing ?? JobRunner.GuestSigning()
+        do {
+            try Self.installProfiles(signing.profiles, home: home)
+        } catch {
+            logger.error("could not install the development profiles: \(error)")
+        }
         let names = Set(assignment.environment.map(\.name))
         assignment.environment += GuestJobBundle.homebrewEnvironment.filter { !names.contains($0.name) }
         let keychain: CIKeychain?
@@ -98,8 +115,44 @@ public struct GuestJobRunner: Sendable {
         }
         let jobRunner = JobRunner(
             connection: connection, runner: runner, locator: XcodeLocator(runner: runner), dataDirectory: dataDirectory,
-            machineName: bundle.machineName, keychain: keychain, preparationNote: bundle.vmNote)
-        return await jobRunner.run(assignment, cancelled: cancelled, stopReason: stopReason)
+            machineName: bundle.machineName, keychain: keychain, preparationNote: bundle.vmNote,
+            mode: bundle.handsOffArchive ? .guest(signing) : .standard)
+        return await jobRunner.execute(assignment, cancelled: cancelled, stopReason: stopReason)
+    }
+
+    /// Where Xcode looks for installed profiles: `UserData/Provisioning Profiles` since Xcode 16, `MobileDevice`
+    /// before. Each is written into both, named by its UUID.
+    static func profileDirectories(home: String) -> [String] {
+        [home + "/Library/Developer/Xcode/UserData/Provisioning Profiles", home + "/Library/MobileDevice/Provisioning Profiles"]
+    }
+
+    static func installProfiles(_ profiles: [JobProvisioningProfile], home: String) throws {
+        guard !profiles.isEmpty else { return }
+        for directory in profileDirectories(home: home) {
+            try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            for profile in profiles {
+                // The UUID names the file: only its own characters.
+                let name = profile.uuid.filter { $0.isASCII && ($0.isHexDigit || $0 == "-") }
+                guard !name.isEmpty else { continue }
+                try profile.content.write(
+                    to: URL(fileURLWithPath: directory + "/" + name + (profile.isMac ? ".provisionprofile" : ".mobileprovision")))
+            }
+        }
+    }
+
+    /// The line the host parses.
+    public static func outcomeLine(_ outcome: GuestRunOutcome) -> String {
+        switch outcome {
+        case .finished(let result): return resultLine(result)
+        case .handOff(let handOff):
+            let data = (try? JSONCoding.encoder.encode(handOff)) ?? Data("{}".utf8)
+            return handOffPrefix + String(decoding: data, as: UTF8.self)
+        }
+    }
+
+    public static func parseHandOff(_ line: String) -> ArchiveHandOff? {
+        guard line.hasPrefix(handOffPrefix) else { return nil }
+        return try? JSONCoding.decoder.decode(ArchiveHandOff.self, from: Data(line.dropFirst(handOffPrefix.count).utf8))
     }
 
     /// The line the host parses.

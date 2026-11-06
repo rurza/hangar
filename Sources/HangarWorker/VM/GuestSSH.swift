@@ -105,6 +105,37 @@ public struct GuestSSH: Sendable {
         }
     }
 
+    /// Copies `remotePath` (a file or a directory in the guest) to `localPath` on the host, as `tar` over SSH, and
+    /// returns false when the guest has no such path. What arrives is the guest's, so it is unpacked into a staging
+    /// directory first (bsdtar refuses absolute and `..` paths by default) and checked by `GuestCopy.check` before it
+    /// is moved into place: no link may point outside it and nothing but files, directories and links may be in it.
+    public func fetch(user: String, host: String, remotePath: String, to localPath: String) async throws -> Bool {
+        let exists = try await run(user: user, host: host, "test -e \(Self.quote(remotePath))")
+        if exists.exitCode == 1 { return false }
+        guard exists.exitCode == 0 else {
+            throw GuestCommandError(what: "look for \(remotePath) in the VM", exitCode: exists.exitCode, output: exists.output)
+        }
+        let parent = (localPath as NSString).deletingLastPathComponent
+        let staging = parent + "/.hangar-fetch-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(atPath: staging) }
+        let name = (remotePath as NSString).lastPathComponent
+        let remoteParent = (remotePath as NSString).deletingLastPathComponent
+        let ssh = (["/usr/bin/ssh"] + options() + ["\(user)@\(host)", "--"]).map(Self.quote).joined(separator: " ")
+        let remote = "tar -C \(Self.quote(remoteParent)) -cf - \(Self.quote(name))"
+        let script = "set -o pipefail; \(ssh) \(Self.quote(remote)) | /usr/bin/tar -xf - --no-same-owner -C \(Self.quote(staging))"
+        let outcome = try await runner.run(
+            ProcessCommand(executable: "/bin/sh", arguments: ["-c", script], environment: environment), onLine: { _ in })
+        guard outcome.exitCode == 0 else {
+            throw GuestCommandError(what: "copy \(name) out of the VM", exitCode: outcome.exitCode, output: outcome.output)
+        }
+        let copied = staging + "/" + name
+        try GuestCopy.check(copied)
+        try? FileManager.default.removeItem(atPath: localPath)
+        try FileManager.default.moveItem(atPath: copied, toPath: localPath)
+        return true
+    }
+
     /// Single-quotes `text` for a POSIX shell.
     public static func quote(_ text: String) -> String {
         guard !text.isEmpty, text.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "/._-=:@%+,".contains($0)) }) else {
@@ -154,5 +185,54 @@ public enum GuestKeys {
             throw VMStorageError.unreadable(storage.publicKey)
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// What the host checks in a copy out of a guest before anything of its own reads it (`GuestSSH.fetch`).
+public enum GuestCopy {
+    public enum Problem: Error, Equatable, CustomStringConvertible {
+        case missing(String)
+        case linkLeaves(String, target: String)
+        case notAFile(String)
+
+        public var description: String {
+            switch self {
+            case .missing(let path): "\(path) did not arrive from the VM"
+            case .linkLeaves(let path, let target): "\(path) in the VM's copy is a link to \(target), outside it"
+            case .notAFile(let path): "\(path) in the VM's copy is neither a file, a directory nor a link"
+            }
+        }
+    }
+
+    /// Throws when `root` holds a symbolic link whose target is absolute or leads outside `root`, or anything but
+    /// regular files, directories and links (a FIFO or a device would make a reader hang or worse).
+    public static func check(_ root: String) throws {
+        let fileManager = FileManager.default
+        let base = URL(fileURLWithPath: root).standardizedFileURL.path
+        guard let type = try? fileManager.attributesOfItem(atPath: root)[.type] as? FileAttributeType else {
+            throw Problem.missing((root as NSString).lastPathComponent)
+        }
+        var items: [(relative: String, type: FileAttributeType)] = [("", type)]
+        if type == .typeDirectory, let enumerator = fileManager.enumerator(atPath: root) {
+            while let relative = enumerator.nextObject() as? String {
+                let itemType = enumerator.fileAttributes?[.type] as? FileAttributeType ?? .typeUnknown
+                items.append((relative, itemType))
+            }
+        }
+        for (relative, type) in items {
+            let path = relative.isEmpty ? root : root + "/" + relative
+            switch type {
+            case .typeRegular, .typeDirectory: continue
+            case .typeSymbolicLink:
+                let target = try fileManager.destinationOfSymbolicLink(atPath: path)
+                let resolved = URL(fileURLWithPath: target, relativeTo: URL(fileURLWithPath: (path as NSString).deletingLastPathComponent, isDirectory: true))
+                    .standardizedFileURL.path
+                guard !target.hasPrefix("/"), resolved == base || resolved.hasPrefix(base + "/") else {
+                    throw Problem.linkLeaves(relative.isEmpty ? (root as NSString).lastPathComponent : relative, target: target)
+                }
+            default:
+                throw Problem.notAFile(relative.isEmpty ? (root as NSString).lastPathComponent : relative)
+            }
+        }
     }
 }

@@ -225,3 +225,38 @@ public struct EnvEntry: Codable, Equatable, Sendable {
         self.asFile = asFile
     }
 }
+
+/// A global secret as one app sees it: an app's jobs get a global secret only when the app chose it. Plain global
+/// variables reach every app and are not listed. No value, ever.
+public struct GlobalSecretGrant: Codable, Equatable, Sendable {
+    public var name: String
+    public var asFile: Bool
+    /// Whether this app's jobs get it.
+    public var granted: Bool
+
+    public init(name: String, asFile: Bool, granted: Bool) {
+        self.name = name
+        self.asFile = asFile
+        self.granted = granted
+    }
+}
+
+/// Where a job of the app gets `HANGAR_GITHUB_TOKEN` from, for checkout and private packages.
+public enum GitHubTokenSource: String, Codable, Sendable {
+    /// The app's own variable: the recommended fine-grained, read-only token for its repository.
+    case app
+    /// The token in Settings, which reaches every repository it can read (and perhaps write).
+    case global
+    case none
+}
+
+/// `GET /apps/{id}/global-secrets`: the global secrets and which this app gets, and its GitHub token's source.
+public struct AppGlobalSecrets: Codable, Equatable, Sendable {
+    public var secrets: [GlobalSecretGrant]
+    public var gitHubToken: GitHubTokenSource
+
+    public init(secrets: [GlobalSecretGrant], gitHubToken: GitHubTokenSource) {
+        self.secrets = secrets
+        self.gitHubToken = gitHubToken
+    }
+}

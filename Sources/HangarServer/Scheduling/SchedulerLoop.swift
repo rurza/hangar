@@ -196,7 +196,7 @@ public actor SchedulerLoop {
     }
 
     /// The job as the scheduler judges it: what its action needs of a machine. Shared with the deploy dry run.
-    /// `teamKey`: the app's App Store Connect key has an issuer ID. `signingProblem`: why the server's signing
+    /// `teamKey`: the server's App Store Connect key has an issuer ID. `signingProblem`: why the server's signing
     /// identity is not usable (it matters to archives only).
     static func queuedJob(
         id: UUID, buildID: UUID, createdAt: Date, action: WorkflowAction, workflow: Workflow, pinned: UUID?,
@@ -210,12 +210,6 @@ public actor SchedulerLoop {
             needsXcodeAccount: action.kind == .archive && !teamKey,
             signingProblem: action.kind == .archive ? signingProblem : nil,
             signsOnHost: action.kind == .archive || action.platform == .macOS)
-    }
-
-    /// Whether `entries` (an app's resolved variables) hold a team key: a non-empty `HANGAR_ASC_ISSUER_ID`, as the
-    /// worker reads it (`ASCKeyArguments`).
-    static func hasTeamKey(_ entries: [EnvEntry]) -> Bool {
-        entries.contains { $0.name == "HANGAR_ASC_ISSUER_ID" && !$0.value.isEmpty }
     }
 
     /// Machine id → its assigned and running jobs, as a tick counts them.

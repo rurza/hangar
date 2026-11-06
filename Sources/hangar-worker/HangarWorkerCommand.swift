@@ -64,7 +64,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 jobRunner = VMJobRunner(
                     host: host, connection: connection, serverURL: configuration.serverURL, identity: identity, slots: pool,
                     workerBinary: Bundle.main.executablePath ?? CommandLine.arguments[0],
-                    readiness: { doctor.readinessProblem() })
+                    readiness: { doctor.readinessProblem() }, hostKeychain: keychain)
                 if doctor.readinessProblem() == nil {
                     Task { await VMMaintenance.prepareSlots(host: host, pool: pool) { logger.info("\($0)") } }
                 }

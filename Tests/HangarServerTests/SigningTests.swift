@@ -124,11 +124,8 @@ private func makeP12(commonName: String = "Apple Development: Jane Doe (ABCDE123
             self.asc = asc
             self.now = now
             fixture = try APIFixture(appStoreConnectFactory: { _ in asc }, now: { now() })
-            var keys = [("HANGAR_ASC_KEY_ID", "KEY123"), ("HANGAR_ASC_KEY_PATH", "-----BEGIN PRIVATE KEY-----\n")]
-            if teamKey { keys.append(("HANGAR_ASC_ISSUER_ID", "issuer-uuid")) }
-            for (name, value) in keys {
-                try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-            }
+            try fixture.storeASCKey(
+                keyID: "KEY123", issuerID: teamKey ? "issuer-uuid" : nil, privateKey: "-----BEGIN PRIVATE KEY-----\n")
         }
 
         func create(_ client: some TestClientProtocol) async throws -> (HTTPResponse.Status, Data) {

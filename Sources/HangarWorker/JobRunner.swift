@@ -13,7 +13,10 @@ import Synchronization
 ///
 /// The job's environment is prepared inside the `checkout` step, before any git command: Xcode is picked, a test's
 /// simulator chosen, the CI environment merged with the job's variables, as-file variables written, and for an
-/// archive the App Store Connect key checked. A headless worker (one with a `CIKeychain`) unlocks its keychain first,
+/// archive the App Store Connect key checked. The key comes in the assignment, never as a variable: its `.p8` is on
+/// disk only while an `xcodebuild` step or a post-action that uses it runs (`AppStoreConnectKeyFile`), and no hook
+/// sees it in its environment. Build phases and package plugins run as this user during those steps and can read it:
+/// on a host Mac that exposure remains (VM builds keep the key out of the guest altogether). A headless worker (one with a `CIKeychain`) unlocks its keychain first,
 /// and lets codesign use any key the archive, export or test step created, whether that step succeeded or not.
 /// When that fails, `checkout` reports `failed` and the failure reason is the preparation error alone.
 ///
@@ -23,26 +26,28 @@ import Synchronization
 public struct JobRunner: Sendable {
     public typealias AppStoreConnectFactory = @Sendable (ASCCredentials) -> any AppStoreConnectClient
 
-    private static let basePATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+    static let basePATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
-    private let connection: any ServerConnection
-    private let runner: any ProcessRunner
-    private let locator: XcodeLocator
-    private let dataDirectory: String
+    let connection: any ServerConnection
+    let runner: any ProcessRunner
+    let locator: XcodeLocator
+    let dataDirectory: String
     /// Holds every job's `TMPDIR`; see `WorkspaceLayout.temporaryRoot`.
-    private let temporaryRoot: String
+    let temporaryRoot: String
     /// Names this Mac in failure reasons.
-    private let machineName: String
-    private let clock: any Clock<Duration>
-    private let appStoreConnectFactory: AppStoreConnectFactory
+    let machineName: String
+    let clock: any Clock<Duration>
+    let appStoreConnectFactory: AppStoreConnectFactory
     /// Set when the worker runs headless; nil in a login session, where the login keychain signs.
-    private let keychain: CIKeychain?
+    let keychain: CIKeychain?
     /// The first line of the `checkout` step's log, before anything else is prepared: how a job's VM came up.
     private let preparationNote: String?
     /// A job still running after this is stopped, as a worker stop is, with the timeout as its reason. Nil: none (in
     /// a VM, whose host enforces its own).
     private let jobTimeout: Duration?
-    private let logger = Logger(label: "app.hangar.worker.job")
+    let logger = Logger(label: "app.hangar.worker.job")
+    /// How much of the pipeline runs here: all of it, or a VM guest's part of an archive (`JobRunner+VM`).
+    let mode: Mode
 
     public init(
         connection: any ServerConnection, runner: any ProcessRunner, locator: XcodeLocator, dataDirectory: String,
@@ -54,9 +59,11 @@ public struct JobRunner: Sendable {
         },
         keychain: CIKeychain? = nil,
         preparationNote: String? = nil,
-        jobTimeout: Duration? = nil
+        jobTimeout: Duration? = nil,
+        mode: Mode = .standard
     ) {
         self.jobTimeout = jobTimeout
+        self.mode = mode
         self.keychain = keychain
         self.preparationNote = preparationNote
         self.connection = connection
@@ -70,15 +77,18 @@ public struct JobRunner: Sendable {
     }
 
     /// What the `checkout` step prepares for the steps after it.
-    private struct Prepared: Sendable {
+    struct Prepared: Sendable {
         /// Everything, for hooks and post-actions.
         var environment: [String: String]
         /// `environment` without secret variables: xcodebuild records the environment in DerivedData logs and the
         /// result bundle, which is uploaded.
         var xcodebuildEnvironment: [String: String]
         var developerDir: String
-        /// Nil for an individual key: xcodebuild then signs with the Xcode account on this Mac.
-        var key: ASCKeyArguments?
+        /// The server's team key, for xcodebuild; nil for an individual key (xcodebuild then signs with the Xcode
+        /// account on this Mac) or none.
+        var teamKey: AppStoreConnectKey?
+        /// Where the team key's `.p8` is written while a step that uses it runs.
+        var keyFile: AppStoreConnectKeyFile
         /// Test jobs only.
         var testDestination: TestDestination?
     }
@@ -88,10 +98,22 @@ public struct JobRunner: Sendable {
         _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool,
         stopReason: @escaping @Sendable () -> String? = { nil }
     ) async -> JobResult {
+        switch await execute(assignment, cancelled: cancelled, stopReason: stopReason) {
+        case .finished(let result): result
+        // Only a VM guest's archive hands off (`GuestJobRunner` asks for that outcome); its host reports the result.
+        case .handOff: JobResult(status: .failed, failureReason: "the archive was handed to the VM's host to export")
+        }
+    }
+
+    func execute(
+        _ assignment: JobAssignment, cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String?
+    ) async -> GuestRunOutcome {
         let jobID = assignment.job.id
         let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID,
             temporaryRoot: temporaryRoot)
-        let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
+        let masker = SecretMasker(
+            secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value)
+                + [assignment.appStoreConnectKey?.privateKey].compactMap { $0 })
         let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock, fullLogPath: layout.fullLog)
         let materializer = SecretsMaterializer(directory: layout.secrets)
         // What the job's scripts leave running (`./mock-server &`) lives until the job ends, as in an Xcode Cloud VM.
@@ -103,12 +125,12 @@ public struct JobRunner: Sendable {
             // Started elsewhere, moved or ended: the job is not this run's, and a finish could fail the copy that
             // does run it.
             logger.error("the server would not start the job here; leaving it alone", metadata: ["job": "\(jobID)"])
-            return JobResult(status: .failed, failureReason: "start: the server no longer has this job for this machine")
+            return .finished(JobResult(status: .failed, failureReason: "start: the server no longer has this job for this machine"))
         } catch {
             logger.error("could not start job: \(error)", metadata: ["job": "\(jobID)"])
             let result = JobResult(status: .failed, failureReason: masker.mask("start: \(error)"))
             await reportFinish(jobID: jobID, result)
-            return result
+            return .finished(result)
         }
 
         await reportInfo(jobID: jobID, JobRunInfo(workerVersion: Self.workerVersion))
@@ -139,9 +161,16 @@ public struct JobRunner: Sendable {
 
         var outputs: [String: String] = [:]
         if let prepared {
-            outputs = await build(
+            let built = await build(
                 assignment, prepared: prepared, layout: layout, log: log, masker: masker, leftovers: leftovers,
                 pipeline: &pipeline)
+            if var handOff = built.handOff {
+                // The VM's host exports and uploads; nothing is cleaned up in a VM that is about to be deleted.
+                await log.finalFlush()
+                handOff.fullLogAbridged = log.isAbridged
+                return .handOff(handOff)
+            }
+            outputs = built.outputs
         } else {
             let sequence = StepName.sequence(
                 for: assignment.job.action, postActions: assignment.workflow.postActions.map(\.name))
@@ -168,10 +197,10 @@ public struct JobRunner: Sendable {
             status: pipeline.status, failureReason: pipeline.reason.map(masker.mask),
             outputs: outputs.mapValues(masker.mask))
         await reportFinish(jobID: jobID, result)
-        return result
+        return .finished(result)
     }
 
-    private func uploadArtifacts(
+    func uploadArtifacts(
         _ assignment: JobAssignment, layout: WorkspaceLayout, log: JobLog, pipeline: inout JobPipeline
     ) async {
         let jobID = assignment.job.id
@@ -219,7 +248,7 @@ public struct JobRunner: Sendable {
     }()
 
     /// Best effort: a server that predates `jobs/{id}/info` answers 404, and the job runs on regardless.
-    private func reportInfo(jobID: UUID, _ info: JobRunInfo) async {
+    func reportInfo(jobID: UUID, _ info: JobRunInfo) async {
         do {
             try await connection.info(jobID: jobID, info)
         } catch {
@@ -232,7 +261,7 @@ public struct JobRunner: Sendable {
 
     /// Reports the result, retrying on the injected clock: a lost finish would leave the job running on the server
     /// until the heartbeat stops listing it. A 409 means the job is already terminal there, which counts as done.
-    private func reportFinish(jobID: UUID, _ result: JobResult) async {
+    func reportFinish(jobID: UUID, _ result: JobResult) async {
         var delays = Self.finishRetryDelays[...]
         while true {
             do {
@@ -302,19 +331,27 @@ public struct JobRunner: Sendable {
             log("Xcode's package and build caches named another folder (the workspace was moved); dropped them")
         }
         try materializer.write(merged.filesToWrite)
-        // Tests sign with the key when there is one, but do not need it.
-        let keyConfigured = Self.nonEmpty(merged.env["HANGAR_ASC_KEY_ID"]) != nil
-            && Self.nonEmpty(merged.env["HANGAR_ASC_KEY_PATH"]) != nil
-        if action.kind == .archive, !keyConfigured { throw PreparationError.appStoreConnectKeyMissing }
-        let key = ASCKeyArguments(environment: merged.env)
-        if key == nil, action.kind == .archive {
+        // Tests sign with the key when there is one, but do not need it. A VM guest never has the server's key: its
+        // archive signs with the profiles Hangar provides, or the development key (`JobRunner+VM`).
+        let key = assignment.appStoreConnectKey.flatMap { Self.nonEmpty($0.keyID) != nil && Self.nonEmpty($0.privateKey) != nil ? $0 : nil }
+        if case .guest(let signing) = mode {
+            let secretNames = Set(assignment.environment.filter(\.isSecret).map(\.name))
+            return Prepared(
+                environment: merged.env, xcodebuildEnvironment: merged.env.filter { !secretNames.contains($0.key) },
+                developerDir: developerDir, teamKey: signing.developmentKey,
+                keyFile: AppStoreConnectKeyFile(directory: layout.keyDirectory), testDestination: testDestination)
+        }
+        if action.kind == .archive, key == nil { throw PreparationError.appStoreConnectKeyMissing }
+        let teamKey = key?.isTeamKey == true ? key : nil
+        if teamKey == nil, action.kind == .archive {
             if keychain != nil { throw PreparationError.teamKeyRequired(machine: machineName) }
             log("No team API key; xcodebuild signs with the Xcode account on this Mac.")
         }
         let secretNames = Set(assignment.environment.filter(\.isSecret).map(\.name))
         return Prepared(
             environment: merged.env, xcodebuildEnvironment: merged.env.filter { !secretNames.contains($0.key) },
-            developerDir: developerDir, key: key, testDestination: testDestination)
+            developerDir: developerDir, teamKey: teamKey, keyFile: AppStoreConnectKeyFile(directory: layout.keyDirectory),
+            testDestination: testDestination)
     }
 
     /// `platform=macOS` for macOS; otherwise the simulator `SimulatorCatalog.select` picks from this Mac's list,
@@ -342,11 +379,12 @@ public struct JobRunner: Sendable {
         return device.testDestination
     }
 
-    /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs.
+    /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs, or for a VM
+    /// guest's archive that got as far as `post-xcodebuild`, what its host needs to export it.
     private func build(
         _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog, masker: SecretMasker,
         leftovers: ProcessGroups, pipeline: inout JobPipeline
-    ) async -> [String: String] {
+    ) async -> (outputs: [String: String], handOff: ArchiveHandOff?) {
         let workflow = assignment.workflow
         let action = assignment.job.action
         let environment = prepared.environment
@@ -368,30 +406,34 @@ public struct JobRunner: Sendable {
             let summary = await test(
                 assignment, prepared: prepared, destination: destination, layout: layout, log: log, pipeline: &pipeline,
                 hooks: hooks, scripts: scripts)
-            return summary?.masked(by: masker.mask).outputs ?? [:]
+            return (summary?.masked(by: masker.mask).outputs ?? [:], nil)
         }
         await pipeline.step(StepName.archive, .xcodebuild) { [self] in
             try await allowingCodesign(log: log.lines(StepName.archive)) {
-                try await ArchiveStep(runner: runner).run(
+                let step = ArchiveStep(runner: runner)
+                try await step.resolve(
                     workflow: workflow, action: action, repository: layout.repository, layout: layout,
-                    developerDir: prepared.developerDir, key: prepared.key, environment: prepared.xcodebuildEnvironment,
+                    developerDir: prepared.developerDir, environment: prepared.xcodebuildEnvironment,
                     gitHubToken: environment["HANGAR_GITHUB_TOKEN"], log: log.lines(StepName.archive))
+                let signing = try guestArchiveSigning(layout: layout, log: log.lines(StepName.archive))
+                try await prepared.keyFile.with(prepared.teamKey) { key in
+                    try await step.archive(
+                        workflow: workflow, action: action, repository: layout.repository, layout: layout,
+                        developerDir: prepared.developerDir, key: key, environment: prepared.xcodebuildEnvironment,
+                        signing: signing, log: log.lines(StepName.archive))
+                }
             }
         }
         await pipeline.step(StepName.stamp) {
             try BuildNumberStamper().stamp(
                 archivePath: archivePath, buildNumber: assignment.buildNumber, log: log.lines(StepName.stamp))
         }
-        guard let export = action.export else { preconditionFailure("the parser requires an archive's export") }
-        let exported = await pipeline.step(StepName.export, .xcodebuild) { [self] in
-            try await allowingCodesign(log: log.lines(StepName.export)) {
-                try await ExportStep(runner: runner).run(
-                    archivePath: archivePath, method: export, destination: "export", exportPath: layout.export,
-                    jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
-                    key: prepared.key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
-                    log: log.lines(StepName.export))
-            }
+        if case .guest = mode {
+            let handOff = await guestPostXcodebuild(
+                assignment, layout: layout, log: log, pipeline: &pipeline, hooks: hooks, scripts: scripts, environment: environment)
+            return ([:], handOff)
         }
+        let exported = await export(assignment, prepared: prepared, layout: layout, log: log, pipeline: &pipeline)
         let additions = CIEnvironment.postXcodebuildAdditions(
             exitCode: pipeline.xcodebuildExitCode ?? 0, action: action,
             exportedAppPath: exported?.exportedArtifactPath)
@@ -400,21 +442,57 @@ public struct JobRunner: Sendable {
                 .postXcodebuild, scriptsDirectory: scripts, environment: environment.merging(additions) { _, new in new },
                 log: log.lines(StepName.postXcodebuild))
         }
+        let outputs = await postActions(
+            assignment, prepared: prepared, layout: layout, exported: exported, log: log, masker: masker, pipeline: &pipeline)
+        return (outputs, nil)
+    }
 
+    /// The `export` step: `xcodebuild -exportArchive` with the team key, if any.
+    func export(
+        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog, pipeline: inout JobPipeline
+    ) async -> ExportResult? {
+        let workflow = assignment.workflow
+        let archivePath = layout.archive(scheme: assignment.job.action.scheme)
+        guard let export = assignment.job.action.export else { preconditionFailure("the parser requires an archive's export") }
+        return await pipeline.step(StepName.export, .xcodebuild) { [self] in
+            try await allowingCodesign(log: log.lines(StepName.export)) {
+                try await prepared.keyFile.with(prepared.teamKey) { key in
+                    try await ExportStep(runner: runner).run(
+                        archivePath: archivePath, method: export, destination: "export", exportPath: layout.export,
+                        jobDirectory: layout.jobDirectory, teamID: workflow.teamID, developerDir: prepared.developerDir,
+                        key: key, signing: .cloudManaged, environment: prepared.xcodebuildEnvironment,
+                        log: log.lines(StepName.export))
+                }
+            }
+        }
+    }
+
+    /// The post-actions, one step each; returns their merged outputs.
+    func postActions(
+        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, exported: ExportResult?, log: JobLog,
+        masker: SecretMasker, pipeline: inout JobPipeline
+    ) async -> [String: String] {
+        let workflow = assignment.workflow
+        let action = assignment.job.action
+        let environment = prepared.environment
+        let projectDirectory = workflow.projectDirectory
+        let archivePath = layout.archive(scheme: action.scheme)
         var outputs: [String: String] = [:]
-        let appStoreConnect = workflow.postActions.isEmpty ? nil : appStoreConnectClient(environment)
+        let appStoreConnect = workflow.postActions.isEmpty ? nil : appStoreConnectClient(assignment.appStoreConnectKey)
         for spec in workflow.postActions {
             let name = StepName.postAction(spec.name)
-            let context = PostActionContext(
-                app: assignment.app, action: action, buildNumber: assignment.buildNumber, archivePath: archivePath,
-                exportedArtifactPath: exported?.exportedArtifactPath, repository: layout.repository,
-                projectDirectory: projectDirectory, environment: environment,
-                xcodebuildEnvironment: prepared.xcodebuildEnvironment, layout: layout,
-                developerDir: prepared.developerDir, teamID: workflow.teamID, key: prepared.key,
-                appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name),
-                reportStages: { [reporter = pipeline.stageReporter(name)] stages in
-                    await reporter(stages.map { StepStage(name: $0.name, status: $0.status, detail: $0.detail.map(masker.mask)) })
-                })
+            let makeContext = { @Sendable [runner, clock, reporter = pipeline.stageReporter(name)] (key: ASCKeyArguments?) in
+                PostActionContext(
+                    app: assignment.app, action: action, buildNumber: assignment.buildNumber, archivePath: archivePath,
+                    exportedArtifactPath: exported?.exportedArtifactPath, repository: layout.repository,
+                    projectDirectory: projectDirectory, environment: environment,
+                    xcodebuildEnvironment: prepared.xcodebuildEnvironment, layout: layout,
+                    developerDir: prepared.developerDir, teamID: workflow.teamID, key: key,
+                    appStoreConnect: appStoreConnect, runner: runner, clock: clock, log: log.lines(name),
+                    reportStages: { stages in
+                        await reporter(stages.map { StepStage(name: $0.name, status: $0.status, detail: $0.detail.map(masker.mask)) })
+                    })
+            }
             let output = await pipeline.step(name, ending: { output in
                 JobPipeline.Ending(
                     status: output.warnings.isEmpty ? .succeeded : .warning,
@@ -422,7 +500,9 @@ public struct JobRunner: Sendable {
                     stages: output.stages?.map { stage in
                         StepStage(name: stage.name, status: stage.status, detail: stage.detail.map(masker.mask))
                     })
-            }) { try await PostActionRegistry.make(spec).run(context) }
+            }) {
+                try await prepared.keyFile.with(prepared.teamKey) { key in try await PostActionRegistry.make(spec).run(makeContext(key)) }
+            }
             if let output {
                 for warning in output.warnings { log.line(step: name, "warning: \(warning)") }
                 log.line(step: name, output.summary)
@@ -444,9 +524,9 @@ public struct JobRunner: Sendable {
             let run = try await allowingCodesign(log: log.lines(StepName.test)) {
                 try await TestStep(runner: runner).run(
                     workflow: assignment.workflow, action: action, repository: layout.repository, layout: layout,
-                    developerDir: prepared.developerDir, destination: destination, key: prepared.key,
+                    developerDir: prepared.developerDir, destination: destination, key: nil,
                     environment: prepared.xcodebuildEnvironment, gitHubToken: prepared.environment["HANGAR_GITHUB_TOKEN"],
-                    log: log.lines(StepName.test))
+                    keyFile: (prepared.keyFile, prepared.teamKey), log: log.lines(StepName.test))
             }
             summary.set(run.summary)
             try run.check()
@@ -466,7 +546,7 @@ public struct JobRunner: Sendable {
     /// keychain. Headless, the keychain's partition list is then set again so codesign can use that key without a
     /// prompt; also after a failure, so a key the failed run created works for the next one. A failure to set it is a
     /// warning: the step's own result stands.
-    private func allowingCodesign<Value: Sendable>(
+    func allowingCodesign<Value: Sendable>(
         log: @escaping @Sendable (String) -> Void, _ body: () async throws -> Value
     ) async throws -> Value {
         guard let keychain else { return try await body() }
@@ -480,24 +560,20 @@ public struct JobRunner: Sendable {
         return try result.get()
     }
 
-    /// Credentials from the reserved variables; the private key is read from the file `HANGAR_ASC_KEY_PATH` names,
-    /// which `prepare` wrote. No issuer ID means an individual key. Nil when the key ID or the key is missing.
-    private func appStoreConnectClient(_ environment: [String: String]) -> (any AppStoreConnectClient)? {
-        guard let keyID = Self.nonEmpty(environment["HANGAR_ASC_KEY_ID"]),
-            let keyPath = Self.nonEmpty(environment["HANGAR_ASC_KEY_PATH"]),
-            let pem = try? String(contentsOfFile: keyPath, encoding: .utf8)
-        else { return nil }
-        return appStoreConnectFactory(
-            ASCCredentials(keyID: keyID, issuerID: Self.nonEmpty(environment["HANGAR_ASC_ISSUER_ID"]), privateKeyPEM: pem))
+    /// A client for the assignment's key (from memory: no file). No issuer ID means an individual key. Nil when there
+    /// is no key.
+    func appStoreConnectClient(_ key: AppStoreConnectKey?) -> (any AppStoreConnectClient)? {
+        guard let key, let keyID = Self.nonEmpty(key.keyID), let pem = Self.nonEmpty(key.privateKey) else { return nil }
+        return appStoreConnectFactory(ASCCredentials(keyID: keyID, issuerID: Self.nonEmpty(key.issuerID), privateKeyPEM: pem))
     }
 
-    private static func nonEmpty(_ value: String?) -> String? {
+    static func nonEmpty(_ value: String?) -> String? {
         value.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Wipes the secrets, cleans the repository and removes the job directory. Every problem is logged and the rest
     /// still runs; returns whether all of it worked.
-    private func cleanup(
+    func cleanup(
         layout: WorkspaceLayout, materializer: SecretsMaterializer, leftovers: ProcessGroups,
         log: @escaping @Sendable (String) -> Void
     ) async -> Bool {

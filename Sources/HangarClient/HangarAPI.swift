@@ -45,6 +45,14 @@ public struct HangarAPI: Sendable {
     public func createApp(_ request: CreateAppRequest) async throws -> App { try await send("POST", "apps", body: request) }
     public func deleteApp(_ app: String) async throws { try await sendEmpty("DELETE", "apps/\(segment(app))") }
 
+    // MARK: - Settings
+
+    /// Tests the App Store Connect key with App Store Connect, then stores it as the server's key (a setting, never a
+    /// variable).
+    public func saveASCKey(_ request: SaveASCKeyRequest) async throws -> ASCKeyTestResult {
+        try await send("POST", "settings/asc-key", body: request)
+    }
+
     // MARK: - Variables (`app` nil means global scope)
 
     public func variables(app: String? = nil) async throws -> [VariableSummary] {

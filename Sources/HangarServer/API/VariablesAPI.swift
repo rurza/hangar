@@ -78,6 +78,28 @@ extension HangarServerApp {
             try variables.unlink(appID: app(context).id, group: groupKey(context))
             return Response(status: .noContent)
         }
+
+        // Global secrets are opt-in per app; plain globals reach every app. No values, and no API token may change
+        // which app gets a secret.
+        api.get("apps/:id/global-secrets") { _, context in
+            let app = try app(context)
+            return try Response.json(
+                AppGlobalSecrets(secrets: try variables.globalSecrets(appID: app.id), gitHubToken: try gitHubTokenSource(app)))
+        }
+        api.put("apps/:id/global-secrets/:name") { _, context in
+            try variables.grantGlobalSecret(appID: app(context).id, name: context.parameters.require("name"))
+            return Response(status: .noContent)
+        }
+        api.delete("apps/:id/global-secrets/:name") { _, context in
+            try variables.revokeGlobalSecret(appID: app(context).id, name: context.parameters.require("name"))
+            return Response(status: .noContent)
+        }
+    }
+
+    /// Where the app's jobs get `HANGAR_GITHUB_TOKEN`: its own variable wins over the one in Settings.
+    func gitHubTokenSource(_ app: App) throws -> GitHubTokenSource {
+        if try variables.summaries(scope: .app(app.id)).contains(where: { $0.name == BuildService.tokenVariable }) { return .app }
+        return try variables.value(global: BuildService.tokenVariable).map { $0.isEmpty ? .none : .global } ?? .none
     }
 
     /// The `{group}` segment, percent-decoded: a group's name may hold spaces, which Hummingbird leaves encoded.

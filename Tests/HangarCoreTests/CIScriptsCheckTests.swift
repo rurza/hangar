@@ -77,3 +77,14 @@ import Testing
         ])
     }
 }
+
+@Suite struct CIScriptsCheckNotReceivedTests {
+    @Test func aGlobalSecretTheAppDoesNotReceiveIsNamedAsSuch() {
+        let warnings = CIScriptsCheck.Warnings(undefined: ["ci_post_clone.sh": ["SENTRY_AUTH_TOKEN", "OTHER"]], notExecutable: [])
+        let lines = CIScriptsCheck.sentences(warnings, notReceived: ["SENTRY_AUTH_TOKEN"])
+        #expect(lines == [
+            "ci_scripts/ci_post_clone.sh uses $SENTRY_AUTH_TOKEN, a global secret this app doesn’t receive: choose it under Global Secrets on the app’s page, or the script sees it empty.",
+            "ci_scripts/ci_post_clone.sh uses $OTHER, which isn’t defined in Hangar: add it under Variables, or the script sees it empty.",
+        ])
+    }
+}

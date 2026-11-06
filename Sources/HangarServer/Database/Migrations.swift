@@ -227,6 +227,52 @@ enum Migrations {
         migrator.registerMigration("v11") { db in
             try db.execute(sql: "ALTER TABLE jobs ADD COLUMN dispatched_at DOUBLE")
         }
+        // The App Store Connect key becomes a server setting (C1 of the 2026-11-06 security review): the three
+        // `HANGAR_ASC_*` global variables move into `app_store_connect_keys` as the `main` key, still sealed with the
+        // master key (the blobs are copied, not opened), and every `HANGAR_ASC_*` variable of any scope is deleted, so
+        // no job's environment has the key again.
+        migrator.registerMigration("v12") { db in
+            try db.execute(sql: """
+                CREATE TABLE app_store_connect_keys (
+                    role TEXT PRIMARY KEY,
+                    sealed_key_id BLOB NOT NULL,
+                    sealed_issuer_id BLOB,
+                    sealed_private_key BLOB NOT NULL,
+                    updated_at DOUBLE NOT NULL
+                );
+                """)
+            func global(_ name: String) throws -> Data? {
+                try Data.fetchOne(
+                    db, sql: "SELECT ciphertext FROM variables WHERE scope = 'global' AND owner_id = '' AND name = ?",
+                    arguments: [name])
+            }
+            if let keyID = try global("HANGAR_ASC_KEY_ID"), let privateKey = try global("HANGAR_ASC_KEY_PATH") {
+                try db.execute(
+                    sql: """
+                        INSERT INTO app_store_connect_keys (role, sealed_key_id, sealed_issuer_id, sealed_private_key, updated_at)
+                        VALUES ('main', ?, ?, ?, ?)
+                        """,
+                    arguments: [keyID, try global("HANGAR_ASC_ISSUER_ID"), privateKey, dbTime(Date())])
+            }
+            try db.execute(sql: "DELETE FROM variables WHERE name LIKE 'HANGAR\\_ASC\\_%' ESCAPE '\\'")
+        }
+        // Global secrets become opt-in per app: an app's jobs get a global secret only when the app chose it
+        // (`app_global_secrets`). Plain globals stay inherited by every app. Every existing app is granted every
+        // existing global secret, so nothing changes until someone revokes one. `HANGAR_*` names keep their own rules.
+        migrator.registerMigration("v13") { db in
+            try db.execute(sql: """
+                CREATE TABLE app_global_secrets (
+                    app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    PRIMARY KEY (app_id, name)
+                );
+
+                INSERT OR IGNORE INTO app_global_secrets (app_id, name)
+                SELECT a.id, v.name FROM apps a
+                JOIN variables v ON v.scope = 'global' AND v.owner_id = '' AND v.is_secret = 1
+                WHERE v.name NOT LIKE 'HANGAR\\_%' ESCAPE '\\';
+                """)
+        }
         return migrator
     }
 }

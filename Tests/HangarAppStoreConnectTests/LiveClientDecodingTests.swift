@@ -319,4 +319,61 @@ struct LiveClientDecodingTests {
         #expect(transport.requests.first?.url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/certificates/CERT1")
         await #expect(throws: ASCError.self) { try await makeClient(transport).revokeCertificate(id: "../apps") }
     }
+
+    // MARK: Development provisioning
+
+    @Test func developmentProfilesAskOnlyForActiveProfilesOfTheTypeAndReadTheirRelationships() async throws {
+        let content = Data("signed profile".utf8).base64EncodedString()
+        let body = #"{"data":[{"type":"profiles","id":"P1","attributes":{"name":"iOS Team Provisioning Profile: com.acme.app","profileType":"IOS_APP_DEVELOPMENT","profileState":"ACTIVE","profileContent":"\#(content)","uuid":"U-1","expirationDate":"2027-11-06T10:00:00.000+00:00"},"relationships":{"bundleId":{"data":{"type":"bundleIds","id":"B1"}},"certificates":{"data":[{"type":"certificates","id":"C1"},{"type":"certificates","id":"C2"}]}}},{"type":"profiles","id":"P2","attributes":{"name":"Distribution","profileType":"IOS_APP_STORE","profileContent":"\#(content)","uuid":"U-2"}}],"links":{}}"#
+        let transport = StubTransport(responses: [StubTransport.Response(body: Data(body.utf8))])
+        let profiles = try await makeClient(transport).developmentProfiles(type: .iOS)
+
+        #expect(profiles == [ASCProfile(
+            id: "P1", name: "iOS Team Provisioning Profile: com.acme.app", type: .iOS, uuid: "U-1",
+            content: Data("signed profile".utf8), expirationDate: Date(timeIntervalSince1970: 1_825_495_200),
+            bundleIDResourceID: "B1", certificateIDs: ["C1", "C2"])])
+        let query = try #require(transport.requests.first?.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?.queryItems)
+        #expect(query.contains(URLQueryItem(name: "filter[profileType]", value: "IOS_APP_DEVELOPMENT")))
+        #expect(query.contains(URLQueryItem(name: "filter[profileState]", value: "ACTIVE")))
+        #expect(query.contains(URLQueryItem(name: "include", value: "bundleId,certificates")))
+    }
+
+    @Test func createDevelopmentProfilePostsTheBundleIDCertificateAndDevices() async throws {
+        let content = Data("new".utf8).base64EncodedString()
+        let body = #"{"data":{"type":"profiles","id":"P9","attributes":{"name":"Hangar Development com.acme.app","profileType":"MAC_APP_DEVELOPMENT","profileContent":"\#(content)","uuid":"U-9"}}}"#
+        let transport = StubTransport(responses: [StubTransport.Response(status: 201, body: Data(body.utf8))])
+        let profile = try await makeClient(transport).createDevelopmentProfile(
+            name: "Hangar Development com.acme.app", type: .macOS, bundleIDResourceID: "B1", certificateIDs: ["C1"],
+            deviceIDs: ["D1", "D2"])
+
+        #expect(profile.uuid == "U-9")
+        #expect(profile.bundleIDResourceID == "B1")
+        #expect(profile.certificateIDs == ["C1"])
+        let request = try #require(transport.requests.first)
+        #expect(request.httpMethod == "POST")
+        #expect(request.url?.path == "/v1/profiles")
+        let data = try #require(try bodyJSON(request)["data"] as? [String: Any])
+        let attributes = try #require(data["attributes"] as? [String: Any])
+        #expect(attributes["profileType"] as? String == "MAC_APP_DEVELOPMENT")
+        let relationships = try #require(data["relationships"] as? [String: Any])
+        let devices = try #require((relationships["devices"] as? [String: Any])?["data"] as? [[String: String]])
+        #expect(devices.map { $0["id"] } == ["D1", "D2"])
+        let bundle = try #require((relationships["bundleId"] as? [String: Any])?["data"] as? [String: String])
+        #expect(bundle == ["type": "bundleIds", "id": "B1"])
+    }
+
+    @Test func bundleIdentifiersAndDevicesAndTheUsersProbe() async throws {
+        let bundles = #"{"data":[{"type":"bundleIds","id":"B1","attributes":{"identifier":"com.acme.app","platform":"UNIVERSAL"}}],"links":{}}"#
+        let devices = #"{"data":[{"type":"devices","id":"D1"}],"links":{}}"#
+        let transport = StubTransport(responses: [
+            StubTransport.Response(body: Data(bundles.utf8)), StubTransport.Response(body: Data(devices.utf8)),
+            StubTransport.Response(status: 403, body: Data("FORBIDDEN".utf8)), StubTransport.Response(body: Data(#"{"data":[]}"#.utf8)),
+        ])
+        let client = makeClient(transport)
+        #expect(try await client.bundleIdentifiers() == [ASCBundleIdentifier(id: "B1", identifier: "com.acme.app", platform: "UNIVERSAL")])
+        #expect(try await client.enabledDeviceIDs(platform: "MAC_OS") == ["D1"])
+        #expect(try await client.canListUsers() == false)
+        #expect(try await client.canListUsers() == true)
+        #expect(transport.requests.map { $0.url?.path } == ["/v1/bundleIds", "/v1/devices", "/v1/users", "/v1/users"])
+    }
 }

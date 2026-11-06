@@ -13,12 +13,17 @@ public struct JobAssignment: Codable, Equatable, Sendable {
     /// The server's Apple Development identity: only in the assignment of an archive on a VM machine, whose guest
     /// installs it in a keychain made for the job. Host workers never get it.
     public var signingIdentity: JobSigningIdentity?
+    /// The server's App Store Connect key, for the worker's own `xcodebuild` and App Store Connect calls: a host Mac's
+    /// archive, test, export and upload, or a VM Mac's host-side export and upload. Never in `environment`, and a VM
+    /// host never passes it to its guest.
+    public var appStoreConnectKey: AppStoreConnectKey?
 
     public init(
         job: Job, app: App, workflow: Workflow, workflowName: String, buildNumber: Int, commit: String, ref: String,
-        environment: [EnvEntry], signingIdentity: JobSigningIdentity? = nil
+        environment: [EnvEntry], signingIdentity: JobSigningIdentity? = nil, appStoreConnectKey: AppStoreConnectKey? = nil
     ) {
         self.signingIdentity = signingIdentity
+        self.appStoreConnectKey = appStoreConnectKey
         self.job = job
         self.app = app
         self.workflow = workflow

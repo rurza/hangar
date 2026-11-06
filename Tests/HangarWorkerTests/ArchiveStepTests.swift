@@ -7,9 +7,7 @@ import Testing
 @Suite(.timeLimit(.minutes(1))) struct ArchiveStepTests {
     private static let jobID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     private static let layout = WorkspaceLayout(dataDirectory: "/data", appSlug: "legilo", jobID: jobID)
-    private static let key = ASCKeyArguments(environment: [
-        "HANGAR_ASC_KEY_PATH": "/data/secrets/key.p8", "HANGAR_ASC_KEY_ID": "KEY123", "HANGAR_ASC_ISSUER_ID": "ISSUER-UUID",
-    ])!
+    private static let key = ASCKeyArguments(keyPath: "/data/secrets/key.p8", keyID: "KEY123", issuerID: "ISSUER-UUID")
     private static let keyArguments = [
         "-authenticationKeyPath", "/data/secrets/key.p8", "-authenticationKeyID", "KEY123",
         "-authenticationKeyIssuerID", "ISSUER-UUID",
@@ -111,19 +109,33 @@ import Testing
         #expect(command.arguments.contains("generic/platform=macOS"))
     }
 
-    @Test func keyArgumentsNeedAllThreeVariables() {
-        let full = [
-            "HANGAR_ASC_KEY_PATH": "/k.p8", "HANGAR_ASC_KEY_ID": "K", "HANGAR_ASC_ISSUER_ID": "I",
-        ]
-        #expect(ASCKeyArguments(environment: full) != nil)
-        for name in full.keys {
-            var missing = full
-            missing[name] = nil
-            #expect(ASCKeyArguments(environment: missing) == nil)
-            var empty = full
-            empty[name] = ""
-            #expect(ASCKeyArguments(environment: empty) == nil)
+    @Test func theKeyFileExistsOnlyWhileItsStepRuns() async throws {
+        let root = NSTemporaryDirectory() + "hangar-keyfile-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let file = AppStoreConnectKeyFile(directory: root + "/asc-key")
+        let team = AppStoreConnectKey(keyID: "KEY/../123", issuerID: "I", privateKey: "PEM")
+        let path = try await file.with(team) { arguments -> String in
+            let arguments = try #require(arguments)
+            #expect(arguments.keyPath == root + "/asc-key/AuthKey_KEY123.p8")
+            #expect(try String(contentsOfFile: arguments.keyPath, encoding: .utf8) == "PEM")
+            let mode = try FileManager.default.attributesOfItem(atPath: arguments.keyPath)[.posixPermissions] as? Int
+            #expect(mode == 0o600)
+            #expect(arguments.xcodebuildArguments == [
+                "-authenticationKeyPath", arguments.keyPath, "-authenticationKeyID", "KEY/../123", "-authenticationKeyIssuerID", "I",
+            ])
+            return arguments.keyPath
         }
+        #expect(!FileManager.default.fileExists(atPath: path))
+        // Removed after a failure too.
+        struct Boom: Error {}
+        await #expect(throws: Boom.self) { try await file.with(team) { _ in throw Boom() } }
+        #expect(!FileManager.default.fileExists(atPath: path))
+        // An individual key, or none: no arguments and no file.
+        for key in [AppStoreConnectKey(keyID: "IND", issuerID: nil, privateKey: "PEM"), nil] {
+            let arguments = try await file.with(key) { $0 }
+            #expect(arguments == nil)
+        }
+        #expect((try? FileManager.default.contentsOfDirectory(atPath: root + "/asc-key")) ?? [] == [])
     }
 
     @Test func runRemovesStaleOutputsAndForwardsLines() async throws {

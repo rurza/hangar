@@ -38,13 +38,14 @@ extension HangarServerApp {
                 throw DeployError.workflowNotFound(name: name, available: file.workflows.keys.sorted())
             }
             let entries = try variables.resolvedEntries(appID: app.id, workflow: name)
-            var check = try deployCheck(workflow: workflow, pinned: pinned, teamKey: SchedulerLoop.hasTeamKey(entries))
+            var check = try deployCheck(workflow: workflow, pinned: pinned, teamKey: try ascKeys.key(.main)?.isTeamKey ?? false)
             let own = try variables.summaries(scope: .app(app.id))
             let links = try variables.links(appID: app.id)
             check.notices = await preflight.notices(
                 app: app, workflow: workflow, commit: resolved,
                 token: entries.first { $0.name == BuildService.tokenVariable }?.value,
                 definedNames: Set(entries.map(\.name)), onlyFor: Self.restrictedNames(own, links),
+                notReceived: try variables.globalSecretsNotReceived(appID: app.id),
                 appStoreConnect: { try appStoreConnectClient() })
             check.notices += Self.unknownWorkflowNotices(own, links, workflows: Set(file.workflows.keys))
             return try Response.json(check)

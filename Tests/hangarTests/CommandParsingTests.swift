@@ -167,50 +167,38 @@ import Testing
         #expect(usage.requests.isEmpty)
     }
 
-    @Test func settingsAscKeyProducesThreeVariables() async throws {
+    @Test func settingsAscKeyPostsTheKeyToTheServerSetting() async throws {
         let p8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMG\n-----END PRIVATE KEY-----\n"
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("AuthKey_\(UUID().uuidString).p8")
         try p8.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
 
-        let harness = H(responses: Array(repeating: StubTransport.Response(status: 204), count: 3))
+        let body = Data(#"{"kind":"team","keyID":"ABC123","appCount":2}"#.utf8)
+        let harness = H(responses: [StubTransport.Response(status: 200, body: body)])
         let result = await harness.run(["settings", "asc-key", "--key-id", "ABC123", "--issuer-id", "issuer-uuid", "--p8", file.path])
 
         #expect(result.exitCode == 0)
-        #expect(result.requests.allSatisfy { $0.httpMethod == "PUT" })
-        #expect(result.requests.map { $0.url?.path } == [
-            "/api/v1/variables/HANGAR_ASC_KEY_ID",
-            "/api/v1/variables/HANGAR_ASC_ISSUER_ID",
-            "/api/v1/variables/HANGAR_ASC_KEY_PATH",
+        #expect(result.requests.map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" } == ["POST /api/v1/settings/asc-key"])
+        #expect(try result.bodies(SaveASCKeyRequest.self) == [
+            SaveASCKeyRequest(keyID: "ABC123", issuerID: "issuer-uuid", privateKey: p8)
         ])
-        #expect(try result.bodies(VariableInput.self) == [
-            VariableInput(value: "ABC123"),
-            VariableInput(value: "issuer-uuid"),
-            VariableInput(value: p8, isSecret: true, asFile: true),
-        ])
+        #expect(result.out.contains("team key ABC123"))
         #expect(!result.out.contains("PRIVATE KEY"))
     }
 
-    @Test func settingsAscKeyWithoutIssuerDeletesIssuer() async throws {
+    @Test func settingsAscKeyWithoutIssuerSendsNone() async throws {
         let p8 = "-----BEGIN PRIVATE KEY-----\nMIGTAgEAMBMG\n-----END PRIVATE KEY-----\n"
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("AuthKey_\(UUID().uuidString).p8")
         try p8.write(to: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: file) }
 
-        let harness = H(responses: Array(repeating: StubTransport.Response(status: 204), count: 3))
+        let body = Data(#"{"kind":"individual","keyID":"INDIVIDUAL1","appCount":1}"#.utf8)
+        let harness = H(responses: [StubTransport.Response(status: 200, body: body)])
         let result = await harness.run(["settings", "asc-key", "--key-id", "INDIVIDUAL1", "--p8", file.path])
 
         #expect(result.exitCode == 0)
-        #expect(result.requests.map { "\($0.httpMethod ?? "") \($0.url?.path ?? "")" } == [
-            "PUT /api/v1/variables/HANGAR_ASC_KEY_ID",
-            "DELETE /api/v1/variables/HANGAR_ASC_ISSUER_ID",
-            "PUT /api/v1/variables/HANGAR_ASC_KEY_PATH",
-        ])
-        #expect(try result.bodies(VariableInput.self) == [
-            VariableInput(value: "INDIVIDUAL1"),
-            VariableInput(value: p8, isSecret: true, asFile: true),
-        ])
-        #expect(!result.out.contains("PRIVATE KEY"))
+        #expect(try result.bodies(SaveASCKeyRequest.self) == [SaveASCKeyRequest(keyID: "INDIVIDUAL1", privateKey: p8)])
+        #expect(result.out.contains("individual key INDIVIDUAL1"))
     }
 
     @Test func settingsGitHubTokenReadsStdin() async throws {

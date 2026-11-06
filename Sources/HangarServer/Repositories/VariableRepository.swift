@@ -8,7 +8,8 @@ import HangarCore
 ///
 /// A job of workflow W gets, for each name, the first of: an app variable limited to W, the app variable for all
 /// workflows, a linked group limited to W, a linked group for all workflows, a global variable. Between two groups
-/// at the same level the one linked first (listed higher) wins.
+/// at the same level the one linked first (listed higher) wins. A global *secret* counts only for an app that chose
+/// it (`app_global_secrets`); plain globals count for every app. `HANGAR_*` globals keep their own rules.
 public struct VariableRepository: Sendable {
     let database: Database
     let box: SecretBox
@@ -35,6 +36,15 @@ public struct VariableRepository: Sendable {
         try database.write { db in
             if try Self.row(db, kind, owner, name, key) == nil {
                 try Self.checkOverlap(db, kind, owner, name, workflows, excluding: nil)
+            }
+            // A plain global every app gets that becomes secret keeps reaching the apps that had it: all of them.
+            if case .global = scope, input.isSecret, Self.isOptIn(name),
+                try Bool.fetchOne(
+                    db, sql: "SELECT is_secret FROM variables WHERE scope = 'global' AND owner_id = '' AND name = ?",
+                    arguments: [name]) == false
+            {
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO app_global_secrets (app_id, name) SELECT id, ? FROM apps", arguments: [name])
             }
             try db.execute(
                 sql: """
@@ -87,6 +97,10 @@ public struct VariableRepository: Sendable {
             try db.execute(
                 sql: "DELETE FROM variables WHERE scope = ? AND owner_id = ? AND name = ? AND workflows = ?",
                 arguments: [kind, owner, name, key])
+            // A global secret made again later is nobody's until apps choose it again.
+            if kind == "global" {
+                try db.execute(sql: "DELETE FROM app_global_secrets WHERE name = ?", arguments: [name])
+            }
         }
     }
 
@@ -103,6 +117,59 @@ public struct VariableRepository: Sendable {
                 arguments: [name])
         }
         return try sealed.map(box.open)
+    }
+
+    // MARK: Global secrets per app
+
+    /// Whether a global secret named `name` is opt-in per app: every name but the reserved `HANGAR_*` ones.
+    static func isOptIn(_ name: String) -> Bool { !name.hasPrefix("HANGAR_") }
+
+    /// Every global secret (reserved names aside), by name, and whether `appID`'s jobs get it.
+    public func globalSecrets(appID: UUID) throws -> [GlobalSecretGrant] {
+        try database.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT v.name, v.as_file, g.app_id IS NOT NULL AS granted FROM variables v
+                    LEFT JOIN app_global_secrets g ON g.name = v.name AND g.app_id = ?
+                    WHERE v.scope = 'global' AND v.owner_id = '' AND v.is_secret = 1
+                    ORDER BY v.name
+                    """,
+                arguments: [appID.uuidString]
+            ).compactMap { row in
+                let name: String = row["name"]
+                guard Self.isOptIn(name) else { return nil }
+                return GlobalSecretGrant(name: name, asFile: row["as_file"], granted: row["granted"])
+            }
+        }
+    }
+
+    /// Lets `appID`'s jobs get the global secret `name`; `404` `variable_not_found` when there is none.
+    public func grantGlobalSecret(appID: UUID, name: String) throws {
+        try database.write { db in
+            guard Self.isOptIn(name),
+                try Bool.fetchOne(
+                    db, sql: "SELECT 1 FROM variables WHERE scope = 'global' AND owner_id = '' AND name = ? AND is_secret = 1",
+                    arguments: [name]) == true
+            else {
+                throw APIError(code: "variable_not_found", message: "There is no global secret \(name) to give this app.")
+            }
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO app_global_secrets (app_id, name) VALUES (?, ?)", arguments: [appID.uuidString, name])
+        }
+    }
+
+    /// Stops `appID`'s jobs getting the global secret `name`; nothing happens when they did not.
+    public func revokeGlobalSecret(appID: UUID, name: String) throws {
+        try database.write { db in
+            try db.execute(
+                sql: "DELETE FROM app_global_secrets WHERE app_id = ? AND name = ?", arguments: [appID.uuidString, name])
+        }
+    }
+
+    /// Global secrets that `appID` does not get, for the deploy check.
+    public func globalSecretsNotReceived(appID: UUID) throws -> Set<String> {
+        Set(try globalSecrets(appID: appID).filter { !$0.granted }.map(\.name))
     }
 
     // MARK: Resolution
@@ -132,6 +199,8 @@ public struct VariableRepository: Sendable {
     /// For each name, every variable that could give a job of `workflow` its value, the winner first; sorted by name.
     private static func layers(_ db: GRDB.Database, appID: UUID, workflow: String?) throws -> [[Candidate]] {
         let app = appID.uuidString
+        let granted = Set(try String.fetchAll(
+            db, sql: "SELECT name FROM app_global_secrets WHERE app_id = ?", arguments: [app]))
         let rows = try Row.fetchAll(
             db,
             sql: """
@@ -164,11 +233,15 @@ public struct VariableRepository: Sendable {
                 rank = link.isEmpty ? 3 : (workflow.map(link.contains) == true ? 2 : nil)
                 source = VariableSource(kind: .group, group: row["group_name"], workflows: link)
             default:
-                rank = 4
+                // A global secret reaches only the apps that chose it.
+                let name: String = row["name"]
+                let optedOut = (row["is_secret"] as Bool) && Self.isOptIn(name) && !granted.contains(name)
+                rank = optedOut ? nil : 4
                 source = VariableSource(kind: .global)
             }
-            guard let rank else { continue }
             let name: String = row["name"]
+            // Never resolved, even if such a row were left: the key is a setting (migration v11 deleted them).
+            guard let rank, !name.hasPrefix(Self.appStoreConnectPrefix) else { continue }
             byName[name, default: []].append((
                 rank, row["position"] as Int? ?? 0,
                 Candidate(
@@ -298,6 +371,9 @@ public struct VariableRepository: Sendable {
         }
     }
 
+    /// The App Store Connect key's old variable names (`HANGAR_ASC_KEY_ID` and so on): the key is a server setting now.
+    static let appStoreConnectPrefix = "HANGAR_ASC_"
+
     /// The server reads `HANGAR_*` names without a workflow, so they apply to all workflows and are never in a group.
     static func check(scope: VariableScope, name: String, workflows: [String]) throws {
         switch scope {
@@ -311,6 +387,11 @@ public struct VariableRepository: Sendable {
             break
         }
         guard name.hasPrefix("HANGAR_") else { return }
+        if name.hasPrefix(Self.appStoreConnectPrefix) {
+            throw APIError(
+                code: "reserved_variable",
+                message: "\(name) is not a variable: set the App Store Connect key in Settings › App Store Connect. Jobs never get it in their environment.")
+        }
         if case .group = scope {
             throw APIError(
                 code: "reserved_variable", message: "\(name) can’t be in a group: set it in Settings or on the app.")

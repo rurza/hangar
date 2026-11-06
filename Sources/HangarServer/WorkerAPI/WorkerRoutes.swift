@@ -144,6 +144,8 @@ extension HangarServerApp {
             return try Response.json(JobTokenResponse(token: token), status: .created)
         }
 
+        addProvisioningRoute(to: worker)
+
         // Revokes the tokens this machine was given for the job, e.g. once its VM is gone. Idempotent, and allowed
         // after the job ended or moved to another machine (whose own tokens it leaves alone).
         worker.delete("jobs/:id/token") { _, context in
@@ -247,11 +249,21 @@ extension HangarServerApp {
             let assignment = JobAssignment(
                 job: job, app: app, workflow: workflow.forJob(running: job.action), workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
                 environment: try variables.resolvedEntries(appID: app.id, workflow: build.workflow),
-                signingIdentity: try assignmentIdentity(job: job, machineID: machineID))
+                signingIdentity: try assignmentIdentity(job: job, machineID: machineID),
+                appStoreConnectKey: try assignmentKey(job: job, machineID: machineID))
             // Claimed only once assembled, so a job whose assignment cannot be put together is not marked handed out.
             if try builds.markDispatched(jobID: job.id, machineID: machineID, at: now()) { return assignment }
         }
         return nil
+    }
+
+    /// The server's App Store Connect key, for the `xcodebuild` steps and App Store Connect calls a worker runs itself:
+    /// every job on a host Mac, and an archive on a VM Mac, whose host exports and uploads what the guest archived. A VM
+    /// Mac's test runs wholly in its guest and gets none; the guest never gets it (VM builds design, *Signing*).
+    func assignmentKey(job: Job, machineID: UUID) throws -> AppStoreConnectKey? {
+        let vm = try machines.find(nameOrID: machineID.uuidString)?.report?.vm != nil
+        if vm, job.action.kind != .archive { return nil }
+        return try ascKeys.key(.main)
     }
 
     /// The server's signing identity, only for an archive on a machine that runs its jobs in VMs: the guest has no

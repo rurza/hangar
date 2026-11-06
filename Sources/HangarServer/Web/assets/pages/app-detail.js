@@ -11,7 +11,7 @@ import { appIcon, recheckIconSoon } from './apps.js';
 import { buildDuration } from './build.js';
 import { buildRow } from './build-rows.js';
 import { openDeploySheet } from './deploy.js';
-import { linkedGroupsEditor, variablesEditor } from './variables.js';
+import { globalSecretsEditor, linkedGroupsEditor, variablesEditor } from './variables.js';
 import { toWorkflow } from '../workflow-model.js';
 import { workflowToYAML } from '../yaml.js';
 import { workflowSummary } from '../workflow-summary.js';
@@ -43,7 +43,8 @@ export async function appDetailPage(params, context) {
   const cached = onceEach(signal);
   const workflow = workflowCard(app, signal, cached);
   const names = workflowNames(app, cached);
-  const environment = variablesEditor({ scope: { app: app.slug }, signal, workflows: names });
+  const secrets = globalSecretsEditor({ app, signal });
+  const environment = variablesEditor({ scope: { app: app.slug }, signal, workflows: names, onChange: () => secrets.reload() });
   const groups = linkedGroupsEditor({ app, signal, workflows: names });
   const builds = buildsList(app, signal, (list) => latest.render(list[0] ?? null));
   const numbers = numbersCard(app, signal);
@@ -80,13 +81,19 @@ export async function appDetailPage(params, context) {
   section({
     title: 'Environment',
     footer: 'Jobs get these variables, for all workflows or only the ones you choose. For each name a job gets the '
-      + 'first of: a variable limited to its workflow, the one for all workflows, a linked group, a global variable.',
+      + 'first of: a variable limited to its workflow, the one for all workflows, a linked group, a global variable '
+      + '(a global secret only if this app receives it).',
   }, environment.element),
   section({
     title: 'Linked Variable Groups',
     footer: 'Groups are shared between apps and managed in Settings. When two linked groups set the same name, the '
       + 'one higher in this list wins; a group limited to a workflow wins over one for all workflows.',
   }, groups.element),
+  section({
+    title: 'Global Secrets',
+    footer: 'Plain global variables reach every app. A global secret reaches only the apps that receive it; add and '
+      + 'change them in Settings. A variable of this app or a linked group with the same name wins.',
+  }, secrets.element),
   section({ title: 'Remove App' }, removeCard(app)));
   element.prepend(h('a', { href: '/', 'data-link': true, class: 'back-link' }, h('span', { 'aria-hidden': 'true' }, '‹ '), 'Apps'));
   return element;

@@ -222,9 +222,7 @@ private func legiloRepo(_ host: FakeSourceHost) {
         }
         try fixture.server.variables.set(scope: .global, name: "HANGAR_GITHUB_TOKEN", input: VariableInput(value: "ghp-global", isSecret: true))
         if asc != nil {
-            for (name, value) in [("HANGAR_ASC_KEY_ID", "KEY"), ("HANGAR_ASC_ISSUER_ID", "issuer"), ("HANGAR_ASC_KEY_PATH", "pem")] {
-                try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-            }
+            try fixture.storeASCKey(keyID: "KEY", issuerID: "issuer", privateKey: "pem")
         }
         return fixture
     }
