@@ -8,8 +8,6 @@ public struct MachineRepository: Sendable {
 
     public init(database: Database) { self.database = database }
 
-    public func inTransaction<T>(_ body: (GRDB.Database) throws -> T) throws -> T { try database.write(body) }
-
     /// The token is returned once; only its SHA-256 hex is stored.
     public func create(name: String, maxConcurrentJobs: Int = 1) throws -> (Machine, token: String) {
         let token = Self.base64URL(SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) })

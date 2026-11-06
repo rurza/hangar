@@ -95,9 +95,6 @@ public final class PairingCodes: Sendable {
         return difference == 0 && a.count == b.count
     }
 
-    /// Spends `code`; false when it is not valid (or redemption is rate-limited).
-    public func redeem(_ code: String) -> Bool { (try? redeem(code) {}) != nil }
-
     /// Live codes, for tests.
     var liveCount: Int {
         let date = now()
