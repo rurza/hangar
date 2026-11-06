@@ -41,9 +41,9 @@ public struct HangarAPI: Sendable {
 
     public func health() async throws -> HealthResponse { try await get("health") }
     public func apps() async throws -> [App] { try await get("apps") }
-    public func app(_ app: String) async throws -> App { try await get("apps/\(segment(app))") }
+    public func app(_ app: String) async throws -> App { try await get("apps/\(APIPath.segment(app))") }
     public func createApp(_ request: CreateAppRequest) async throws -> App { try await send("POST", "apps", body: request) }
-    public func deleteApp(_ app: String) async throws { try await sendEmpty("DELETE", "apps/\(segment(app))") }
+    public func deleteApp(_ app: String) async throws { try await sendEmpty("DELETE", "apps/\(APIPath.segment(app))") }
 
     // MARK: - Settings
 
@@ -61,17 +61,17 @@ public struct HangarAPI: Sendable {
 
     /// `input.workflows` limits an app variable to those workflows; empty means all of them.
     public func setVariable(_ name: String, _ input: VariableInput, app: String? = nil) async throws {
-        try await sendEmpty("PUT", "\(variablesPath(app))/\(segment(name))", body: input)
+        try await sendEmpty("PUT", "\(variablesPath(app))/\(APIPath.segment(name))", body: input)
     }
 
     /// Deletes the app variable limited to exactly `workflows` (empty: the one for all workflows).
     public func deleteVariable(_ name: String, app: String? = nil, workflows: [String] = []) async throws {
-        _ = try await perform(request("DELETE", "\(variablesPath(app))/\(segment(name))", items: Self.workflowItems(workflows)))
+        _ = try await perform(request("DELETE", "\(variablesPath(app))/\(APIPath.segment(name))", items: Self.workflowItems(workflows)))
     }
 
     /// Changes the app variable limited to exactly `workflows`.
     public func updateVariable(_ name: String, app: String, workflows: [String] = [], _ update: VariableUpdate) async throws {
-        var request = request("PATCH", "\(variablesPath(app))/\(segment(name))", items: Self.workflowItems(workflows))
+        var request = request("PATCH", "\(variablesPath(app))/\(APIPath.segment(name))", items: Self.workflowItems(workflows))
         request.httpBody = try JSONCoding.encoder.encode(update)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         _ = try await perform(request)
@@ -79,11 +79,11 @@ public struct HangarAPI: Sendable {
 
     /// What a job of `workflow` gets (names and sources, no values).
     public func environment(app: String, workflow: String?) async throws -> [EffectiveVariable] {
-        try await get("apps/\(segment(app))/environment", query: ["workflow": workflow])
+        try await get("apps/\(APIPath.segment(app))/environment", query: ["workflow": workflow])
     }
 
     private func variablesPath(_ app: String?) -> String {
-        app.map { "apps/\(segment($0))/variables" } ?? "variables"
+        app.map { "apps/\(APIPath.segment($0))/variables" } ?? "variables"
     }
 
     private static func workflowItems(_ workflows: [String]) -> [URLQueryItem] {
@@ -93,61 +93,61 @@ public struct HangarAPI: Sendable {
     // MARK: - Variable groups (`group` is an id or a name)
 
     public func variableGroups() async throws -> [VariableGroup] { try await get("variable-groups") }
-    public func variableGroup(_ group: String) async throws -> VariableGroup { try await get("variable-groups/\(segment(group))") }
+    public func variableGroup(_ group: String) async throws -> VariableGroup { try await get("variable-groups/\(APIPath.segment(group))") }
 
     public func createVariableGroup(name: String) async throws -> VariableGroup {
         try await send("POST", "variable-groups", body: VariableGroupRequest(name: name))
     }
 
     public func renameVariableGroup(_ group: String, to name: String) async throws -> VariableGroup {
-        try await send("PATCH", "variable-groups/\(segment(group))", body: VariableGroupRequest(name: name))
+        try await send("PATCH", "variable-groups/\(APIPath.segment(group))", body: VariableGroupRequest(name: name))
     }
 
     public func deleteVariableGroup(_ group: String) async throws {
-        try await sendEmpty("DELETE", "variable-groups/\(segment(group))")
+        try await sendEmpty("DELETE", "variable-groups/\(APIPath.segment(group))")
     }
 
     public func setGroupVariable(_ name: String, _ input: VariableInput, group: String) async throws {
-        try await sendEmpty("PUT", "variable-groups/\(segment(group))/variables/\(segment(name))", body: input)
+        try await sendEmpty("PUT", "variable-groups/\(APIPath.segment(group))/variables/\(APIPath.segment(name))", body: input)
     }
 
     public func deleteGroupVariable(_ name: String, group: String) async throws {
-        try await sendEmpty("DELETE", "variable-groups/\(segment(group))/variables/\(segment(name))")
+        try await sendEmpty("DELETE", "variable-groups/\(APIPath.segment(group))/variables/\(APIPath.segment(name))")
     }
 
     /// The groups the app links, in precedence order.
     public func variableGroupLinks(app: String) async throws -> [AppVariableGroupLink] {
-        try await get("apps/\(segment(app))/variable-groups")
+        try await get("apps/\(APIPath.segment(app))/variable-groups")
     }
 
     /// Links the group for `workflows` (empty: all), or changes the link's workflows.
     public func linkVariableGroup(_ group: String, app: String, workflows: [String] = []) async throws {
         try await sendEmpty(
-            "PUT", "apps/\(segment(app))/variable-groups/\(segment(group))", body: LinkVariableGroupRequest(workflows: workflows))
+            "PUT", "apps/\(APIPath.segment(app))/variable-groups/\(APIPath.segment(group))", body: LinkVariableGroupRequest(workflows: workflows))
     }
 
     public func unlinkVariableGroup(_ group: String, app: String) async throws {
-        try await sendEmpty("DELETE", "apps/\(segment(app))/variable-groups/\(segment(group))")
+        try await sendEmpty("DELETE", "apps/\(APIPath.segment(app))/variable-groups/\(APIPath.segment(group))")
     }
 
     // MARK: - Numbers and workflows
 
-    public func numbers(app: String) async throws -> NumbersReport { try await get("apps/\(segment(app))/numbers") }
+    public func numbers(app: String) async throws -> NumbersReport { try await get("apps/\(APIPath.segment(app))/numbers") }
 
     public func bumpNumber(app: String, next: Int) async throws -> NumbersReport {
-        try await send("PUT", "apps/\(segment(app))/numbers/next", body: BumpNumberRequest(next: next))
+        try await send("PUT", "apps/\(APIPath.segment(app))/numbers/next", body: BumpNumberRequest(next: next))
     }
 
     public func workflowFile(app: String) async throws -> StoredWorkflowFile {
-        try await get("apps/\(segment(app))/workflow-file")
+        try await get("apps/\(APIPath.segment(app))/workflow-file")
     }
 
     public func setWorkflowFile(app: String, yaml: String) async throws -> StoredWorkflowFile {
-        try await send("PUT", "apps/\(segment(app))/workflow-file", body: PutWorkflowFileRequest(yaml: yaml))
+        try await send("PUT", "apps/\(APIPath.segment(app))/workflow-file", body: PutWorkflowFileRequest(yaml: yaml))
     }
 
     public func clearWorkflowFile(app: String) async throws {
-        try await sendEmpty("DELETE", "apps/\(segment(app))/workflow-file")
+        try await sendEmpty("DELETE", "apps/\(APIPath.segment(app))/workflow-file")
     }
 
     // MARK: - Builds and jobs
@@ -169,7 +169,7 @@ public struct HangarAPI: Sendable {
     public func artifacts(jobID: UUID) async throws -> [ArtifactInfo] { try await get("jobs/\(jobID.uuidString)/artifacts") }
 
     public func artifact(jobID: UUID, name: String) async throws -> Data {
-        try await perform(request("GET", "jobs/\(jobID.uuidString)/artifacts/\(segment(name))"))
+        try await perform(request("GET", "jobs/\(jobID.uuidString)/artifacts/\(APIPath.segment(name))"))
     }
 
     // MARK: - Repositories, App Store Connect and deploy checks
@@ -180,7 +180,7 @@ public struct HangarAPI: Sendable {
     /// `repository` is `owner/name`.
     public func inspectRepository(_ repository: String, ref: String? = nil) async throws -> RepositoryInspection {
         let parts = repository.split(separator: "/", maxSplits: 1).map(String.init)
-        let path = "github/repos/\(segment(parts.first ?? ""))/\(segment(parts.count > 1 ? parts[1] : ""))/inspect"
+        let path = "github/repos/\(APIPath.segment(parts.first ?? ""))/\(APIPath.segment(parts.count > 1 ? parts[1] : ""))/inspect"
         return try await get(path, query: ["ref": ref])
     }
 
@@ -199,28 +199,28 @@ public struct HangarAPI: Sendable {
     public func removeSigningIdentity() async throws -> SigningStatus { try await send("DELETE", "signing") }
 
     public func workflowSuggestion(app: String, ref: String? = nil, bundleID: String? = nil) async throws -> WorkflowSuggestion {
-        try await get("apps/\(segment(app))/workflow-suggestion", query: ["ref": ref, "bundleID": bundleID])
+        try await get("apps/\(APIPath.segment(app))/workflow-suggestion", query: ["ref": ref, "bundleID": bundleID])
     }
 
     /// The workflows in effect at `ref`, nil meaning the default branch.
     public func workflows(app: String, ref: String?) async throws -> WorkflowsResponse {
-        try await get("apps/\(segment(app))/workflows", query: ["ref": ref])
+        try await get("apps/\(APIPath.segment(app))/workflows", query: ["ref": ref])
     }
 
-    public func branches(app: String) async throws -> RepositoryBranches { try await get("apps/\(segment(app))/branches") }
+    public func branches(app: String) async throws -> RepositoryBranches { try await get("apps/\(APIPath.segment(app))/branches") }
 
     public func deployCheck(app: String, workflow: String, ref: String? = nil, commit: String? = nil, machine: String? = nil)
         async throws -> DeployCheck
     {
         try await get(
-            "apps/\(segment(app))/deploy-check",
+            "apps/\(APIPath.segment(app))/deploy-check",
             query: ["workflow": workflow, "ref": ref, "commit": commit, "machine": machine])
     }
 
-    public func betaGroups(app: String) async throws -> [BetaGroup] { try await get("apps/\(segment(app))/beta-groups") }
+    public func betaGroups(app: String) async throws -> [BetaGroup] { try await get("apps/\(APIPath.segment(app))/beta-groups") }
 
     public func createBetaGroup(app: String, _ request: CreateBetaGroupRequest) async throws -> BetaGroup {
-        try await send("POST", "apps/\(segment(app))/beta-groups", body: request)
+        try await send("POST", "apps/\(APIPath.segment(app))/beta-groups", body: request)
     }
 
     // MARK: - API tokens
@@ -231,7 +231,7 @@ public struct HangarAPI: Sendable {
         try await send("POST", "api-tokens", body: request)
     }
 
-    public func revokeAPIToken(_ token: String) async throws { try await sendEmpty("DELETE", "api-tokens/\(segment(token))") }
+    public func revokeAPIToken(_ token: String) async throws { try await sendEmpty("DELETE", "api-tokens/\(APIPath.segment(token))") }
     public func currentAPIToken() async throws -> APIToken { try await get("api-tokens/current") }
 
     // MARK: - Machines
@@ -242,20 +242,20 @@ public struct HangarAPI: Sendable {
         try await send("POST", "machines", body: request)
     }
 
-    public func deleteMachine(_ machine: String) async throws { try await sendEmpty("DELETE", "machines/\(segment(machine))") }
+    public func deleteMachine(_ machine: String) async throws { try await sendEmpty("DELETE", "machines/\(APIPath.segment(machine))") }
 
     /// Turns builds on `machine` (name or ID) off: it takes no new jobs until `resumeMachine`.
     public func pauseMachine(_ machine: String) async throws -> Machine {
-        try await send("POST", "machines/\(segment(machine))/pause")
+        try await send("POST", "machines/\(APIPath.segment(machine))/pause")
     }
 
     public func resumeMachine(_ machine: String) async throws -> Machine {
-        try await send("POST", "machines/\(segment(machine))/resume")
+        try await send("POST", "machines/\(APIPath.segment(machine))/resume")
     }
 
     /// Allows (`true`) or stops VM builds on `machine`; owner only.
     public func setVMBuilds(_ machine: String, allowed: Bool) async throws -> Machine {
-        try await send(allowed ? "POST" : "DELETE", "machines/\(segment(machine))/vm-builds")
+        try await send(allowed ? "POST" : "DELETE", "machines/\(APIPath.segment(machine))/vm-builds")
     }
 
     /// Who counts as the owner; owner only.
@@ -315,7 +315,7 @@ public struct HangarAPI: Sendable {
         return request
     }
 
-    /// `path` is already percent-encoded (fixed words, UUIDs and `segment(_:)` output). Nil query values are left out.
+    /// `path` is already percent-encoded (fixed words, UUIDs and `APIPath.segment(_:)` output). Nil query values are left out.
     func request(_ method: String, _ path: String, query: [String: String?] = [:]) -> URLRequest {
         request(
             method, path,
@@ -343,12 +343,5 @@ public struct HangarAPI: Sendable {
     private static func queryOrder(_ key: String) -> String {
         let order = ["follow", "app", "workflow", "ref", "commit", "step", "limit", "tail"]
         return order.firstIndex(of: key).map { "\($0)" } ?? "9\(key)"
-    }
-
-    /// One path segment: anything but unreserved characters is percent-encoded, so a name cannot add segments.
-    private func segment(_ name: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
     }
 }
