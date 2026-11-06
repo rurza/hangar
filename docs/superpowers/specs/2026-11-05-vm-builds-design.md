@@ -347,7 +347,9 @@ questions*). They are made by the `hangar` daemon itself, which also restores th
 5. **Run.** In the guest, as `builder`: `hangar-worker run-job --job <id>`, with the server reached through
    the host relay. The guest runs the job's pipeline and streams logs as today.
 6. **Collect.** Artifacts upload from the guest through the same relay, as `upload-artifacts` does today.
-   The host does not copy files out of the guest.
+   The host does not copy files out of the guest. *(Revised 2026-11-06 for archives: the host copies the archive,
+   the result bundle, the TestFlight notes and the full log out, exports and uploads them itself; see decision 19
+   of* First slice as built.*)*
 7. **Destroy.** `stop()` (a hard stop: nothing in the guest is worth a clean shutdown), revoke the job token,
    delete `jobs/<id>/`. On every path: success, failure, cancel, timeout, host shutdown.
 
@@ -389,8 +391,11 @@ keychain.
   Provisioning profiles are downloaded per job by `-allowProvisioningUpdates`, which adds a few seconds.
 - **Gone with the VM.** The keychain lives on the clone, and the clone is deleted. The `.p12` file is
   removed after import anyway.
+- *(Revised 2026-11-06: no App Store Connect key enters a guest; it archives with server-provided profiles, and the
+  host exports and uploads. See decisions 19 to 23 of* First slice as built.*)*
 - The private key does enter every guest. A malicious build can copy it out during its run, exactly as it
-  can on the host today. That is a development identity, revocable, and it can't publish to the App Store
+  can on the host today. *(Revised 2026-11-06: it is now imported non-extractable, decision 22; a build can still
+  sign with it during its run, not take it away.)* That is a development identity, revocable, and it can't publish to the App Store
   alone. The distribution identity stays with Apple (cloud-managed).
 
 #### Server-managed identity
@@ -693,6 +698,97 @@ something open, the slice decided as follows.
     (`--no-metal-toolchain`, `--no-platforms`, `--platform` to change that). `tools:` is not checked on a VM
     machine; `xcode:` and simulator platforms are matched against the images.
 
+19. **An archive is split between the guest and its host** *(2026-11-06, security review C1)*. No App Store
+    Connect key of the server's ever enters a guest. The guest runs `checkout` through `stamp`, then
+    `post-xcodebuild`, and reports them itself. Then it prints `hangar-handoff {json}`, with the guest paths of the
+    archive, the result bundle, the TestFlight notes and the full log, instead of a result. The host copies those
+    out with `tar` over SSH while the VM still runs, then stops the VM. It then runs `export`, the post-actions,
+    `upload-artifacts` and `cleanup` in the job's directory with the server's key, and reports the result with its
+    machine token. The steps' names and order on the build page do not change; only the order they run in does.
+    The details:
+    - **`post-xcodebuild` runs before the export**, as before in the guest, so in a VM it sees
+      `CI_XCODEBUILD_EXIT_CODE` but not `CI_APP_STORE_SIGNED_APP_PATH` or `CI_DEVELOPER_ID_SIGNED_APP_PATH`. An
+      Xcode Cloud `ci_post_xcodebuild.sh` that uploads the exported `.ipa` (to a crash reporter, a store, a chat)
+      gets an empty path in a VM. Uploading dSYMs from `CI_ARCHIVE_PATH` still works, since the archive is there. A
+      script that needs the exported product must move to a post-action, or run on a host Mac.
+    - **The copy is checked before anything of the host's reads it.** The guest's paths must be absolute, without
+      `..`, and end in `.xcarchive`, `.xcresult`, `/TestFlight` and `.txt`. `tar` unpacks into a staging directory
+      (bsdtar refuses absolute and `..` member names by default). The host then refuses a copy that holds a
+      symbolic link whose target is absolute or leads outside it, or anything but regular files, directories and
+      links. A link to `/Users/hangar/.hangar/…` would otherwise be followed by the export and land in the `.ipa`.
+      Not limited: the copy's size. A hostile guest can send a large archive until the host's disk floor is reached
+      (the job then fails).
+    - **The export runs on the host with an environment of its own**: the identity variables, `PATH`,
+      `DEVELOPER_DIR` and a `TMPDIR` of the job's, and none of the job's variables. The host's CI keychain is unlocked
+      first when it has one. It needs the workflow's Xcode installed on the host (an image's Xcode is copied from
+      the host when the image is built, so it normally is); without it the export fails with "Xcode … not
+      installed".
+    - **Residual risk:** the host's `xcodebuild -exportArchive` and `altool`/the upload parse an archive that
+      build code wrote: property lists, Mach-O files, code signatures and asset catalogs. This is Apple's code, run
+      as `hangar` with the server's key on disk for the length of the step. A memory-safety bug in those parsers,
+      or an export option the archive can steer, is the remaining path from a malicious build to the key. It is
+      much narrower than a build phase reading the key file, which was the path before. No Run Script phase,
+      package plugin or `ci_*` script runs on the host.
+20. **The guest signs with development profiles from the server** *(2026-11-06, owner's call)*. Before the VM
+    boots, the host asks `POST /worker/jobs/{id}/provisioning` with its machine token. For the app's own bundle
+    IDs (the App Store Connect app's bundle ID and every registered ID under it, `<id>.*`, of the archive's
+    platform), the server returns an active development profile of the platform's type that holds Hangar's
+    certificate. It creates one only when there is none: development types only (the client has no distribution
+    type), Hangar's certificate, the team's enabled devices, a name `Hangar Development <id> <date>`, logged on
+    the server and in the archive's log. The guest installs the profiles in both of Xcode's profile directories
+    and archives with an `-xcconfig`: `CODE_SIGN_STYLE = Manual`, `CODE_SIGN_IDENTITY = Apple Development`, and
+    `PROVISIONING_PROFILE_SPECIFIER = $(HANGAR_PROFILE_$(PRODUCT_BUNDLE_IDENTIFIER:identifier))` with one
+    `HANGAR_PROFILE_<id>` per profile. Only targets whose bundle ID has a profile get one, so frameworks and
+    package targets, which refuse a profile, get none. No `-allowProvisioningUpdates` and no account. Checked on the
+    mini with Xcode 27.2: the mapping reaches only the app target, and its framework and SwiftPM dependencies
+    build without complaint. Not checked: a real signed archive (`xcodebuild` must accept installed profiles
+    without any Apple account), which is item 21 of *Manual verification*. Automatic signing would ignore profiles
+    created through the API, which is why manual signing is used. Found while building it: an iOS device archive
+    will not sign ad hoc (`CODE_SIGN_IDENTITY=-` still "requires a provisioning profile"), and an unsigned one
+    (`CODE_SIGNING_ALLOWED=NO`) carries no entitlements, which the export takes from the archive's signature. So
+    the guest has to sign with a real profile.
+21. **The development key is the fallback, and only that** *(2026-11-06, owner's call)*. Settings › Development
+    Key holds an optional second team key. The server refuses an individual key, its own key, and a key that can
+    list the team's users (an Admin key). It comes with the provisioning answer only when a profile is missing; the
+    guest then archives as before, automatically with `-allowProvisioningUpdates` and that key. The guest always
+    has Hangar's identity installed before the archive, so Xcode has no reason to create a certificate. With
+    neither a profile nor the key, an iOS, tvOS, visionOS or watchOS archive fails before its VM boots, naming
+    each missing bundle ID and why. A macOS one goes on, since an app that needs no profile signs with the
+    certificate alone. A worker's own identity (`vm identity import`) gets no profiles (they hold Hangar's
+    certificate), only the development key. A limit: the server sees only bundle IDs registered with Apple. A new
+    extension whose ID is not registered yet gets no profile and is not reported missing, so the archive fails with
+    Xcode's "requires a provisioning profile". Registering the ID (Certificates, Identifiers & Profiles) fixes it:
+    the next archive gets a profile made for it. Capabilities are not synchronised either: a profile is made with
+    the capabilities the App ID has at Apple.
+    - **What a leak of the development key exposes:** whoever controls a build's code during a fallback archive
+      can copy it. With the Developer role and access to Certificates, Identifiers & Profiles it can, until it is
+      revoked: create and revoke development certificates, register devices, create bundle IDs and change their
+      capabilities, and create development profiles. Apple's role table gives distribution certificates and
+      distribution profiles to Account Holder, Admin and App Manager, not Developer. Hangar checks only that the
+      key is not an Admin key (it cannot list users); it cannot tell App Manager from Developer without trying a
+      write. Use the Developer role, and keep the key unset unless a profile cannot be provided otherwise. *(Still
+      to confirm against Apple's page, see* Manual verification *item 22.)*
+22. **The guest's identity cannot be exported** *(2026-11-06, security review H1)*. `security import -x` is
+    ignored for a `.p12`: on macOS 27.2, with a throwaway keychain, the key exported again byte for byte. So the
+    guest splits the `.p12` with `/usr/bin/openssl` (passwords on standard input), imports the private key alone as
+    a PKCS#1 PEM with `-x` and only `/usr/bin/codesign` in its access list, then the certificates as a PEM
+    sequence. On the same throwaway keychain, `security export` of that key then fails at once with "The contents
+    of this item cannot be retrieved", without a prompt. The partition list is the same as before
+    (`apple-tool:,apple:,codesign:`), so Xcode's `codesign` signs without a prompt. Not checked here: codesign
+    signing with the non-extractable key, since a throwaway self-signed certificate is not a valid signing
+    identity without changing this Mac's trust settings. Item 23 of *Manual verification* checks it. The keychain's
+    password is no longer written to `~/.hangar-keychain/keychain-password`: the guest worker keeps it in memory
+    to unlock the keychain and set the partition list after each xcodebuild step. The keychain has no lock timeout
+    and a VM does not sleep. `builder` is not an administrator and cannot attach a debugger to that process.
+23. **The App Store Connect key is a server setting** *(2026-11-06, security review C1)*. It is never a variable.
+    The server's certificate and profile calls use it. An assignment carries it in `appStoreConnectKey`: for every
+    job on a host Mac, and for an archive on a VM Mac, whose host removes it from the guest's copy. On a host Mac
+    the worker writes the `.p8` into the job's `asc-key/` directory only while the archive, test or export
+    `xcodebuild` (not package resolution) and each post-action run, and removes it right after. No hook's
+    environment has it. **What still sees it on a host Mac:** Run Script phases, package plugins and macros run
+    as the worker's user during those `xcodebuild` steps and can read the file, and anything running as that user
+    can read the worker's memory. VM builds are the boundary; a host Mac is not one.
+
 **Revised 2026-11-05: an image installs only what is necessary.** *(owner's call)* A job image carries macOS and
 Xcode (first launch done), and nothing else: no Homebrew, no Metal toolchain and no simulator runtime by default
 (archives use the SDKs inside Xcode; only test jobs need a runtime, and `--platform iOS` adds one). A job assumes only macOS and Xcode and installs what it needs itself, so no build depends
@@ -873,6 +969,43 @@ and `/Library/LaunchDaemons/app.hangar.pf.plist`, and loads them), the `pfctl` a
     From inside one job, `nc -z -G 3 <the other guest's 192.168.64.x> 22` is `blocked` (open question 9). Then
     start a VM by hand (the spike's `tart`): a job that starts meanwhile logs "already runs two macOS VMs …
     trying again" in the worker log and runs once the hand-started VM stops; no job fails.
+21. **No key in the guest, both signing paths** (decisions 19 to 21). Before: in Settings, the App Store
+    Connect card shows the team key and no app variable or global variable named `HANGAR_ASC_*` is left (the
+    migration moved them). Leave Settings › Development Key unset.
+    - *Profiles path.* Deploy Legilo's TestFlight workflow (iOS and macOS archives). In each archive's log:
+      `signing for development with Hangar's profiles for …; no App Store Connect key is in this VM`, and a
+      `created development profile …` line for each bundle ID that had none (also in the server's log). Then
+      `post-xcodebuild`, then `export` with `exporting on rurzobuk-max with Xcode 27.2 …, outside the VM`, the
+      TestFlight upload, and both builds in TestFlight. In App Store Connect › Profiles, only `Hangar Development …`
+      development profiles are new; no distribution profile and no certificate is new.
+    - *Prove the key is absent:* on a throwaway branch whose `ci_post_clone.sh` and `ci_post_xcodebuild.sh` run
+      `env | grep -c HANGAR_ASC; ls ~/hangar ~/.hangar* /Volumes/workspace/hangar 2>/dev/null | grep -ci p8;
+      grep -rl "PRIVATE KEY" ~ /Volumes/workspace 2>/dev/null | head`, the log shows `0`, `0` and nothing.
+    - *If Xcode refuses offline manual signing* (the archive fails with "No Account for Team" or "No profiles for
+      … were found" although the profile is installed), that is the risk decision 20 names. Add a development key
+      (next bullet) and record what Xcode said here.
+    - *Fallback path.* Make a team key with the Developer role and access to Certificates, Identifiers &
+      Profiles, and add it in Settings › Development Key. Try the Admin key there first: it is refused
+      (`development_key_too_powerful`). Then make the profiles unavailable: give the MacBook its own identity
+      (`hw vm identity import`, any Apple Development `.p12` of the team), for which the server provides no
+      profiles. Deploy: the archive's log says `no development profile for Legilo: this Mac signs VM archives with
+      its own identity …` and `signing for development with Hangar's development key …`; the archive succeeds and
+      the export still runs on the host. Remove the development key and deploy again: the iOS archive fails before
+      its VM boots, naming the reason and Settings › App Store Connect. Then `hw vm identity remove`.
+22. **The development key's role:** with the Developer-role key from 21, check App Store Connect › Users and
+    Access › Integrations shows its role as Developer, and read Apple's role table
+    (developer.apple.com/help/account/access/roles) for "Create and revoke distribution certificates" and
+    "Create and delete distribution provisioning profiles": the Developer column must be empty. Do not try to
+    create a distribution certificate with it.
+23. **The guest identity cannot be exported** (decision 22, security review item 6): on a throwaway branch whose
+    `ci_post_clone.sh` runs `security export -k ~/.hangar-keychain/job.keychain-db -t identities -f pkcs12 -P x
+    -o /tmp/x.p12; echo "export $?"; ls ~/.hangar-keychain`, the log shows a failed export ("cannot be
+    retrieved" or a non-zero status) and only `job.keychain-db`; the archive still signs (codesign works with the
+    non-extractable key) and reaches TestFlight.
+24. **A hostile archive does not reach the host:** on a throwaway branch whose `ci_post_xcodebuild.sh` runs
+    `ln -s /Users/hangar/.hangar "$CI_ARCHIVE_PATH/Products/escape"`, the job fails with `… is a link to
+    /Users/hangar/.hangar, outside it` and no export runs.
+
 20. **Turning it off:** `hw vm disable`, restart: the next job builds on the host as before. `hw vm enable`
     and restart to go back. `sudo /Users/hangar/.local/bin/hangar-worker vm network uninstall` removes the
     filter (the Mac then reports no VM slots).
