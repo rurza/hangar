@@ -148,4 +148,12 @@ import Testing
         try make("Xcode.app", "26.0")
         #expect(VMSetupXcode.find(in: root)?.path == root + "/Xcode.app")
     }
+
+    @Test func theNewestBaseImageIsBuiltFrom() {
+        var newer = Self.base()
+        newer.name = "vanilla-26.7"
+        newer.createdAt = Date(timeIntervalSince1970: 5)
+        #expect(VMSetupFacts.newestBaseImage(in: [Self.base(), newer, Self.job()])?.name == "vanilla-26.7")
+        #expect(VMSetupFacts.newestBaseImage(in: [Self.job()]) == nil)
+    }
 }

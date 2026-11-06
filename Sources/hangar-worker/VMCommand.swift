@@ -174,10 +174,10 @@ struct VMCommand: AsyncParsableCommand {
                     installed unless asked for: jobs install what they need.
                     """)
 
-            @Option(help: "The vanilla image to start from.")
-            var from: String = "vanilla-26.6.2"
-            @Option(help: "The Xcode to copy in. Default: /Applications/Xcode.app.")
-            var xcode: String = "/Applications/Xcode.app"
+            @Option(help: "The vanilla image to start from. Default: the newest one imported.")
+            var from: String?
+            @Option(help: "The Xcode to copy in. Default: /Applications/Xcode.app, else the newest /Applications/Xcode*.app.")
+            var xcode: String?
             @Option(help: "The image's name. Default: xcode-<version>.")
             var name: String?
             @Option(name: .customLong("platform"), help: "A simulator platform to download in the guest (iOS, watchOS…), for test jobs; repeatable. Default: none (archives need only the SDKs Xcode carries).")
@@ -196,6 +196,9 @@ struct VMCommand: AsyncParsableCommand {
                 let settings = location.settings()
                 let host = VMHost(settings: settings)
                 let builder = VMImageBuilder(host: host, progress: VMCommand.say)
+                let from = from ?? VMSetupFacts.newestBaseImage(in: host.images().map(\.metadata))?.name
+                    ?? "vanilla-" + VMSetup.defaultGuestMacOS
+                let xcode = xcode ?? VMSetupXcode.find()?.path ?? "/Applications/Xcode.app"
                 let partialName = name ?? ((try? VMImageBuilder.xcodeVersion(at: xcode)).map { "xcode-\($0.version)" } ?? "")
                 let signals = VMCommand.removeOnInterrupt(host.storage.partialImage(partialName).path)
                 defer { signals.forEach { $0.cancel() } }

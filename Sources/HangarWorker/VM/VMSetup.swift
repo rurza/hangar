@@ -141,7 +141,9 @@ public struct VMSetupFacts: Sendable {
     }
 
     /// The newest base (vanilla) image, to build from.
-    public var newestBaseImage: VMImageMetadata? {
+    public var newestBaseImage: VMImageMetadata? { Self.newestBaseImage(in: images) }
+
+    public static func newestBaseImage(in images: [VMImageMetadata]) -> VMImageMetadata? {
         images.filter { !$0.isJobImage }.max { $0.createdAt < $1.createdAt }
     }
 }
