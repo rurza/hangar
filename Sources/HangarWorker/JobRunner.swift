@@ -111,6 +111,9 @@ public struct JobRunner: Sendable {
         let jobID = assignment.job.id
         let layout = WorkspaceLayout(dataDirectory: dataDirectory, appSlug: assignment.app.slug, jobID: jobID,
             temporaryRoot: temporaryRoot)
+        // Marks the workspace as built now and keeps the disk sweep off it until the job ends.
+        let workspaceLease = WorkspaceUse.shared.begin(layout.workspace)
+        defer { workspaceLease.end() }
         let masker = SecretMasker(
             secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value)
                 + [assignment.appStoreConnectKey?.privateKey].compactMap { $0 })

@@ -19,6 +19,8 @@ public struct Doctor: Sendable {
     private let keychain: CIKeychain?
     /// Set when VM builds are on: the report's `vm` section.
     private let vm: VMDoctor?
+    /// The disk sweep's last measurement of Hangar's own files.
+    private let diskUsage: @Sendable () -> HangarDiskUsage?
     /// The last simulator runtimes listed and when the list was last attempted, shared by the copies of this Doctor.
     private let simulators = SimulatorListCache()
 
@@ -30,9 +32,11 @@ public struct Doctor: Sendable {
         dataDirectory: String = NSHomeDirectory(), clock: any Clock<Duration> = ContinuousClock(),
         signTimeout: Duration = .seconds(10), simulatorTimeout: Duration = .seconds(10),
         simulatorRefresh: TimeInterval = 600, now: @escaping @Sendable () -> Date = Date.init,
-        userName: String = NSUserName(), keychain: CIKeychain? = nil, vm: VMDoctor? = nil
+        userName: String = NSUserName(), keychain: CIKeychain? = nil, vm: VMDoctor? = nil,
+        diskUsage: @escaping @Sendable () -> HangarDiskUsage? = { nil }
     ) {
         self.vm = vm
+        self.diskUsage = diskUsage
         self.userName = userName
         self.keychain = keychain
         self.simulatorTimeout = simulatorTimeout
@@ -74,7 +78,8 @@ public struct Doctor: Sendable {
             runningUser: userName,
             headless: keychain == nil ? nil : true,
             keychainProblem: problem,
-            vm: vm?.report(runningJobs: runningJobIDs.count))
+            vm: vm?.report(runningJobs: runningJobIDs.count),
+            diskUsage: diskUsage())
     }
 
     // MARK: Probes

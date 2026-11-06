@@ -81,6 +81,53 @@ public struct VMStorage: Sendable, Equatable {
     }
 }
 
+/// Held by an import or a build for as long as it assembles `images/.partial-<name>`: an flock on the partial's
+/// `.lock`, which the process holds until it ends however it ends, so the disk sweep can tell a partial still being
+/// assembled (perhaps by `vm image build` in another process) from one an interrupted run left behind.
+public final class VMPartialLock: @unchecked Sendable {
+    static let fileName = ".lock"
+
+    private var descriptor: Int32
+    private let path: String
+
+    /// Locks `partial` (the directory must exist). Throws when another process holds it.
+    public init(_ partial: String) throws {
+        path = partial + "/" + Self.fileName
+        descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw VMStorageError.unreadable(path) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            close(descriptor)
+            throw VMStorageError.unreadable(path)
+        }
+    }
+
+    /// Removes the lock file before the partial is renamed into a complete image; the lock is held until `release`.
+    public func removeFile() { unlink(path) }
+
+    public func release() {
+        guard descriptor >= 0 else { return }
+        close(descriptor)
+        descriptor = -1
+    }
+
+    deinit { release() }
+
+    /// A partial whose lock no process holds; one without a lock file (from an older worker, or the instant before
+    /// its rename) once nothing in it has changed for a day.
+    public static func isAbandoned(_ partial: String, now: Date) -> Bool {
+        let lock = partial + "/" + fileName
+        let descriptor = open(lock, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        if descriptor >= 0 {
+            defer { close(descriptor) }
+            guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { return false }
+            flock(descriptor, LOCK_UN)
+            return true
+        }
+        guard let modified = DiskSweepPlan.lastModified(tree: partial) else { return false }
+        return now.timeIntervalSince(modified) > DiskSweepPlan.temporaryMaxAge
+    }
+}
+
 /// One image: Tart's `config.json`, `disk.img` and `nvram.bin`, plus Hangar's `image.json`.
 public struct VMImageDirectory: Sendable, Equatable {
     public var path: String

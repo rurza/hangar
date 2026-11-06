@@ -59,6 +59,9 @@ public struct MachineReport: Codable, Equatable, Sendable {
     /// The machine's VM builds (VM builds design): present when its worker is configured for them, and then every job
     /// on it runs in a VM. Nil for a machine that builds on the host, and from an older worker.
     public var vm: VMReport?
+    /// What Hangar's own files take on this Mac, clone-aware; nil until the worker's first disk sweep, and from an
+    /// older worker.
+    public var diskUsage: HangarDiskUsage?
 
     public init(
         macOSVersion: String, xcodes: [InstalledXcode], chip: String, performanceCores: Int,
@@ -66,9 +69,10 @@ public struct MachineReport: Codable, Equatable, Sendable {
         canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
         xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = [],
         binarySHA256: String? = nil, runningUser: String? = nil, headless: Bool? = nil, keychainProblem: String? = nil,
-        vm: VMReport? = nil
+        vm: VMReport? = nil, diskUsage: HangarDiskUsage? = nil
     ) {
         self.vm = vm
+        self.diskUsage = diskUsage
         self.macOSVersion = macOSVersion
         self.xcodes = xcodes
         self.chip = chip
@@ -92,7 +96,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
         case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities, binarySHA256
-        case runningUser, headless, keychainProblem, vm
+        case runningUser, headless, keychainProblem, vm, diskUsage
     }
 
     /// An older worker sends none of the newer fields (`signingIdentities`, `xcodeAccountSignedIn`,
@@ -118,6 +122,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
         headless = try container.decodeIfPresent(Bool.self, forKey: .headless)
         keychainProblem = try container.decodeIfPresent(String.self, forKey: .keychainProblem)
         vm = try container.decodeIfPresent(VMReport.self, forKey: .vm)
+        diskUsage = try container.decodeIfPresent(HangarDiskUsage.self, forKey: .diskUsage)
     }
 }
 

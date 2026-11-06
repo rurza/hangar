@@ -52,10 +52,14 @@ public struct WorkerUpdate: Codable, Equatable, Sendable {
 public struct HeartbeatResponse: Codable, Equatable, Sendable {
     public var cancelJobIDs: [UUID]
     public var workerUpdate: WorkerUpdate?
+    /// The Xcode versions queued and running jobs ask for, on any machine: a VM worker keeps every image one of them
+    /// picks. Nil from an older server, and then the worker removes no image.
+    public var xcodesNeeded: [String]?
 
-    public init(cancelJobIDs: [UUID] = [], workerUpdate: WorkerUpdate? = nil) {
+    public init(cancelJobIDs: [UUID] = [], workerUpdate: WorkerUpdate? = nil, xcodesNeeded: [String]? = nil) {
         self.cancelJobIDs = cancelJobIDs
         self.workerUpdate = workerUpdate
+        self.xcodesNeeded = xcodesNeeded
     }
 }
 

@@ -79,11 +79,15 @@ public struct VMImageBuilder: Sendable {
         let partial = storage.partialImage(name)
         try? FileManager.default.removeItem(atPath: partial.path)
         try FileManager.default.createDirectory(atPath: partial.path + "/share", withIntermediateDirectories: true)
+        // Held until the build ends, so the disk sweep leaves this partial alone.
+        let lock = try VMPartialLock(partial.path)
+        defer { lock.release() }
         do {
             let image = try await provision(base: base, into: partial, xcodePath: xcodePath, xcode: xcode, platforms: platforms,
                 diskGB: diskGB, homebrew: homebrew, metalToolchain: metalToolchain, now: now)
             try FileManager.default.removeItem(atPath: partial.path + "/share")
             try? FileManager.default.removeItem(atPath: partial.path + "/askpass.sh")
+            lock.removeFile()
             try FileManager.default.moveItem(atPath: partial.path, toPath: storage.image(name).path)
             return try VMImage(directory: storage.image(name)).with(metadata: image)
         } catch {

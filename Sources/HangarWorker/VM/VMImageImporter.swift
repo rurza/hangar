@@ -105,8 +105,12 @@ public struct VMImageImporter: Sendable {
         let partial = storage.partialImage(name)
         try? FileManager.default.removeItem(atPath: partial.path)
         try FileManager.default.createDirectory(atPath: partial.path, withIntermediateDirectories: true)
+        // Held until the import ends, so the disk sweep leaves this partial alone.
+        let lock = try VMPartialLock(partial.path)
+        defer { lock.release() }
         do {
             try await pull(reference, digest: digest, into: partial, storage: storage, now: now)
+            lock.removeFile()
             try FileManager.default.moveItem(atPath: partial.path, toPath: storage.image(name).path)
         } catch {
             try? FileManager.default.removeItem(atPath: partial.path)
