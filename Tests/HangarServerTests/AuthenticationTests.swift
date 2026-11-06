@@ -7,6 +7,10 @@ import Testing
 
 @testable import HangarServer
 
+final class Counter: Sendable {
+    let count = Mutex(0)
+}
+
 /// Who may call the public API: the owner's tailnet devices, API tokens, and nobody else (security review C2).
 @Suite(.timeLimit(.minutes(1))) struct AuthenticationTests {
     private static let owner = TailnetPeer(loginName: "owner@github", nodeName: "phone.tail1234.ts.net", tagged: false)
@@ -16,52 +20,84 @@ import Testing
     private static func access(
         peers: [String: TailnetPeer] = ["100.101.1.1": owner, "100.101.1.2": friend, "100.101.1.3": taggedBox],
         node: TailnetPeer? = TailnetPeer(loginName: "owner@github", nodeName: "server.tail1234.ts.net", tagged: false),
-        now: @escaping @Sendable () -> Date = Date.init
+        now: @escaping @Sendable () -> Date = Date.init, ownUsersPorts: Set<Int> = [],
+        checks: Counter = Counter()
     ) throws -> (OwnerAccess, FakeTailnet, ServerSettingsRepository) {
         let database = try HangarServer.Database(path: ":memory:")
         try database.migrate()
         let tailnet = FakeTailnet(peers: peers, node: node)
         let settings = ServerSettingsRepository(database: database)
-        return (OwnerAccess(tailnet: tailnet, settings: settings, now: now), tailnet, settings)
+        let access = OwnerAccess(
+            tailnet: tailnet, settings: settings, now: now, isThisMac: { $0 == Self.thisMac },
+            isOwnUsersConnection: { port in
+                checks.count.withLock { $0 += 1 }
+                return ownUsersPorts.contains(port)
+            })
+        return (access, tailnet, settings)
     }
+
+    /// The server Mac's own tailnet address in these tests.
+    private static let thisMac = "100.101.1.9"
+    private static let serverNode = TailnetPeer(loginName: "owner@github", nodeName: "server.tail1234.ts.net", tagged: false)
 
     // MARK: - The owner check
 
     @Test func theServerNodesLoginIsTheOwnerByDefault() async throws {
         let (access, _, _) = try Self.access()
-        #expect(await access.owner(peer: "100.101.1.1") == "owner@github")
-        #expect(await access.owner(peer: "100.101.1.2") == nil)
+        #expect(await access.owner(peer: "100.101.1.1", port: 50000) == "owner@github")
+        #expect(await access.owner(peer: "100.101.1.2", port: 50000) == nil)
         #expect(await access.allowedLogins() == ["owner@github"])
     }
 
     @Test func taggedDevicesAndUnknownAddressesAreNeverTheOwner() async throws {
         let (access, _, _) = try Self.access()
-        #expect(await access.owner(peer: "100.101.1.3") == nil)
-        #expect(await access.owner(peer: "100.101.9.9") == nil)
-        #expect(await access.owner(peer: nil) == nil)
+        #expect(await access.owner(peer: "100.101.1.3", port: 50000) == nil)
+        #expect(await access.owner(peer: "100.101.9.9", port: 50000) == nil)
+        #expect(await access.owner(peer: nil, port: 50000) == nil)
     }
 
     @Test func loopbackAndLANAddressesAreNotEvenLookedUp() async throws {
         // Host-executor builds and local agents connect from loopback: Tailscale cannot vouch for them.
         let (access, tailnet, _) = try Self.access(peers: ["127.0.0.1": Self.owner, "192.168.1.5": Self.owner, "::1": Self.owner])
         for address in ["127.0.0.1", "::1", "192.168.1.5", "unknown", "::ffff:127.0.0.1"] {
-            #expect(await access.owner(peer: address) == nil)
+            #expect(await access.owner(peer: address, port: 50000) == nil)
         }
         #expect(tailnet.whoisCount == 0)
     }
 
     @Test func tailscaleIPv6AndMappedAddressesAreLookedUp() async throws {
         let (access, _, _) = try Self.access(peers: ["fd7a:115c:a1e0::1": Self.owner, "100.64.0.7": Self.owner])
-        #expect(await access.owner(peer: "fd7a:115c:a1e0::1") == "owner@github")
-        #expect(await access.owner(peer: "::ffff:100.64.0.7") == "owner@github")
+        #expect(await access.owner(peer: "fd7a:115c:a1e0::1", port: 50000) == "owner@github")
+        #expect(await access.owner(peer: "::ffff:100.64.0.7", port: 50000) == "owner@github")
         #expect(OwnerAccess.isTailnetAddress("100.128.0.1") == false)
         #expect(OwnerAccess.isTailnetAddress("100.63.255.255") == false)
+    }
+
+    /// whois names the device: on the server Mac a build as `hangar` would resolve to the owner's login too. Only a
+    /// connection whose client end belongs to the server's own user counts.
+    @Test func aConnectionFromTheServerMacCountsOnlyFromTheServersUser() async throws {
+        let checks = Counter()
+        let (access, _, _) = try Self.access(
+            peers: [Self.thisMac: Self.serverNode], ownUsersPorts: [50001], checks: checks)
+        #expect(await access.owner(peer: Self.thisMac, port: 50001) == "owner@github")
+        #expect(await access.owner(peer: Self.thisMac, port: 50002) == nil)
+        #expect(await access.owner(peer: Self.thisMac, port: nil) == nil)
+        // A keep-alive connection is checked once; another device is never checked.
+        _ = await access.owner(peer: Self.thisMac, port: 50001)
+        _ = await access.owner(peer: "100.101.1.1", port: 50003)
+        #expect(checks.count.withLock { $0 } == 2)
+    }
+
+    @Test func theRealCheckFindsThisProcesssUsersSocketsOnly() throws {
+        // This process is excluded, and no process holds a connection to port 1 from port 1.
+        #expect(!LocalConnection.isOwnUsers(clientPort: 1, serverPort: 1))
+        #expect(!LocalConnection.isOwnUsers(clientPort: 0, serverPort: 8787))
     }
 
     @Test func aTaggedServerNodeHasNoDefaultOwner() async throws {
         let (access, _, _) = try Self.access(node: Self.taggedBox)
         #expect(await access.allowedLogins().isEmpty)
-        #expect(await access.owner(peer: "100.101.1.1") == nil)
+        #expect(await access.owner(peer: "100.101.1.1", port: 50000) == nil)
     }
 
     @Test func configuredLoginsReplaceTheDefault() async throws {
@@ -69,28 +105,28 @@ import Testing
         try access.setConfiguredLogins(["Friend@GitHub", " friend@github "])
         let stored = try settings.value(OwnerAccess.settingKey)
         #expect(stored == #"["Friend@GitHub"]"#)
-        #expect(await access.owner(peer: "100.101.1.2") == "friend@github")
-        #expect(await access.owner(peer: "100.101.1.1") == nil)
+        #expect(await access.owner(peer: "100.101.1.2", port: 50000) == "friend@github")
+        #expect(await access.owner(peer: "100.101.1.1", port: 50000) == nil)
         try access.setConfiguredLogins([])
-        #expect(await access.owner(peer: "100.101.1.1") == "owner@github")
+        #expect(await access.owner(peer: "100.101.1.1", port: 50000) == "owner@github")
         #expect(throws: APIError.self) { try access.setConfiguredLogins(["two words"]) }
     }
 
     @Test func whoisAnswersAreCachedBriefly() async throws {
         let clock = Mutex(Date(timeIntervalSince1970: 1_000_000))
         let (access, tailnet, _) = try Self.access(now: { clock.withLock { $0 } })
-        _ = await access.owner(peer: "100.101.1.1")
-        _ = await access.owner(peer: "100.101.1.1")
-        _ = await access.owner(peer: "100.101.9.9")
-        _ = await access.owner(peer: "100.101.9.9")
+        _ = await access.owner(peer: "100.101.1.1", port: 50000)
+        _ = await access.owner(peer: "100.101.1.1", port: 50000)
+        _ = await access.owner(peer: "100.101.9.9", port: 50000)
+        _ = await access.owner(peer: "100.101.9.9", port: 50000)
         #expect(tailnet.whoisCount == 2)
         #expect(tailnet.selfNodeCount == 1)
         clock.withLock { $0 += OwnerAccess.unknownTTL + 1 }
-        _ = await access.owner(peer: "100.101.1.1")
-        _ = await access.owner(peer: "100.101.9.9")
+        _ = await access.owner(peer: "100.101.1.1", port: 50000)
+        _ = await access.owner(peer: "100.101.9.9", port: 50000)
         #expect(tailnet.whoisCount == 3)
         clock.withLock { $0 += OwnerAccess.knownTTL }
-        _ = await access.owner(peer: "100.101.1.1")
+        _ = await access.owner(peer: "100.101.1.1", port: 50000)
         #expect(tailnet.whoisCount == 4)
     }
 

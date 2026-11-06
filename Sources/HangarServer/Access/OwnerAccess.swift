@@ -5,8 +5,8 @@ import Synchronization
 /// Whether a request's socket peer is the owner's device. `OwnerAccess` in production; tests stand in for it, since
 /// the router test client has no peer address.
 public protocol OwnerIdentifying: Sendable {
-    /// The owner's login when `address` (no port) is one of the owner's devices, else nil.
-    func owner(peer address: String?) async -> String?
+    /// The owner's login when `address` (no port), connecting from `port`, is one of the owner's devices, else nil.
+    func owner(peer address: String?, port: Int?) async -> String?
 }
 
 /// Decides whether a request comes from the owner: a tailnet device whose Tailscale login is one of the allowed
@@ -16,6 +16,10 @@ public protocol OwnerIdentifying: Sendable {
 /// Only the socket's peer address counts, never a header. Loopback, LAN and unknown addresses are never the owner:
 /// host-executor builds and local agents connect from there. A tagged device is never the owner, whatever login
 /// Tailscale reports for it. `whois` answers are cached briefly, so most requests spawn nothing.
+///
+/// `whois` names a device, not a process: a connection from this Mac's own tailnet address could come from any user
+/// on it, such as a host-executor build as `hangar`. Such a connection is the owner's only when a process of the
+/// server's own macOS user holds its client end (`LocalConnection`).
 public final class OwnerAccess: OwnerIdentifying {
     public static let settingKey = "owner_logins"
     /// How long a `whois` answer is reused: a known device, then an unknown address.
@@ -30,25 +34,56 @@ public final class OwnerAccess: OwnerIdentifying {
     let now: @Sendable () -> Date
     private let peers = Mutex<[String: CachedPeer]>([:])
     private let node = Mutex<CachedPeer?>(nil)
+    /// Whether an address is one of this Mac's own.
+    let isThisMac: @Sendable (String) -> Bool
+    /// Whether a process of the server's own user holds the client end of a connection from this Mac, by its port.
+    let isOwnUsersConnection: @Sendable (Int) -> Bool
+    /// Answers of `isOwnUsersConnection` by client port: a keep-alive connection is checked once.
+    private let connections = Mutex<[Int: Date]>([:])
+    static let connectionTTL: TimeInterval = 30
 
     private struct CachedPeer: Sendable {
         var peer: TailnetPeer?
         var at: Date
     }
 
-    public init(tailnet: any TailnetIdentifying, settings: ServerSettingsRepository, now: @escaping @Sendable () -> Date = Date.init) {
+    /// `isOwnUsersConnection` defaults to refusing every connection from this Mac; the server passes
+    /// `LocalConnection.isOwnUsers` for its port.
+    public init(
+        tailnet: any TailnetIdentifying, settings: ServerSettingsRepository, now: @escaping @Sendable () -> Date = Date.init,
+        isThisMac: (@Sendable (String) -> Bool)? = nil,
+        isOwnUsersConnection: @escaping @Sendable (Int) -> Bool = { _ in false }
+    ) {
         self.tailnet = tailnet
         self.settings = settings
         self.now = now
+        self.isThisMac = isThisMac ?? { LocalPeer.interfaceAddresses().contains($0) }
+        self.isOwnUsersConnection = isOwnUsersConnection
     }
 
     /// The owner's login when `address` (the socket peer, no port) is one of the owner's tailnet devices, else nil.
-    public func owner(peer address: String?) async -> String? {
+    /// `port` is the peer's: a connection from this Mac is checked by it.
+    public func owner(peer address: String?, port: Int?) async -> String? {
         guard let address = address.map(LocalPeer.normalize), Self.isTailnetAddress(address),
             let peer = await peer(address), !peer.tagged
         else { return nil }
         let allowed = await allowedLogins().map { $0.lowercased() }
-        return allowed.contains(peer.loginName.lowercased()) ? peer.loginName : nil
+        guard allowed.contains(peer.loginName.lowercased()) else { return nil }
+        if isThisMac(address) {
+            guard let port, ownUsersConnection(port) else { return nil }
+        }
+        return peer.loginName
+    }
+
+    private func ownUsersConnection(_ port: Int) -> Bool {
+        let now = now()
+        if let at = connections.withLock({ $0[port] }), now.timeIntervalSince(at) < Self.connectionTTL { return true }
+        guard isOwnUsersConnection(port) else { return false }
+        connections.withLock { cache in
+            if cache.count >= Self.maxCachedPeers { cache.removeAll() }
+            cache[port] = now
+        }
+        return true
     }
 
     /// The logins treated as the owner: the configured ones, else the server node's own login (none when the node is

@@ -34,7 +34,9 @@ struct Authentication: RouterMiddleware {
             return try await next(request, context)
         }
         // A proxy on this Mac connects from loopback for every peer, so a relayed request is never the owner's.
-        guard !context.relayedByProxy, let login = await owners.owner(peer: context.remoteAddress?.ipAddress) else {
+        guard !context.relayedByProxy,
+            let login = await owners.owner(peer: context.remoteAddress?.ipAddress, port: context.remoteAddress?.port)
+        else {
             throw Self.required
         }
         context.ownerLogin = login

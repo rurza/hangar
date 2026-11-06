@@ -131,7 +131,10 @@ public struct HangarServerApp: Sendable {
         repositoryBranches = RepositoryBranchesCache(now: now)
         self.setup = setup
         serverSettings = ServerSettingsRepository(database: database)
-        owners = OwnerAccess(tailnet: tailnet, settings: serverSettings, now: now)
+        let port = configuration.port
+        owners = OwnerAccess(
+            tailnet: tailnet, settings: serverSettings, now: now,
+            isOwnUsersConnection: { LocalConnection.isOwnUsers(clientPort: $0, serverPort: port) })
         self.ownerCheck = ownerCheck ?? owners
         githubAccounts = GitHubAccounts(transport: githubTransport, now: now)
         preflight = DeployPreflight(sourceHost: sourceHost, now: now)

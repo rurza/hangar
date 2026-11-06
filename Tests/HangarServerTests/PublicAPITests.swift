@@ -43,7 +43,7 @@ private struct RecordingASC: AppStoreConnectClient {
 struct FixedOwner: OwnerIdentifying {
     var login: String?
     init(_ login: String?) { self.login = login }
-    func owner(peer address: String?) async -> String? { login }
+    func owner(peer address: String?, port: Int?) async -> String? { login }
 }
 
 /// Tailscale as a table: `whois` answers from `peers`, `selfNode()` is `node`. Counts lookups.
