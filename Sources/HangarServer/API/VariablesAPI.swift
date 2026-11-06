@@ -23,6 +23,18 @@ extension HangarServerApp {
         api.patch("apps/:id/variables/:name") { request, context in
             let app = try app(context)
             let update = try await request.decode(as: VariableUpdate.self, context: context)
+            // A secret made plain leaves the masker and the xcodebuild filter: its value must be typed again, so
+            // nobody turns a stored secret readable without knowing it (security review L4).
+            if update.isSecret == false, update.value == nil {
+                let name = try context.parameters.require("name")
+                let workflows = try VariableRepository.normalized(request.query.all("workflow"))
+                let current = try variables.summaries(scope: .app(app.id))
+                    .first { $0.name == name && $0.workflows == workflows }
+                if current?.isSecret == true {
+                    throw APIError(
+                        code: "value_required", message: "Enter \(name)'s value again to make it a plain variable.")
+                }
+            }
             try variables.update(
                 appID: app.id, name: context.parameters.require("name"), workflows: request.query.all("workflow"),
                 with: update)
