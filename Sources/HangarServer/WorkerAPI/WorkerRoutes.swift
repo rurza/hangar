@@ -210,7 +210,7 @@ extension HangarServerApp {
         return minutes % 60 == 0 ? "\(minutes / 60) h" : "\(minutes / 60) h \(minutes % 60) min"
     }
 
-    /// The oldest job assigned to the machine, or, failing that, the first one assigned within `wait` (on the
+    /// The oldest job assigned to the machine and not yet handed out, or, failing that, the first one assigned within `wait` (on the
     /// injected clock); nil when none was.
     func nextAssignment(machineID: UUID, wait: Duration) async throws -> JobAssignment? {
         // Subscribed before looking, so an assignment made between the look and the wait still wakes us.
@@ -236,15 +236,22 @@ extension HangarServerApp {
         }
     }
 
+    /// The oldest job assigned to the machine that it was not handed yet, claimed for this response: a worker with
+    /// a free slot polls again while the first copy still prepares (a VM boots), and must not get the same job twice.
     private func assignment(machineID: UUID) throws -> JobAssignment? {
-        guard let job = try builds.jobs(status: [.assigned]).first(where: { $0.machineID == machineID }) else { return nil }
-        guard let build = try builds.build(id: job.buildID), let app = try apps.find(slugOrID: build.appID.uuidString),
-            let workflow = try builds.workflow(buildID: build.id)
-        else { throw IncompleteJob(jobID: job.id) }
-        return JobAssignment(
-            job: job, app: app, workflow: workflow.forJob(running: job.action), workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
-            environment: try variables.resolvedEntries(appID: app.id, workflow: build.workflow),
-            signingIdentity: try assignmentIdentity(job: job, machineID: machineID))
+        for job in try builds.jobs(status: [.assigned]) where job.machineID == machineID {
+            guard try builds.dispatchedAt(jobID: job.id) == nil else { continue }
+            guard let build = try builds.build(id: job.buildID), let app = try apps.find(slugOrID: build.appID.uuidString),
+                let workflow = try builds.workflow(buildID: build.id)
+            else { throw IncompleteJob(jobID: job.id) }
+            let assignment = JobAssignment(
+                job: job, app: app, workflow: workflow.forJob(running: job.action), workflowName: build.workflow, buildNumber: build.buildNumber, commit: build.commit, ref: build.ref,
+                environment: try variables.resolvedEntries(appID: app.id, workflow: build.workflow),
+                signingIdentity: try assignmentIdentity(job: job, machineID: machineID))
+            // Claimed only once assembled, so a job whose assignment cannot be put together is not marked handed out.
+            if try builds.markDispatched(jobID: job.id, machineID: machineID, at: now()) { return assignment }
+        }
+        return nil
     }
 
     /// The server's signing identity, only for an archive on a machine that runs its jobs in VMs: the guest has no

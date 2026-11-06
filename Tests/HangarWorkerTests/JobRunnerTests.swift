@@ -870,4 +870,21 @@ private final class Shared<Value: Sendable>: Sendable {
         _ = await terminal.runTicking(cancelled: { false })
         #expect(terminal.connection.finishAttempts == 1)
     }
+
+    /// A 409 at start: the job was handed out twice, or moved or ended meanwhile. The copy that does run it must not
+    /// be failed by this one's finish; any other start error is reported.
+    @Test func aJobTheServerWouldNotStartHereIsNotFinished() async throws {
+        let conflict = ServerConnectionError.status(409, method: "POST", path: "/api/v1/worker/jobs/x/start")
+        let refused = try Fixture(connection: FakeServerConnection(startError: conflict))
+        defer { refused.removeAll() }
+        let result = await refused.runTicking(cancelled: { false })
+        #expect(result.status == .failed)
+        #expect(refused.connection.events == [.start])
+        #expect(refused.connection.finishAttempts == 0)
+
+        let down = try Fixture(connection: FakeServerConnection(startError: FakeServerConnection.Unavailable()))
+        defer { down.removeAll() }
+        _ = await down.runTicking(cancelled: { false })
+        #expect(down.connection.result?.status == .failed)
+    }
 }

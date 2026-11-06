@@ -222,6 +222,11 @@ enum Migrations {
                 );
                 """)
         }
+        // When `jobs/next` handed an assigned job to its machine: it is handed out once per assignment, so a worker
+        // with free slots does not get the same job again while the first copy prepares. NULL until then.
+        migrator.registerMigration("v11") { db in
+            try db.execute(sql: "ALTER TABLE jobs ADD COLUMN dispatched_at DOUBLE")
+        }
         return migrator
     }
 }

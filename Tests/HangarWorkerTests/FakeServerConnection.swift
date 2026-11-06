@@ -6,7 +6,8 @@ import Synchronization
 
 /// Records every call a worker makes to the server, in order. `failLogCalls` makes that many `log` calls throw first;
 /// uploads named in `failUploads` always throw; `finishErrors` are thrown, in order, by the first `finish` calls.
-/// `refuseLog` may answer a log batch with an error (an HTTP 413, say) instead of taking it.
+/// `refuseLog` may answer a log batch with an error (an HTTP 413, say) instead of taking it. `startError` is thrown by
+/// `start`.
 final class FakeServerConnection: ServerConnection {
     enum Event: Equatable {
         case start
@@ -30,14 +31,16 @@ final class FakeServerConnection: ServerConnection {
     private let state: Mutex<State>
     private let failUploads: Set<String>
     private let refuseLog: @Sendable (LogBatch) -> (any Error)?
+    private let startError: (any Error)?
 
     init(
         failLogCalls: Int = 0, failUploads: Set<String> = [], finishErrors: [any Error] = [],
-        refuseLog: @escaping @Sendable (LogBatch) -> (any Error)? = { _ in nil }
+        refuseLog: @escaping @Sendable (LogBatch) -> (any Error)? = { _ in nil }, startError: (any Error)? = nil
     ) {
         state = Mutex(State(failLogCalls: failLogCalls, finishErrors: finishErrors))
         self.failUploads = failUploads
         self.refuseLog = refuseLog
+        self.startError = startError
     }
 
     func setFailLogCalls(_ count: Int) { state.withLock { $0.failLogCalls = count } }
@@ -73,6 +76,7 @@ final class FakeServerConnection: ServerConnection {
 
     func start(jobID: UUID) async throws {
         state.withLock { $0.events.append(.start) }
+        if let startError { throw startError }
     }
 
     /// A `running` update that only carries stages (a post-action's progress) is kept in `updates` alone, so

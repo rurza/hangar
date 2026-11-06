@@ -92,6 +92,11 @@ public struct JobRunner: Sendable {
 
         do {
             try await connection.start(jobID: jobID)
+        } catch ServerConnectionError.status(409, _, _) {
+            // Started elsewhere, moved or ended: the job is not this run's, and a finish could fail the copy that
+            // does run it.
+            logger.error("the server would not start the job here; leaving it alone", metadata: ["job": "\(jobID)"])
+            return JobResult(status: .failed, failureReason: "start: the server no longer has this job for this machine")
         } catch {
             logger.error("could not start job: \(error)", metadata: ["job": "\(jobID)"])
             let result = JobResult(status: .failed, failureReason: masker.mask("start: \(error)"))
