@@ -19,12 +19,16 @@ public struct QueuedJob: Sendable {
     /// An archive while the server has no usable signing identity: why (none yet, expired). A VM machine cannot take
     /// it unless its worker holds its own identity; a host machine signs with its own keychain and ignores it.
     public var signingProblem: String?
+    /// The job signs with the machine's keychain on a host: an archive, or a macOS test (its code runs signed).
+    /// A simulator test signs ad hoc and needs no identity.
+    public var signsOnHost: Bool
 
     public init(
         id: UUID, buildID: UUID, createdAt: Date, xcode: String, tools: [String], pinnedMachineID: UUID?,
         simulatorPlatform: Platform? = nil, requiredCapabilities: Set<String> = [], needsXcodeAccount: Bool = false,
-        signingProblem: String? = nil
+        signingProblem: String? = nil, signsOnHost: Bool = true
     ) {
+        self.signsOnHost = signsOnHost
         self.signingProblem = signingProblem
         self.simulatorPlatform = simulatorPlatform
         self.requiredCapabilities = requiredCapabilities
@@ -219,7 +223,8 @@ public enum Scheduler {
         }
         // In a VM, the job installs its own tools, as on Xcode Cloud.
         if !machine.vm { reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing) }
-        if !machine.canSign { reasons.append(.cannotSign) }
+        // A VM machine always can: its host keychain signs nothing, and the server's identity is checked below.
+        if job.signsOnHost, !machine.canSign { reasons.append(.cannotSign) }
         if job.needsXcodeAccount, machine.headless { reasons.append(.needsTeamKey) }
         // A VM signs with the server's identity (or its worker's own); a host with its own keychain, as before.
         if machine.vm, !machine.vmOwnIdentity, let problem = job.signingProblem { reasons.append(.noSigningIdentity(problem)) }

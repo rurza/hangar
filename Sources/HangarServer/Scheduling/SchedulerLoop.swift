@@ -208,7 +208,8 @@ public actor SchedulerLoop {
             simulatorPlatform: action.kind == .test && action.platform != .macOS ? action.platform : nil,
             requiredCapabilities: workflow.needsCapabilities(for: action),
             needsXcodeAccount: action.kind == .archive && !teamKey,
-            signingProblem: action.kind == .archive ? signingProblem : nil)
+            signingProblem: action.kind == .archive ? signingProblem : nil,
+            signsOnHost: action.kind == .archive || action.platform == .macOS)
     }
 
     /// Whether `entries` (an app's resolved variables) hold a team key: a non-empty `HANGAR_ASC_ISSUER_ID`, as the
@@ -224,8 +225,8 @@ public actor SchedulerLoop {
     }
 
     /// Machines without a report are offline for scheduling. A machine that reports `vm` runs every job in a VM and is
-    /// judged by it: its ready slots, its images' Xcode versions and simulator runtimes, its VM storage, and no Xcode
-    /// account (the guest has none), whatever the host has.
+    /// judged by it: its ready slots, its images' Xcode versions and simulator runtimes, its VM storage, no Xcode
+    /// account (the guest has none) and the server's signing identity, whatever the host has or its keychain can do.
     static func snapshot(_ machine: Machine, runningJobs: Int, now: Date) -> MachineSnapshot {
         let freeSlots = max(0, machine.maxConcurrentJobs - runningJobs)
         guard let report = machine.report else {
@@ -239,7 +240,7 @@ public actor SchedulerLoop {
                 id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now),
                 freeSlots: max(0, vm.slots - runningJobs), runningJobs: runningJobs, xcodeVersions: vm.xcodeVersions,
                 tools: [], freeDiskGB: vm.storageFreeGB, performanceCores: report.performanceCores,
-                onACPower: report.onACPower, canSign: report.canSignWithoutPrompt,
+                onACPower: report.onACPower, canSign: true,
                 simulatorRuntimes: Array(Set(vm.images.flatMap(\.simulatorRuntimes))).sorted(),
                 capabilities: Set(report.capabilities), headless: true, paused: machine.paused, vm: true,
                 vmNotReady: vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready"), vmOwnIdentity: vm.ownIdentity)

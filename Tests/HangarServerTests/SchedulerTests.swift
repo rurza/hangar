@@ -34,12 +34,12 @@ import Testing
     /// A machine whose worker reports VM builds, as `SchedulerLoop.snapshot` sees it.
     func vmMachine(
         _ vm: VMReport, maxConcurrentJobs: Int = 1, runningJobs: Int = 0, freeDiskGB: Double = 400,
-        headless: Bool? = nil
+        headless: Bool? = nil, hostCanSign: Bool = true
     ) -> MachineSnapshot {
         let report = MachineReport(
             macOSVersion: "26.6", xcodes: [InstalledXcode(version: "26.1", build: "A", path: "/Applications/Xcode.app")],
             chip: "M4", performanceCores: 10, memoryGB: 32, freeDiskGB: freeDiskGB, onACPower: true,
-            tools: ["swiftlint": "0.57"], canSignWithoutPrompt: true, runningJobIDs: [],
+            tools: ["swiftlint": "0.57"], canSignWithoutPrompt: hostCanSign, runningJobIDs: [],
             simulatorRuntimes: ["visionOS 26.1"], capabilities: [WorkerCapability.testActions], headless: headless, vm: vm)
         let machine = Machine(
             id: UUID(), name: "Mini", maxConcurrentJobs: maxConcurrentJobs, lastSeenAt: Self.start, report: report,
@@ -68,6 +68,38 @@ import Testing
         #expect(snapshot.headless)
         #expect(snapshot.canSign)
         #expect(vmMachine(vm, runningJobs: 3).freeSlots == 0)
+    }
+
+    /// A VM Mac signs in its VMs with the server's identity: a host keychain that cannot sign (an owner-run Mac, a
+    /// keychain problem) keeps no job off it.
+    @Test func aVMMacIsNotJudgedByItsHostKeychain() {
+        let vm = VMReport(slots: 2, configuredSlots: 2, freeSlots: 2, storageFreeGB: 150, networkFilter: true, images: [Self.image])
+        let snapshot = vmMachine(vm, hostCanSign: false)
+        #expect(snapshot.canSign)
+        let jobs = [job(), job(1, simulator: .iOS)]
+        #expect(Scheduler.plan(jobs: jobs, machines: [snapshot], minFreeDiskGB: 20).assignments.count == 2)
+    }
+
+    /// On a host, only a job that signs there waits for a Mac that can sign: an archive or a macOS test. A
+    /// simulator test signs ad hoc.
+    @Test func onlyJobsThatSignOnTheHostNeedItsKeychain() {
+        let workflow = Workflow(
+            project: "Demo.xcodeproj", xcode: "27.2",
+            actions: [
+                WorkflowAction(scheme: "Demo", platform: .iOS, export: .appStoreConnect),
+                .test(scheme: "Tests", platform: .iOS), .test(scheme: "MacTests", platform: .macOS),
+            ])
+        let queued = workflow.actions.map {
+            SchedulerLoop.queuedJob(
+                id: UUID(), buildID: UUID(), createdAt: Self.start, action: $0, workflow: workflow, pinned: nil,
+                teamKey: true)
+        }
+        #expect(queued.map(\.signsOnHost) == [true, false, true])
+        let cannotSign = machine("Mini", freeSlots: 3, canSign: false, simulatorRuntimes: ["iOS 27.2"])
+        let plan = Scheduler.plan(jobs: queued, machines: [cannotSign], minFreeDiskGB: 20)
+        #expect(plan.assignments == [Assignment(jobID: queued[1].id, machineID: cannotSign.id)])
+        #expect(plan.waiting[queued[0].id] == ["Mini": [.cannotSign]])
+        #expect(plan.waiting[queued[2].id] == ["Mini": [.cannotSign]])
     }
 
     @Test func aMacWithoutVMBuildsIsSnapshottedAsBefore() {
