@@ -724,46 +724,9 @@ extension IsolationRunner {
     }
 }
 
-/// The worker's launchd agent: the keys of scripts/worker/app.hangar.worker.plist.
+/// The worker's launchd agent, as the install script writes it for a worker run as the Mac's owner.
 public enum WorkerLaunchAgent {
     public static let label = "app.hangar.worker"
-
-    public static func plist(binary: String, logs: String) -> String {
-        func escape(_ text: String) -> String {
-            text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
-                .replacingOccurrences(of: ">", with: "&gt;")
-        }
-        return """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>Label</key>
-                <string>\(label)</string>
-                <key>ProgramArguments</key>
-                <array>
-                    <string>\(escape(binary))</string>
-                    <string>run</string>
-                </array>
-                <key>RunAtLoad</key>
-                <true/>
-                <key>KeepAlive</key>
-                <true/>
-                <key>ExitTimeOut</key>
-                <integer>\(WorkerLaunchDaemon.exitTimeout)</integer>
-                <key>LimitLoadToSessionType</key>
-                <string>Aqua</string>
-                <key>ProcessType</key>
-                <string>Standard</string>
-                <key>StandardOutPath</key>
-                <string>\(escape(logs))/worker.log</string>
-                <key>StandardErrorPath</key>
-                <string>\(escape(logs))/worker.log</string>
-            </dict>
-            </plist>
-
-            """
-    }
 }
 
 /// The worker's LaunchDaemon on an isolated Mac: `hangar-worker run` as the dedicated user from boot, without a login

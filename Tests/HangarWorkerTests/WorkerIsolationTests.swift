@@ -92,8 +92,9 @@ fileprivate final class Lines: Sendable {
                     .write(to: invoker.defaultConfig)
             }
             if withOldAgent {
-                try WorkerLaunchAgent.plist(binary: binary, logs: home + "/Library/Logs/Hangar")
-                    .write(toFile: invoker.plist, atomically: true, encoding: .utf8)
+                let agent: [String: Any] = ["Label": WorkerLaunchAgent.label, "ProgramArguments": [binary, "run"]]
+                try PropertyListSerialization.data(fromPropertyList: agent, format: .xml, options: 0)
+                    .write(to: URL(fileURLWithPath: invoker.plist))
             }
         }
 
@@ -730,20 +731,6 @@ fileprivate final class Lines: Sendable {
     @Test func runningMeansLaunchctlSaysSo() {
         #expect(WorkerIsolation.isRunning(launchctlPrint: "system/app.hangar.worker = {\n\tactive count = 1\n\tstate = running\n}"))
         #expect(!WorkerIsolation.isRunning(launchctlPrint: "system/app.hangar.worker = {\n\tstate = not running\n}"))
-    }
-
-    @Test func theLaunchAgentHasTheInstallScriptsKeys() throws {
-        let text = WorkerLaunchAgent.plist(binary: "/Users/hangar/.local/bin/hangar-worker", logs: "/Users/hangar/Library/Logs/Hangar")
-        let plist = try #require(
-            try PropertyListSerialization.propertyList(from: Data(text.utf8), format: nil) as? [String: Any])
-        #expect(plist["Label"] as? String == "app.hangar.worker")
-        #expect(plist["ProgramArguments"] as? [String] == ["/Users/hangar/.local/bin/hangar-worker", "run"])
-        #expect(plist["LimitLoadToSessionType"] as? String == "Aqua")
-        #expect(plist["RunAtLoad"] as? Bool == true)
-        #expect(plist["KeepAlive"] as? Bool == true)
-        #expect(plist["ExitTimeOut"] as? Int == 120)
-        #expect(plist["UserName"] == nil)
-        #expect(plist["StandardOutPath"] as? String == "/Users/hangar/Library/Logs/Hangar/worker.log")
     }
 
     @Test func theLaunchDaemonRunsTheWorkerAsTheAccountWithoutALogin() throws {
