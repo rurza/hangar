@@ -1,4 +1,5 @@
 import Foundation
+import HangarCore
 
 /// The VM storage directory (VM builds design, *Image storage*), all on one APFS volume:
 ///
