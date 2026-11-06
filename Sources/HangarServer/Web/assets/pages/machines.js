@@ -10,7 +10,7 @@ import {
 } from '../ui.js';
 import { isOnline } from './build.js';
 import {
-  buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, xcodeDrift,
+  buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift,
 } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 
@@ -33,6 +33,9 @@ export async function machinesPage(params, context) {
   // The Mac the server runs on, to mark its card; known once /setup answers.
   let serverHostName = null;
   const serverMac = (machine) => isServerMac(machine, serverHostName);
+  // The server's signing certificate, for VM Macs' cards; null until /signing answers.
+  let signing = null;
+  const signingStatus = () => signing;
 
   function render() {
     machines.sort((a, b) => a.name.localeCompare(b.name));
@@ -53,7 +56,7 @@ export async function machinesPage(params, context) {
     const nodes = machines.map((machine) => {
       let widget = widgets.get(machine.id);
       if (!widget) {
-        widget = machineWidget(machine, { onRemove: remove, onPause: setPaused, jobInfo: jobs.info, serverMac });
+        widget = machineWidget(machine, { onRemove: remove, onPause: setPaused, jobInfo: jobs.info, serverMac, signingStatus });
         widgets.set(machine.id, widget);
       } else {
         widget.update(machine);
@@ -117,6 +120,16 @@ export async function machinesPage(params, context) {
     serverHostName = setup?.localHostName ?? null;
     if (serverHostName) widgets.forEach((widget) => widget.refresh());
   }, () => {});
+  if (machines.some((machine) => machine.report?.vm)) loadSigning();
+
+  /** Fetches the signing status once a VM Mac is shown. */
+  function loadSigning() {
+    if (signing) return;
+    api.get('/signing', { signal: context.signal }).then((status) => {
+      signing = status;
+      widgets.forEach((widget) => widget.refresh());
+    }, () => {});
+  }
   if (context.query.get('add') === '1') {
     history.replaceState(null, '', '/machines');
     addMac();
@@ -131,6 +144,7 @@ export async function machinesPage(params, context) {
     // not come back), so the list is fetched again instead.
     if (machines.some((m) => m.id === event.machine.id)) upsert(event.machine);
     else reload();
+    if (event.machine.report?.vm) loadSigning();
   }, { onReconnect: reload }));
 
   return page({
@@ -168,7 +182,7 @@ export async function removeMachine(machine) {
  * A machine's widget. `update(machine)` redraws it with new data, `tick()` re-evaluates the online state.
  * `onPause(machine, paused)` adds the Pause/Resume Builds button; `serverMac(machine)` marks the server's own Mac.
  */
-export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac }) {
+export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac, signingStatus }) {
   let machine = initial;
   const title = h('h2', { class: 'machine-name' });
   const status = h('p', { class: 'machine-status' });
@@ -222,7 +236,7 @@ export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac }
         ? h('span', { class: 'tag', title: 'Hangar’s server runs on this Mac' }, 'Server')
         : null,
       machine.paused ? h('span', { class: 'badge badge-paused' }, h('span', { class: 'badge-dot', 'aria-hidden': 'true' }), 'Paused') : null);
-    replaceChildren(body, machine.report ? reportView(machine, jobInfo) : waitingView());
+    replaceChildren(body, machine.report ? reportView(machine, jobInfo, signingStatus?.()) : waitingView());
     tick();
   }
 
@@ -235,7 +249,7 @@ function waitingView() {
     'Waiting for the first heartbeat. The worker sends one as soon as it is installed and running on this Mac.');
 }
 
-function reportView(machine, jobInfo) {
+function reportView(machine, jobInfo, signing) {
   const report = machine.report;
   // A VM Mac runs a job per VM slot, whatever its own job limit says.
   const max = Math.max(1, report.vm ? report.vm.configuredSlots ?? report.vm.slots ?? 1 : machine.maxConcurrentJobs ?? 1);
@@ -270,6 +284,7 @@ function reportView(machine, jobInfo) {
         h('p', { class: 'card-detail' }, load.detail))),
     report.vm ? vmView(report.vm) : null,
     driftView(xcodeDrift(report)),
+    vmSigningView(vmSigningLine(report.vm, signing)),
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),
@@ -342,6 +357,16 @@ function vmView(vm) {
           : null,
         h('ul', { class: 'vm-checklist', 'aria-label': 'VM builds checklist' }, checklist.rows.map(checkRow)))),
   ];
+}
+
+/** `vmSigningLine` as the card's signing row: a check, or a warning that links to Settings › Signing. */
+function vmSigningView(line) {
+  if (!line) return null;
+  const link = line.link ? [' ', h('a', { href: '/settings', 'data-link': true }, 'Settings › Signing'), '.'] : null;
+  if (line.ok) return h('p', { class: 'signing signing-ok' }, checkBadge('signing-icon'), line.text);
+  return h('div', { class: 'signing signing-warning' },
+    h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
+    h('div', null, h('p', { class: 'card-note' }, line.text, link)));
 }
 
 /** `xcodeDrift`'s note, or nothing. */

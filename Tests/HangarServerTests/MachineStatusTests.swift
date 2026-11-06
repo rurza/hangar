@@ -86,6 +86,24 @@ import Testing
         #expect(try drift(#"{"xcodes": [{"version": "27.2", "build": "17C52"}]}"#) == "none")
     }
 
+    @Test func aVMMacSaysWhatItsArchivesSignWith() throws {
+        func line(_ vm: String, _ signing: String) throws -> String {
+            try Self.run(#"{"vm": \#(vm), "signing": \#(signing)}"#, """
+                (() => { const l = vmSigningLine(input.vm, input.signing); return l ? `${l.ok} ${l.link} ${l.text}` : 'none'; })()
+                """)
+        }
+        let identity = #"{"expiresAt": "2027-11-05T12:00:00Z"}"#
+        #expect(try line(#"{"slots": 1}"#, #"{"state": "active", "identity": \#(identity)}"#)
+            == "true false Signs with Hangar’s certificate (until Nov 5, 2027)")
+        #expect(try line(#"{"slots": 1}"#, #"{"state": "none"}"#)
+            == "false true Archives wait for a signing certificate. Create it once in")
+        #expect(try line(#"{"slots": 1}"#, #"{"state": "expired", "identity": \#(identity)}"#)
+            == "false true Hangar’s certificate expired on Nov 5, 2027, so archives wait. Renew it in")
+        #expect(try line(#"{"slots": 1, "ownIdentity": true}"#, "null").hasPrefix("true false Signs with its own"))
+        #expect(try line(#"{"slots": 1}"#, "null") == "none")
+        #expect(try line("null", #"{"state": "none"}"#) == "none")
+    }
+
     @Test func theButtonAndToastFollowTheState() throws {
         #expect(try Self.run("{}", "pauseButtonLabel(false)") == "Pause Builds")
         #expect(try Self.run("{}", "pauseButtonLabel(true)") == "Resume Builds")

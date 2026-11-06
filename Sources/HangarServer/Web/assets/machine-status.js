@@ -144,10 +144,29 @@ function shellQuote(text) {
   return /^[A-Za-z0-9/._+:@%=,-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
+const signingDay = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'short', day: 'numeric' });
+
+/**
+ * What a VM Mac's archives sign with (`signing` is `GET /signing`, null until known): `{ ok, text, link }`, or null.
+ * `link` is true when the fix is in Settings › Signing.
+ */
+function vmSigningLine(vm, signing) {
+  if (!vm) return null;
+  if (vm.ownIdentity) return { ok: true, text: 'Signs with its own certificate (vm identity on this Mac)', link: false };
+  if (!signing) return null;
+  const until = signing.identity ? signingDay.format(new Date(signing.identity.expiresAt)) : null;
+  switch (signing.state) {
+    case 'active': return { ok: true, text: `Signs with Hangar’s certificate (until ${until})`, link: false };
+    case 'expiring': return { ok: false, text: `Hangar’s certificate expires on ${until}. Renew it in`, link: true };
+    case 'expired': return { ok: false, text: `Hangar’s certificate expired on ${until}, so archives wait. Renew it in`, link: true };
+    default: return { ok: false, text: 'Archives wait for a signing certificate. Create it once in', link: true };
+  }
+}
+
 /** "a", "a and b", "a, b and c". */
 function joinList(items) {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, xcodeDrift };
+export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift };
