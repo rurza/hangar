@@ -80,18 +80,18 @@ public struct VMReport: Codable, Equatable, Sendable {
     /// Everything VM builds need, in order, each with its state; empty from an older worker, which sends `problem`
     /// only.
     public var checks: [VMCheck]
-    /// The command that builds a job image from this Mac's Xcode, as typed on it (`vm image build`), for the
-    /// Machines page to show when the host's Xcode has no image yet.
-    public var imageBuildCommand: String?
+    /// `sudo <worker> vm setup` as typed on this Mac: it also builds a job image for a new Xcode, so the Machines
+    /// page shows it when the host's Xcode has no image yet.
+    public var setupCommand: String?
 
     public init(
         slots: Int, configuredSlots: Int, freeSlots: Int, storageFreeGB: Double, networkFilter: Bool,
         problem: String? = nil, images: [VMImageInfo] = [], ownIdentity: Bool = false, checks: [VMCheck] = [],
-        imageBuildCommand: String? = nil
+        setupCommand: String? = nil
     ) {
         self.ownIdentity = ownIdentity
         self.checks = checks
-        self.imageBuildCommand = imageBuildCommand
+        self.setupCommand = setupCommand
         self.slots = slots
         self.configuredSlots = configuredSlots
         self.freeSlots = freeSlots
@@ -103,7 +103,7 @@ public struct VMReport: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case slots, configuredSlots, freeSlots, storageFreeGB, networkFilter, problem, images, ownIdentity, checks
-        case imageBuildCommand
+        case setupCommand
     }
 
     public init(from decoder: any Decoder) throws {
@@ -117,7 +117,7 @@ public struct VMReport: Codable, Equatable, Sendable {
         images = try container.decodeIfPresent([VMImageInfo].self, forKey: .images) ?? []
         ownIdentity = try container.decodeIfPresent(Bool.self, forKey: .ownIdentity) ?? false
         checks = try container.decodeIfPresent([VMCheck].self, forKey: .checks) ?? []
-        imageBuildCommand = try container.decodeIfPresent(String.self, forKey: .imageBuildCommand)
+        setupCommand = try container.decodeIfPresent(String.self, forKey: .setupCommand)
     }
 
     /// The Xcode versions a job can get on this machine: those of its images.

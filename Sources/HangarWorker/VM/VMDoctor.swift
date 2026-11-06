@@ -36,7 +36,7 @@ public struct VMDoctor: Sendable {
             slots: slots, configuredSlots: host.settings.slots, freeSlots: max(0, slots - runningJobs),
             storageFreeGB: (VMVolume.freeGB(at: host.storage.root) * 10).rounded() / 10, networkFilter: filterProblem == nil,
             problem: problem, images: images.map(\.metadata.info), ownIdentity: identity.exists, checks: checks,
-            imageBuildCommand: commands.asWorker("vm", "image", "build"))
+            setupCommand: commands.vmSetup)
     }
 
     /// What keeps VM jobs from running right now, or nil; checked before each job.

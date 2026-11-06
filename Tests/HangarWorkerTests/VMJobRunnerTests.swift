@@ -435,7 +435,7 @@ struct ImmediateClock: Clock {
         #expect(report.problem?.contains("install-server.sh") == true)
         let image = try #require(report.checks.last)
         #expect(image.command == "sudo /Users/hangar/.local/bin/hangar-worker vm setup")
-        #expect(report.imageBuildCommand == "sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker vm image build")
+        #expect(report.setupCommand == "sudo /Users/hangar/.local/bin/hangar-worker vm setup")
     }
 
     @Test func slotStatesAreAnOptionalRow() throws {

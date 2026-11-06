@@ -114,10 +114,40 @@ function buildUserWarning(report) {
   };
 }
 
+/**
+ * On a VM Mac, the host's Xcodes that no image was built from (by build, else by version), newest first, as the
+ * card's note: `{ title, note, command }`, or null. Jobs get the images' Xcode, so a new Xcode on the Mac is used
+ * only once an image is built from it.
+ */
+function xcodeDrift(report) {
+  const vm = report?.vm;
+  if (!vm) return null;
+  const images = (vm.images ?? []).filter((image) => image.xcode);
+  const missing = (report.xcodes ?? [])
+    .filter((xcode) => !images.some((image) => (image.xcodeBuild ? image.xcodeBuild === xcode.build : image.xcode === xcode.version)))
+    .sort((a, b) => b.version.localeCompare(a.version, 'en', { numeric: true }));
+  if (missing.length === 0 || images.length === 0) return null;
+  const newest = missing[0];
+  const versions = joinList(missing.map((xcode) => xcode.version));
+  let command = vm.setupCommand ?? null;
+  if (command && newest.path && newest.path !== '/Applications/Xcode.app') command += ` --xcode ${shellQuote(newest.path)}`;
+  return {
+    title: `Xcode ${versions} on this Mac ${missing.length === 1 ? 'has' : 'have'} no VM image yet`,
+    note: `Builds use the image’s Xcode until one is built from Xcode ${newest.version} (about 10 minutes). `
+      + 'Pause builds first: the worker restarts at the end.',
+    command,
+  };
+}
+
+/** A path as a shell word: quoted only when it needs to be. */
+function shellQuote(text) {
+  return /^[A-Za-z0-9/._+:@%=,-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
 /** "a", "a and b", "a, b and c". */
 function joinList(items) {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine };
+export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, xcodeDrift };

@@ -10,7 +10,7 @@ import {
 } from '../ui.js';
 import { isOnline } from './build.js';
 import {
-  buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine,
+  buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, xcodeDrift,
 } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 
@@ -269,6 +269,7 @@ function reportView(machine, jobInfo) {
         activity,
         h('p', { class: 'card-detail' }, load.detail))),
     report.vm ? vmView(report.vm) : null,
+    driftView(xcodeDrift(report)),
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),
@@ -341,6 +342,17 @@ function vmView(vm) {
           : null,
         h('ul', { class: 'vm-checklist', 'aria-label': 'VM builds checklist' }, checklist.rows.map(checkRow)))),
   ];
+}
+
+/** `xcodeDrift`'s note, or nothing. */
+function driftView(drift) {
+  if (!drift) return null;
+  return h('div', { class: 'signing signing-warning' },
+    h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
+    h('div', null,
+      h('p', { class: 'signing-title' }, drift.title),
+      h('p', { class: 'card-note' }, drift.note),
+      drift.command ? commandBlock(drift.command) : null));
 }
 
 function checkRow(row) {

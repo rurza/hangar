@@ -60,6 +60,32 @@ import Testing
         #expect(try Self.run(#"{"slots": 1}"#, "String(vmChecklist(input).rows.length)") == "0")
     }
 
+    @Test func anXcodeUpdateWithoutAnImageIsNoticed() throws {
+        func drift(_ json: String) throws -> String {
+            try Self.run(json, "(() => { const d = xcodeDrift(input); return d ? `${d.title} | ${d.command}` : 'none'; })()")
+        }
+        let image = #"{"name": "xcode-27.2", "xcode": "27.2", "xcodeBuild": "17C52"}"#
+        let setup = #""setupCommand": "sudo /Users/adam/.local/bin/hangar-worker vm setup""#
+        // The App Store replaced Xcode.app with 27.3.
+        #expect(try drift(#"""
+            {"xcodes": [{"version": "27.3", "build": "17D10", "path": "/Applications/Xcode.app"}],
+             "vm": {"slots": 1, \#(setup), "images": [\#(image)]}}
+            """#) == "Xcode 27.3 on this Mac has no VM image yet | sudo /Users/adam/.local/bin/hangar-worker vm setup")
+        // Another Xcode is named.
+        #expect(try drift(#"""
+            {"xcodes": [{"version": "27.2", "build": "17C52", "path": "/Applications/Xcode.app"},
+                        {"version": "27.4", "build": "17E1", "path": "/Applications/Xcode 27.4.app"}],
+             "vm": {"slots": 1, \#(setup), "images": [\#(image)]}}
+            """#) == "Xcode 27.4 on this Mac has no VM image yet | sudo /Users/adam/.local/bin/hangar-worker vm setup --xcode '/Applications/Xcode 27.4.app'")
+        // In step: nothing. Without any image the checklist says it; on a host Mac it does not apply.
+        #expect(try drift(#"""
+            {"xcodes": [{"version": "27.2", "build": "17C52", "path": "/Applications/Xcode.app"}],
+             "vm": {"slots": 1, "images": [\#(image)]}}
+            """#) == "none")
+        #expect(try drift(#"{"xcodes": [{"version": "27.2", "build": "17C52"}], "vm": {"slots": 0, "images": []}}"#) == "none")
+        #expect(try drift(#"{"xcodes": [{"version": "27.2", "build": "17C52"}]}"#) == "none")
+    }
+
     @Test func theButtonAndToastFollowTheState() throws {
         #expect(try Self.run("{}", "pauseButtonLabel(false)") == "Pause Builds")
         #expect(try Self.run("{}", "pauseButtonLabel(true)") == "Resume Builds")
