@@ -65,7 +65,7 @@ public struct DetectedScheme: Codable, Equatable, Sendable {
 /// Where the app's icon lives in the repository.
 public struct DetectedIcon: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        /// `path` is a flat image (from an `.appiconset`) that `GET /apps/{id}/repo-icon` serves.
+        /// `path` is a flat image (from an `.appiconset`) that `GET /github/repos/{owner}/{repo}/icon` serves.
         case appiconset
         /// `path` is an Icon Composer `.icon` bundle, which only a build can render.
         case iconcomposer

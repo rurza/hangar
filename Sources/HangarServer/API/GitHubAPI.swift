@@ -39,16 +39,6 @@ extension HangarServerApp {
             }
             return try Response.json(suggestion)
         }
-        api.get("apps/:id/repo-icon") { request, context in
-            let app = try app(context)
-            let ref = request.query.get("ref") ?? ""
-            let bundleIDs = await bundleIDs(of: app)
-            let image = try await withAppToken(app) { token in
-                try await repositoryDetector.icon(
-                    key: "\(app.id)|\(app.repoURL)|\(ref)", repoURL: app.repoURL, ref: ref, token: token, bundleIDs: bundleIDs)
-            }
-            return Self.imageResponse(image)
-        }
     }
 
     /// The global `HANGAR_GITHUB_TOKEN`, nil when unset or empty.
