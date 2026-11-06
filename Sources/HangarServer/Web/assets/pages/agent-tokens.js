@@ -10,10 +10,13 @@ import {
 /** What each scope allows; scopes nest. Mirrors `APITokenScope` and `APITokenPolicy` on the server. */
 export const SCOPES = [
   { value: 'read', label: 'Read', detail: 'Look at apps, workflows, builds, logs, artifacts and machines.' },
-  { value: 'deploy', label: 'Deploy', detail: 'Also start and cancel builds, which can upload to TestFlight.' },
+  {
+    value: 'deploy', label: 'Deploy',
+    detail: 'Also start and cancel builds of an app’s own branches and tags, which can upload to TestFlight.',
+  },
   {
     value: 'configure', label: 'Configure',
-    detail: 'Also add and delete apps, store workflows and create TestFlight groups.',
+    detail: 'Also delete apps, store workflows and create TestFlight groups. Only you can add apps.',
   },
 ];
 

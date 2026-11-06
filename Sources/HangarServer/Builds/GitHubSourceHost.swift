@@ -22,6 +22,22 @@ public struct GitHubSourceHost: SourceHost {
         }
     }
 
+    /// GitHub's commits API resolves `heads/<name>` and `tags/<name>` in the repository's own namespaces only: never a
+    /// SHA, a fork's commit or `pull/N/head`.
+    public func resolveBranchOrTag(repoURL: String, name: String, token: String?) async throws -> String {
+        guard !name.isEmpty, !name.hasPrefix("/"), !name.contains(".."), !name.hasPrefix("refs/") else {
+            throw SourceHostError.refNotFound(name)
+        }
+        for namespace in ["heads", "tags"] {
+            do {
+                return try await resolveCommit(repoURL: repoURL, ref: "\(namespace)/\(name)", token: token)
+            } catch SourceHostError.refNotFound {
+                continue
+            }
+        }
+        throw SourceHostError.refNotFound(name)
+    }
+
     public func readFile(repoURL: String, commit: String, path: String, token: String?) async throws -> String? {
         try await readData(repoURL: repoURL, commit: commit, path: path, token: token).map { String(decoding: $0, as: UTF8.self) }
     }

@@ -53,9 +53,9 @@ private typealias H = CLIHarness
 
     @Test func mcpServerOffersEveryTool() {
         let server = MCP.server(api: HangarAPI(baseURL: URL(string: "http://mini:8787")!, transport: StubTransport()))
-        #expect(server.tools.count == 24)
+        #expect(server.tools.count == 23)
         #expect(Set(server.tools.map(\.name)).isSuperset(of: [
-            "list_apps", "inspect_repo", "add_app", "get_workflows", "set_workflow", "list_branches", "deploy_check",
+            "list_apps", "inspect_repo", "get_workflows", "set_workflow", "list_branches", "deploy_check",
             "start_build", "get_build", "get_build_log", "list_artifacts", "list_machines", "list_testflight_groups", "list_variables",
         ]))
     }

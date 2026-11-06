@@ -40,8 +40,9 @@ struct Tokens: AsyncParsableCommand {
             abstract: "Create an API token and print its secret once.",
             discussion: """
                 Scopes nest. read: look at apps, workflows, builds, logs and machines. deploy: also start and cancel \
-                builds. configure: also add and delete apps, store workflows and create TestFlight groups. No token made here \
-                can change variables, settings or machines, or manage tokens; an owner token, made on the server Mac \
+                builds (the app's own branches and tags only). configure: also delete apps, store workflows and create \
+                TestFlight groups. No token made here can add apps, \
+                change variables, settings or machines, or manage tokens; an owner token, made on the server Mac \
                 with hangar-server token create, can.
                 """)
         @OptionGroup var global: GlobalOptions

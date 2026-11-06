@@ -9,7 +9,8 @@ extension HangarServerApp {
     func addBuildRoutes(to api: APIGroup) {
         api.post("builds") { request, context in
             let input = try await request.decode(as: DeployRequest.self, context: context)
-            return try await Response.json(buildService.deploy(input), status: .accepted)
+            return try await Response.json(
+                buildService.deploy(input, refs: context.isOwner ? .any : .branchesAndTags), status: .accepted)
         }
         api.get("builds") { request, _ in
             var appID: UUID?

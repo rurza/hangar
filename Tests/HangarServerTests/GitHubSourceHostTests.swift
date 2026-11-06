@@ -186,3 +186,28 @@ import Testing
         #expect(try await host.readData(repoURL: "https://github.com/a/b", commit: "abc", path: "i.png", token: nil, maxBytes: 10) == Data([1, 2]))
     }
 }
+
+@Suite struct GitHubBranchOrTagTests {
+    @Test func looksInTheBranchThenTheTagNamespace() async throws {
+        let transport = StubTransport(responses: [.init(status: 404, body: "{}"), .init(body: #"{"sha":"abc"}"#)])
+        let host = GitHubSourceHost(transport: transport)
+        #expect(try await host.resolveBranchOrTag(repoURL: "https://github.com/a/b", name: "v1.2", token: nil) == "abc")
+        #expect(transport.requests.map { $0.url?.absoluteString } == [
+            "https://api.github.com/repos/a/b/commits/heads/v1.2", "https://api.github.com/repos/a/b/commits/tags/v1.2",
+        ])
+    }
+
+    @Test func aSHAOrPullRequestRefIsNotABranchOrTag() async throws {
+        let sha = "0123456789abcdef0123456789abcdef01234567"
+        let transport = StubTransport(responses: [.init(status: 404, body: "{}"), .init(status: 422, body: "{}")])
+        let host = GitHubSourceHost(transport: transport)
+        await #expect(throws: SourceHostError.refNotFound(sha)) {
+            _ = try await host.resolveBranchOrTag(repoURL: "https://github.com/a/b", name: sha, token: nil)
+        }
+        for name in ["refs/pull/1/head", "a/../b", ""] {
+            await #expect(throws: SourceHostError.refNotFound(name)) {
+                _ = try await host.resolveBranchOrTag(repoURL: "https://github.com/a/b", name: name, token: nil)
+            }
+        }
+    }
+}

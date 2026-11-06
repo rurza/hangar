@@ -80,6 +80,10 @@ enum APIErrorMapping {
         case .appNotFound(let key): self.error("app_not_found", "No app '\(key)'.")
         case .machineNotFound(let key): self.error("machine_not_found", "No machine '\(key)'.")
         case .refNotFound(let ref): self.error("ref_not_found", "The repository has no ref '\(ref)'.")
+        case .refNotAllowed(let ref):
+            self.error(
+                "ref_not_allowed",
+                "API tokens deploy only the app's own branches and tags; '\(ref)' is not one. The owner can deploy any commit.")
         case .workflowFileMissing(let commit):
             self.error("workflow_file_missing", "Commit \(commit.prefix(7)) has no \(WorkflowFile.path).")
         case .workflowFile(let error): self.error("invalid_workflow_file", error.description)

@@ -92,7 +92,8 @@ import Testing
         let configure = try fixture.server.apiTokens.create(name: "c", scope: .configure).secret
         let app = CreateAppRequest(name: "Legilo", repoURL: "https://github.com/acme/legilo.git", appStoreConnectAppID: "42")
         try await fixture.test { client in
-            for secret in [read, deploy] {
+            // No token adds an app: that picks the repository whose scripts get the secrets (M3).
+            for secret in [read, deploy, configure] {
                 try await client.execute(
                     uri: "/api/v1/apps", method: .post, headers: bearer(secret, json: true), body: try body(app)
                 ) { response throws in
@@ -100,9 +101,9 @@ import Testing
                     #expect(try decode(APIError.self, response).code == "token_scope")
                 }
             }
-            try await client.execute(
-                uri: "/api/v1/apps", method: .post, headers: bearer(configure, json: true), body: try body(app)
-            ) { #expect($0.status == .created) }
+            try await client.execute(uri: "/api/v1/apps", method: .post, headers: jsonHeaders, body: try body(app)) {
+                #expect($0.status == .created)
+            }
 
             // A read token cannot deploy; the deploy token gets past the scope check to the deploy itself.
             let deployRequest = DeployRequest(app: "legilo", workflow: "release", ref: "main")

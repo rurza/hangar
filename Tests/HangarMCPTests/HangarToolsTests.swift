@@ -436,15 +436,6 @@ import Testing
         ]))
     }
 
-    @Test func addAppSendsAGitHubURL() async throws {
-        transport.on("POST apps", json: Fixtures.app, status: 201)
-        let output = try await Fixtures.call(
-            "add_app", tools, ["name": "Legilo", "repository": "https://github.com/acme/legilo.git/", "app_store_connect_app_id": "42"])
-        #expect(!output.isError)
-        #expect(try transport.requests("POST", "apps")[0].json(CreateAppRequest.self)
-            == CreateAppRequest(name: "Legilo", repoURL: "https://github.com/acme/legilo", appStoreConnectAppID: "42"))
-    }
-
     @Test(arguments: ["acme/legilo", "https://github.com/acme/legilo", "github.com/acme/legilo.git", "git@github.com:acme/legilo.git"])
     func repositoryNames(_ text: String) throws {
         #expect(try HangarTools.repositoryName(text) == "acme/legilo")

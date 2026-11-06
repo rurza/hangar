@@ -342,7 +342,7 @@ import Testing
         PATCH apps/:id/variables/:name owner
         PATCH variable-groups/:group owner
         POST api-tokens owner
-        POST apps configure
+        POST apps owner
         POST apps/:id/beta-groups configure
         POST builds deploy
         POST builds/:id/cancel deploy

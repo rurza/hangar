@@ -33,9 +33,9 @@ public struct HangarTools: Sendable {
 
     public static let instructions = """
         Hangar builds Apple apps on the user's own Macs, like Xcode Cloud. Typical flows:
-        - Add an app: list_repositories → inspect_repo (finds the apps the repository builds and their App Store \
-        Connect match) → add_app. Then get_workflows; if the app has none, suggest_workflow → set_workflow (dry run, \
-        then dry_run: false).
+        - Add an app: only the user can, in the web UI (Apps › Add App): it decides which repository's scripts get \
+        the secrets. list_repositories → inspect_repo finds what to tell them. Once added: get_workflows; if the app \
+        has none, suggest_workflow → set_workflow (dry run, then dry_run: false).
         - Deploy: get_workflows → list_branches → deploy_check → start_build (confirm: true) → wait_for_build or \
         get_build → get_build_log for failures → list_artifacts.
         start_build, cancel_build and create_testflight_group act on the real world (build numbers, App Store \
@@ -44,7 +44,7 @@ public struct HangarTools: Sendable {
 
     public var all: [MCPTool] {
         [
-            serverStatus, listApps, listRepositories, inspectRepo, listAppStoreConnectApps, addApp, getWorkflows,
+            serverStatus, listApps, listRepositories, inspectRepo, listAppStoreConnectApps, getWorkflows,
             suggestWorkflow, setWorkflow, clearWorkflowFile, listBranches, deployCheck, startBuild, listBuilds, getBuild,
             waitForBuild, getBuildLog, listArtifacts, cancelBuild, listMachines, listVariables, listTestFlightGroups,
             createTestFlightGroup, deleteApp,
@@ -187,7 +187,8 @@ public struct HangarTools: Sendable {
             description: """
                 Reads a GitHub repository before it is added: the apps it builds (bundle IDs, platforms, schemes), the \
                 App Store Connect app each matches, its projects and whether it has its own .hangar.yml. \
-                `addApp` in each app is the input add_app needs, when the app matched App Store Connect.
+                `addApp` in each app is what the user enters in the web UI (Apps › Add App) to add it; agents cannot \
+                add apps.
                 """,
             inputSchema: Schema.object(
                 [
@@ -243,33 +244,6 @@ public struct HangarTools: Sendable {
             inputSchema: Schema.object([:]), hints: .readExternal
         ) { _ in
             try .json(try await api.appStoreConnectApps())
-        }
-    }
-
-    var addApp: MCPTool {
-        MCPTool(
-            name: "add_app", title: "Add an app",
-            description: """
-                Registers an app in Hangar (scope configure): its name, GitHub repository and App Store Connect app ID, \
-                as inspect_repo's `addApp` gives them. Changes nothing in the repository or App Store Connect. Next: \
-                get_workflows; when the repository has no .hangar.yml, suggest_workflow and set_workflow.
-                """,
-            inputSchema: Schema.object(
-                [
-                    "name": Schema.string("Display name; the slug is made from it."),
-                    "repository": Schema.string("owner/name or a GitHub URL."),
-                    "app_store_connect_app_id": Schema.string("The App Store Connect app's ID (digits)."),
-                    "icon_url": Schema.string("An https icon URL, optional; without one Hangar finds the icon."),
-                ], required: ["name", "repository", "app_store_connect_app_id"]),
-            hints: MCPTool.Hints(readOnly: false, destructive: false, idempotent: false, openWorld: false)
-        ) { arguments in
-            let repository = try Self.repositoryName(try arguments.string("repository"))
-            let app = try await api.createApp(
-                CreateAppRequest(
-                    name: try arguments.string("name"), repoURL: "https://github.com/\(repository)",
-                    appStoreConnectAppID: try arguments.string("app_store_connect_app_id"),
-                    iconURL: try arguments.optionalString("icon_url")))
-            return try .json(Views.AppView(app, server: server))
         }
     }
 
@@ -442,7 +416,7 @@ public struct HangarTools: Sendable {
             inputSchema: Schema.object(
                 [
                     "app": Schema.app, "workflow": Schema.string("The workflow's name."),
-                    "ref": Schema.string("Branch, tag or commit SHA."),
+                    "ref": Schema.string("A branch or tag of the app's repository; API tokens cannot build a bare commit SHA or a pull request ref."),
                     "machine": Schema.string("Run every job on this machine (name or UUID)."),
                     "confirm": Schema.boolean("Must be true."),
                     "allow_blocked": Schema.boolean("Queue the build even when deploy_check finds blocking problems."),

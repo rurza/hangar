@@ -11,6 +11,10 @@ extension HangarServerApp {
         }
         api.post("apps") { request, context in
             let input = try await request.decode(as: CreateAppRequest.self, context: context)
+            // Only GitHub repositories build; refusing anything else here keeps a typo from becoming an app.
+            do { _ = try GitHubSourceHost.parse(input.repoURL) } catch {
+                throw APIError(code: "invalid_repository", message: "'\(input.repoURL)' is not a GitHub repository URL.")
+            }
             let app = try apps.create(input)
             appIconBackfill.fill([app])  // only when no icon was given
             return try Response.json(app, status: .created)

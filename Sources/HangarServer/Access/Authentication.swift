@@ -107,7 +107,7 @@ enum APITokenPolicy {
         switch (method, parts.count, first) {
         case (.post, 1, "builds"): return .deploy
         case (.post, 3, "builds") where parts[2] == "cancel": return .deploy
-        case (.post, 1, "apps"): return .configure
+        // Adding an app picks the repository whose scripts get the secrets: the owner's call (security review M3).
         case (.delete, 2, "apps"): return .configure
         case (.put, 3, "apps") where parts[2] == "workflow-file": return .configure
         case (.delete, 3, "apps") where parts[2] == "workflow-file": return .configure
