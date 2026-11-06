@@ -71,7 +71,7 @@ public enum VMImportError: Error, Equatable, CustomStringConvertible {
         case .notTartImage(let detail): "not a Tart macOS image: \(detail)"
         case .lowDisk(let free, let needed):
             "stopped: only \(free) GB free on the VM storage volume, and the import keeps \(needed) GB free"
-        case .exists(let name): "there is already an image named \(name); remove it first (`hangar-worker vm image remove \(name)`)"
+        case .exists(let name): "there is already an image named \(name); remove it first (`\(WorkerCommandLine.current().asWorker("vm", "image", "remove", name))`)"
         }
     }
 }

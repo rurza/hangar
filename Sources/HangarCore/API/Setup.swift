@@ -22,13 +22,17 @@ public struct SetupStatus: Codable, Equatable, Sendable {
     /// The server does not run as the dedicated `hangar` user, so "Use This Mac for Builds" is refused: the worker
     /// is set up with the install command in Terminal, which creates that user (worker isolation design).
     public var dedicatedUserRequired: Bool
+    /// The server's MagicDNS name ("mini.tail1234.ts.net"), which every Mac on the tailnet can reach; nil when it is
+    /// not known. The Add Mac sheet names the server by it when the page is open on localhost.
+    public var tailnetName: String?
 
     public init(
         appStoreConnect: ASCKeyStatus?, github: GitHubStatus?, machines: Int, apps: Int, localWorker: Bool,
         localHostName: String? = nil, workerInstallAvailable: Bool = false, viewerIsLocal: Bool = false,
-        installedWorker: InstalledWorker? = nil, dedicatedUserRequired: Bool = false
+        installedWorker: InstalledWorker? = nil, dedicatedUserRequired: Bool = false, tailnetName: String? = nil
     ) {
         self.dedicatedUserRequired = dedicatedUserRequired
+        self.tailnetName = tailnetName
         self.appStoreConnect = appStoreConnect
         self.github = github
         self.machines = machines

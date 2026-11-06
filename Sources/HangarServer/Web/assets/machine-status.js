@@ -9,12 +9,18 @@ function isServerMac(machine, hostName) {
 
 /**
  * The load headline and the line under it, `{ headline, detail }`. `headline` is null while jobs run: the page names
- * them ("Building Legilo 88 · macOS").
+ * them ("Building Legilo 88 · macOS"). `vmNotReady`: a VM Mac with no slot ready, which takes no builds; "Idle"
+ * would read as available.
  */
-function loadText({ running, max, paused }) {
+function loadText({ running, max, paused, vmNotReady = false }) {
   const count = `${running} of ${max} ${max === 1 ? 'job' : 'jobs'} running`;
-  if (!paused) return { headline: running === 0 ? 'Idle' : null, detail: count };
-  if (running === 0) return { headline: 'Builds Paused', detail: 'No new builds until resumed' };
+  if (!paused) {
+    if (running === 0 && vmNotReady) return { headline: 'Not Taking Builds', detail: 'VM builds aren’t ready yet' };
+    return { headline: running === 0 ? 'Idle' : null, detail: count };
+  }
+  if (running === 0) {
+    return { headline: 'Builds Paused', detail: vmNotReady ? 'VM builds aren’t ready yet' : 'No new builds until resumed' };
+  }
   return { headline: null, detail: `${count} · no new builds after this` };
 }
 
@@ -70,6 +76,35 @@ function vmLine(vm) {
 }
 
 /**
+ * A VM Mac's readiness checklist (`report.vm`): `{ ready, command, rows }`. `rows` are `{ id, title, ok, required,
+ * detail, command }`; `command` is the one to run first (the first failing required row's), and a row repeats a
+ * command only when it is another one. A worker older than the checklist sends only its first problem, shown as one
+ * row.
+ */
+function vmChecklist(vm) {
+  const ready = (vm?.slots ?? 0) > 0;
+  let rows = (Array.isArray(vm?.checks) ? vm.checks : []).map((check) => ({
+    id: String(check.id ?? ''),
+    title: String(check.title ?? ''),
+    ok: Boolean(check.ok),
+    required: check.required !== false,
+    detail: String(check.detail ?? ''),
+    command: check.ok ? null : check.command || null,
+  }));
+  if (rows.length === 0 && !ready) {
+    rows = [{ id: 'problem', title: 'VM builds', ok: false, required: true, detail: vm?.problem || 'No VM slot is ready.', command: null }];
+  }
+  const first = rows.find((row) => row.required && !row.ok && row.command);
+  const command = first?.command ?? null;
+  // The one command fixes every row, so a detail's own "run `…`" would only repeat a second command.
+  const detail = (text) => (command ? text.replace(/: run `[^`]+`$/, '') : text);
+  return {
+    ready, command,
+    rows: rows.map((row) => ({ ...row, detail: detail(row.detail), command: row.command === command ? null : row.command })),
+  };
+}
+
+/**
  * The warning a Mac's card shows about who builds there, or null: a VM Mac builds as `builder` in a fresh VM that
  * cannot see the host, and the dedicated hangar user is the other safe case. An older worker that does not say gets
  * none. `{ title, note }`.
@@ -84,10 +119,59 @@ function buildUserWarning(report) {
   };
 }
 
+/**
+ * On a VM Mac, the host's Xcodes that no image was built from (by build, else by version), newest first, as the
+ * card's note: `{ title, note, command }`, or null. Jobs get the images' Xcode, so a new Xcode on the Mac is used
+ * only once an image is built from it.
+ */
+function xcodeDrift(report) {
+  const vm = report?.vm;
+  if (!vm) return null;
+  const images = (vm.images ?? []).filter((image) => image.xcode);
+  const missing = (report.xcodes ?? [])
+    .filter((xcode) => !images.some((image) => (image.xcodeBuild ? image.xcodeBuild === xcode.build : image.xcode === xcode.version)))
+    .sort((a, b) => b.version.localeCompare(a.version, 'en', { numeric: true }));
+  if (missing.length === 0 || images.length === 0) return null;
+  const newest = missing[0];
+  const versions = joinList(missing.map((xcode) => xcode.version));
+  let command = vm.setupCommand ?? null;
+  if (command && newest.path && newest.path !== '/Applications/Xcode.app') command += ` --xcode ${shellQuote(newest.path)}`;
+  return {
+    title: `Xcode ${versions} on this Mac ${missing.length === 1 ? 'has' : 'have'} no VM image yet`,
+    note: `Builds use the image’s Xcode until one is built from Xcode ${newest.version} (about 10 minutes). `
+      + 'Pause builds first: the worker restarts at the end.',
+    command,
+  };
+}
+
+/** A path as a shell word: quoted only when it needs to be. */
+function shellQuote(text) {
+  return /^[A-Za-z0-9/._+:@%=,-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+const signingDay = new Intl.DateTimeFormat('en', { year: 'numeric', month: 'short', day: 'numeric' });
+
+/**
+ * What a VM Mac's archives sign with (`signing` is `GET /signing`, null until known): `{ ok, text, link }`, or null.
+ * `link` is true when the fix is in Settings › Signing.
+ */
+function vmSigningLine(vm, signing) {
+  if (!vm) return null;
+  if (vm.ownIdentity) return { ok: true, text: 'Signs with its own certificate (vm identity on this Mac)', link: false };
+  if (!signing) return null;
+  const until = signing.identity ? signingDay.format(new Date(signing.identity.expiresAt)) : null;
+  switch (signing.state) {
+    case 'active': return { ok: true, text: `Signs with Hangar’s certificate (until ${until})`, link: false };
+    case 'expiring': return { ok: false, text: `Hangar’s certificate expires on ${until}. Renew it in`, link: true };
+    case 'expired': return { ok: false, text: `Hangar’s certificate expired on ${until}, so archives wait. Renew it in`, link: true };
+    default: return { ok: false, text: 'Archives wait for a signing certificate. Create it once in', link: true };
+  }
+}
+
 /** "a", "a and b", "a, b and c". */
 function joinList(items) {
   if (items.length <= 1) return items.join('');
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine };
+export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift };

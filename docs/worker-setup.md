@@ -1,16 +1,85 @@
 # Worker setup
 
-`hangar-worker` runs on each build Mac. It heartbeats to the server every 30 s, long-polls for jobs and runs them with Xcode. It runs as a dedicated, unprivileged `hangar` user, so a build (which runs the repository's own scripts) cannot read your files or the server's data. It is a LaunchDaemon: it starts at boot as `hangar`, and nobody ever logs in as `hangar`. It signs with its own CI keychain, which it unlocks itself (see [Signing without a login](#signing-without-a-login)). The `hangar` user shares the Mac's Xcode and simulator runtimes; it gets no copy of either. The install command sets the user up for you. Why it is a user and not a VM or a container: [the worker isolation design](superpowers/specs/2026-11-05-worker-isolation-design.md).
+`hangar-worker` runs on each build Mac. It heartbeats to the server every 30 s, long-polls for jobs and runs each one in a **fresh macOS VM**: a clone of a prepared image, thrown away when the job ends. The VM sees none of the Mac's files, cannot reach its services, the LAN or the tailnet, and never gets the machine token. This is how every new Mac should build.
 
-Do these steps on every build Mac, as an administrator, in Terminal.
+The worker itself runs as a separate, unprivileged macOS user named `hangar`, as a LaunchDaemon: from boot, with nobody logged in. A worker run by the Mac's owner as a launch agent works the same way with VM builds on. Building on the Mac itself, without VMs, is the older setup; it still works, and is described under [Building on the host (legacy)](#building-on-the-host-legacy).
 
-## Checklist
+## Add a new Mac
+
+What it needs: Apple silicon, macOS at least as new as the VM image (26.6.2), Xcode, and about 105 GB free on one APFS volume (an external SSD works). Do this on the new Mac, as an administrator.
+
+1. **Install Tailscale** and log in to the tailnet the server is on.
+2. **Install Xcode** from the App Store (or with `xcodes`) and open it once. Nothing else: no simulator platforms, no Homebrew. Jobs install what they need inside their VM.
+3. **In Hangar, open Machines and click Add Mac.** On the new Mac, open Terminal and run the command the sheet shows, then type the pairing code:
+   ```sh
+   curl -fsSL http://<tailnet-host>:8787/install | sh
+   ```
+   The script first checks the Mac (Apple silicon, macOS, Xcode and its license, free space, Tailscale, the server) and prints a ✓/✗ list. It then installs the worker as the `hangar` user (macOS asks for your password once), enrolls the Mac **with its builds paused**, so it never builds on the host, and asks **Set up VM builds now?** Answer yes: it runs `sudo /Users/hangar/.local/bin/hangar-worker vm setup` in the same Terminal, which takes about 15 minutes (most of it a 26 GB download).
+4. **Watch the Mac's card on the Machines page.** It says **Not Taking Builds** (or **Builds Paused**) and lists what VM builds still need, with the command to run. When it shows its VM slot and Xcode image, click **Resume Builds**.
+5. **Signing, once per server.** VM archives sign with Hangar's own Apple Development certificate: create it once in **Settings › Signing**. The card says whether there is one.
+
+To use an external SSD for the VMs, or two VMs at once, answer no in step 3 and run the setup yourself, e.g. `sudo /Users/hangar/.local/bin/hangar-worker vm setup --storage /Volumes/<SSD>/hangar-vm --slots 2`. For a worker run as yourself (installed with `HANGAR_AS_CURRENT_USER=1`), the binary is `~/.local/bin/hangar-worker`; the card always shows the right path.
+
+## `vm setup`
+
+`sudo <path to hangar-worker> vm setup` does everything VM builds need, in one sudo session. It finds the worker: the `hangar` user's LaunchDaemon, or else your own launch agent. It checks the Mac first and stops, changing nothing, when something required is missing: Apple silicon, the virtualization entitlement, macOS against the image, Xcode, free space against the budget (the images still to make, a saved state per slot, one job's growth and the 40 GB floor). It reports the server and Tailscale too. Then:
+
+1. keeps the Mac awake (`pmset -a sleep 0 disksleep 0`);
+2. accepts the Xcode license;
+3. on an external volume, turns its ownership on (`diskutil enableOwnership`) and creates the storage directory for the worker's user, mode 0700;
+4. turns VM builds on in the worker's configuration (`vm enable`, as the worker's user) and restarts the worker at once, so it stops taking host builds;
+5. installs the network filter (see [How VM builds work](#how-vm-builds-work));
+6. imports the vanilla macOS image (as the worker's user; about 5 minutes, 26 GB);
+7. builds the job image from this Mac's Xcode (as the worker's user; about 10 minutes): `/Applications/Xcode.app`, else the newest `/Applications/Xcode*.app`, or `--xcode <path>`;
+8. restarts the worker, which saves each slot's state when it starts.
+
+Steps that are done already are skipped, so running it again finishes an interrupted setup, and on a Mac that is set up it changes nothing and leaves the worker running. `--dry-run` prints the checks and the steps without sudo. Options: `--storage`, `--slots`, `--cpus`, `--memory-gb`, `--xcode`, `--config`.
+
+The image itself holds only what a job needs: macOS, the Xcode, a standard user `builder` that owns an empty `/opt/homebrew`, and the `/Volumes/workspace` volume. `vm image build --homebrew`, `--metal-toolchain` and `--platform iOS` (a simulator runtime, for test jobs) add more, when a project needs them.
+
+## When Xcode is updated
+
+The App Store replaces `/Applications/Xcode.app` in place. Running VM jobs are unaffected: each image has its own copy. Builds keep using the image's Xcode, and the Mac's card says "Xcode 27.3 on this Mac has no VM image yet" with the command that builds one: the same `vm setup`, which now only builds the image and restarts the worker. **Pause Builds** first and let a running build finish, since the worker restarts at the end. A workflow pinned to an older `xcode:` keeps using its image until you remove it: `sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker vm image remove xcode-27.2`.
+
+## How VM builds work
+
+With VM builds on, a Mac runs **every** job in a fresh macOS VM and none on the host: a clone of a prepared image, restored from a saved state in a few seconds, thrown away when the job ends. In the VM the job runs as a standard user `builder` that owns an empty `/opt/homebrew`, so a `ci_post_clone.sh` can unpack Homebrew there and `brew install` without sudo (`curl -fsSL https://github.com/Homebrew/brew/tarball/main | tar xz --strip-components 1 -C /opt/homebrew`). The VM sees none of your files, cannot reach this Mac's services, the LAN or the tailnet (a pf filter), and never gets the machine token: it talks to the server through the worker with a token that works only for its own job. Why, and what was measured: [the VM builds design](superpowers/specs/2026-11-05-vm-builds-design.md).
+
+A Mac with VM builds on but not ready (no network filter, no image, a worker without the virtualization entitlement) takes **no** jobs, rather than building on the host; its card on the Machines page says what is missing. A Mac without VM builds builds on the host as before.
+
+What it needs: Apple silicon, an up-to-date worker (the install scripts sign it with the `com.apple.security.virtualization` entitlement), and room on one APFS volume: about 26 GB for the vanilla macOS image, 6 GB more for an image with Xcode (plus 8 to 17 GB per simulator runtime, and 3 GB for the Metal toolchain if asked for), a few GB per slot's saved state, and up to `jobReserveGB` (25) per running job, above a floor of `floorGB` (40) that the worker never goes below. A Mac whose internal disk cannot hold that uses an external APFS SSD.
+
+**What a job sees in its VM.** The same steps and `CI_*` variables as on the host, with the workspace in `/Users/builder/hangar`, `HOMEBREW_NO_AUTO_UPDATE=1` set, and Xcode at `/Applications/Xcode.app`. The job log's first line says how the VM came up ("VM: restored slot 0's saved state in 4.5 s"). `tools:` in `.hangar.yml` is not checked on a VM Mac: a `ci_post_clone.sh` installs what it needs, as on Xcode Cloud. The workflow's `xcode:` is matched against the images.
+
+**When things go wrong.** A job that runs longer than `vm.jobTimeoutMinutes` (default 120) is cancelled and its VM stopped. A cancelled job's VM gets a minute to report, then is stopped. A VM that stops or stops answering fails its job with the reason. The worker deletes every leftover clone when it starts, and a crashed worker's VMs end with it. When macOS on the Mac is updated, a saved state may no longer restore: the next job cold-boots (about 20 s more) and the slot is saved again afterwards.
+
+**Other VM commands.** They run as the worker's user, which owns the storage; for the `hangar` user, as an administrator: `sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker vm …` (for a worker run as yourself, just `~/.local/bin/hangar-worker vm …`). `vm status` prints the card's report as JSON, `vm image list` lists images and slot states, `vm smoke` boots a job's VM from slot 0, runs a command in it and deletes it, `vm slots prepare` saves the states again (stop the worker first), `vm disable` turns VM builds off (images and states stay), and `vm image remove <name>` deletes an image. `vm network install` and `vm network uninstall` need root (`sudo /Users/hangar/.local/bin/hangar-worker vm network …`; `--dry-run` prints the rules and commands). The network filter is the pf anchor `com.apple/250.HangarVM` (`/etc/pf.anchors/app.hangar.vm`) and a LaunchDaemon, `app.hangar.pf`, that loads it at every boot; `/etc/pf.conf` is not changed. It lets this Mac open connections into the VMs (SSH) and lets the VMs use DNS and the internet; everything from a VM to this Mac, private ranges (10/8, 172.16/12, 192.168/16), the tailnet (100.64/10), link-local, multicast and IPv6 is dropped.
+
+**The signing identity.** VM archives sign with the Hangar server's one Apple Development identity, which each archive's assignment carries into its VM; a VM never creates certificates of its own. Create it once in Settings › Signing (or `hangar signing create`), or import a `.p12` (`hangar signing import <file.p12>`). VM archives wait until the server has one; tests do not need it. Only to make one worker use a different identity: `HANGAR_P12_PASSWORD=… hangar-worker vm identity import <file.p12>` as the worker's user; `vm identity remove` goes back to the server's.
+
+**External storage by hand.** `vm setup --storage` does this; by hand: format the SSD as APFS, `sudo diskutil enableOwnership /Volumes/<SSD>`, then create the directory owned by the worker's user with mode 700. An external volume ignores ownership by default, which would let every user of the Mac read a running job's clone; the worker refuses such a volume. FileVault or an encrypted volume is recommended: a deleted clone is not scrubbed.
+
+## Pause builds on a Mac
+
+To keep a Mac free for your own work (the Mac that runs the server, say), turn builds off there: **Pause builds** on its card on the Machines page, or `hangar machines pause <name>`. The scheduler then gives it no new jobs; a build it is running finishes. Nothing is uninstalled and no administrator is needed: the worker keeps reporting, so the Mac stays online on the Machines page, and it still updates itself. Builds that only that Mac could run wait in the queue ("builds paused"), and the Deploy sheet says so before you deploy. **Resume builds** (or `hangar machines resume <name>`) turns it back on, and waiting builds start at once. A new Mac meant for VM builds is enrolled paused until they are ready (see [Add a new Mac](#add-a-new-mac)).
+
+## Where builds happen
+
+Checkouts, DerivedData, job folders and each job's `TMPDIR` go to the worker's work directory, which never has a space in its path: projects written for Xcode Cloud (`/Volumes/workspace/repository`) often use `$CI_PRIMARY_REPOSITORY_PATH` unquoted. For the `hangar` user it is `/Users/hangar/.hangar/worker` (mode 0700, inside the 0700 home), named in its `config.json`. For a worker installed as another user it is by default `~/.hangar/worker` for the usual configuration under `~/Library/Application Support/Hangar/worker` (the data directory itself when its path has no spaces). Set another with `hangar-worker setup --work-dir <path>` or `"workDirectory"` in `config.json`; for `hangar`, keep it inside `/Users/hangar`. The first time a worker starts with a new work directory it moves the cached workspaces there (a rename, instant on the same volume), so the next build fetches instead of cloning; Xcode rebuilds what it keyed to the old path once.
+
+On SIGTERM (`launchctl bootout`, a restart, an update run by an administrator) the worker stops asking for jobs, cancels a running build with the reason ("hangar-worker on <Mac> was stopped (SIGTERM) during archive"), cleans up and exits. Check the Machines page for running jobs before restarting a worker by hand. As an administrator, the `hangar` user's worker is restarted with `sudo launchctl kill SIGTERM system/app.hangar.worker` (launchd starts it again) and stopped until the next boot with `sudo launchctl bootout system/app.hangar.worker`. Its log is `/Users/hangar/Library/Logs/Hangar/worker.log` (`sudo tail` it).
+
+## Building on the host (legacy)
+
+Before VM builds, a Mac built on the host as the `hangar` user (or as its owner). It still works: install with `HANGAR_VM=0` after the pipe (`curl … | HANGAR_VM=0 sh`), and the Mac is enrolled with builds on and never asked about VMs; an Intel Mac always builds this way. A build then runs the repository's scripts on the Mac itself, uses the Mac's Homebrew, and the first archive creates a signing identity in `hangar`'s CI keychain. Why the `hangar` user and not a VM was the first answer: [the worker isolation design](superpowers/specs/2026-11-05-worker-isolation-design.md).
+
+### Host-build checklist
 
 1. **Stop the Mac from sleeping** (sleep stops builds):
    ```sh
    sudo pmset -a sleep 0 disksleep 0
    ```
-2. **Install Xcode 27.2**, then, as an administrator (once per Mac; the runtimes are system-wide and shared with `hangar`):
+2. **Install Xcode**, then, as an administrator (once per Mac; the runtimes are system-wide and shared with `hangar`):
    ```sh
    sudo xcodebuild -license accept
    xcodebuild -downloadPlatform iOS
@@ -25,7 +94,7 @@ Do these steps on every build Mac, as an administrator, in Terminal.
    ```sh
    curl -fsSL http://<tailnet-host>:8787/install | sh
    ```
-   and type the code when asked. The script checks the downloaded `hangar-worker` against the SHA-256 the server wrote into it and stops with "SHA-256 mismatch" if they differ, whichever user it installs for. Then it hands over to `hangar-worker isolate`, which does the rest:
+   and type the code when asked. The script checks the downloaded `hangar-worker` against the SHA-256 the server wrote into it and stops with "SHA-256 mismatch" if they differ, whichever user it installs for. Then it hands over to `hangar-worker isolate`, which does the rest (the same for a VM Mac):
 
    - asks for your password once (`sudo`; creating a user needs an administrator);
    - creates the `hangar` user: a standard account, not an administrator, shell `/bin/zsh`, home `/Users/hangar`, with a **generated** password. You never make one up. The password is shown once and saved in your login keychain as `app.hangar.worker-account`; to see it again:
@@ -56,6 +125,8 @@ Do these steps on every build Mac, as an administrator, in Terminal.
    | `HANGAR_MACHINE_NAME` | the Mac's local host name (`scutil --get LocalHostName`) | How the Mac appears in Hangar. If the name is taken, the script stops and says so; the code stays valid |
    | `HANGAR_PAIRING_CODE` | asked for on the terminal | For unattended installs |
    | `HANGAR_AS_CURRENT_USER=1` | | Install for the user running the script, not for `hangar` |
+   | `HANGAR_VM=0` | `1` on Apple silicon | Build on the host: enroll with builds on and skip VM setup |
+   | `HANGAR_VM_SETUP` | asked | `1` runs `vm setup` after a new install without asking, `0` skips it and prints the command |
    | `HANGAR_BIN_DIR` | `~/.local/bin` | Current-user installs only. Must be writable by you; the plist points at the binary there. The `hangar` user's is always `/Users/hangar/.local/bin`, which it owns, so the idle self-update can replace it |
    | `HANGAR_MAX_JOBS` | `1` | Builds this Mac runs at once |
    | `HANGAR_WORKER_CONFIG` | `hangar-worker`'s default | Another configuration file; the agent is then started with `--config` |
@@ -90,58 +161,9 @@ Do these steps on every build Mac, as an administrator, in Terminal.
    ```sh
    hangar machines list
    ```
-   It should show Xcode 27.2, `canSignWithoutPrompt: true`, and `tools` containing `xcodegen` and `brew`. The Machines page shows **Runs as** `hangar`; any other user gets a warning there and in the worker's log.
+   It should show its Xcode, `canSignWithoutPrompt: true`, and `tools` containing `xcodegen` and `brew`. The Machines page shows **Runs as** `hangar`; any other user gets a warning there and in the worker's log.
 
-## Pause builds on a Mac
-
-To keep a Mac free for your own work (the Mac that runs the server, say), turn builds off there: **Pause builds** on its card on the Machines page, or `hangar machines pause <name>`. The scheduler then gives it no new jobs; a build it is running finishes. Nothing is uninstalled and no administrator is needed: the worker keeps reporting, so the Mac stays online on the Machines page, and it still updates itself. Builds that only that Mac could run wait in the queue ("builds paused"), and the Deploy sheet says so before you deploy. **Resume builds** (or `hangar machines resume <name>`) turns it back on, and waiting builds start at once.
-
-## Where builds happen
-
-Checkouts, DerivedData, job folders and each job's `TMPDIR` go to the worker's work directory, which never has a space in its path: projects written for Xcode Cloud (`/Volumes/workspace/repository`) often use `$CI_PRIMARY_REPOSITORY_PATH` unquoted. For the `hangar` user it is `/Users/hangar/.hangar/worker` (mode 0700, inside the 0700 home), named in its `config.json`. For a worker installed as another user it is by default `~/.hangar/worker` for the usual configuration under `~/Library/Application Support/Hangar/worker` (the data directory itself when its path has no spaces). Set another with `hangar-worker setup --work-dir <path>` or `"workDirectory"` in `config.json`; for `hangar`, keep it inside `/Users/hangar`. The first time a worker starts with a new work directory it moves the cached workspaces there (a rename, instant on the same volume), so the next build fetches instead of cloning; Xcode rebuilds what it keyed to the old path once.
-
-On SIGTERM (`launchctl bootout`, a restart, an update run by an administrator) the worker stops asking for jobs, cancels a running build with the reason ("hangar-worker on <Mac> was stopped (SIGTERM) during archive"), cleans up and exits. Check the Machines page for running jobs before restarting a worker by hand. As an administrator, the `hangar` user's worker is restarted with `sudo launchctl kill SIGTERM system/app.hangar.worker` (launchd starts it again) and stopped until the next boot with `sudo launchctl bootout system/app.hangar.worker`. Its log is `/Users/hangar/Library/Logs/Hangar/worker.log` (`sudo tail` it).
-
-## VM builds
-
-With VM builds on, a Mac runs **every** job in a fresh macOS VM and none on the host: a clone of a prepared image, restored from a saved state in a few seconds, thrown away when the job ends. In the VM the job runs as a standard user `builder` that owns `/opt/homebrew`, as on Xcode Cloud, so `ci_post_clone.sh` can `brew install` without sudo. The VM sees none of your files, cannot reach this Mac's services, the LAN or the tailnet (a pf filter), and never gets the machine token: it talks to the server through the worker with a token that works only for its own job. Why, and what was measured: [the VM builds design](superpowers/specs/2026-11-05-vm-builds-design.md).
-
-A Mac with VM builds on but not ready (no network filter, no image, a worker without the virtualization entitlement) takes **no** jobs, rather than building on the host; its card on the Machines page says what is missing. A Mac without VM builds builds on the host as before.
-
-What it needs: Apple silicon, an up-to-date worker (the install scripts sign it with the `com.apple.security.virtualization` entitlement), and room on one APFS volume: about 26 GB for the vanilla macOS image, 6 GB more for an image with Xcode (plus 8 to 17 GB per simulator runtime, and 3 GB for the Metal toolchain if asked for), a few GB per slot's saved state, and up to `jobReserveGB` (25) per running job, above a floor of `floorGB` (40) that the worker never goes below. A Mac whose internal disk cannot hold that uses an external APFS SSD.
-
-The image and slot commands run as `hangar`, which owns the VM storage and saves and restores the states. As an administrator, in Terminal (`hw` is short for the `hangar` user's worker):
-
-```sh
-hw() { sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker "$@"; }
-```
-
-1. **Update the worker** (run the install command from the Machines page again), so it carries the entitlement.
-2. **Storage on an external SSD** (skip it to use `/Users/hangar/.hangar/vm`): format the SSD as APFS, then
-   ```sh
-   sudo diskutil enableOwnership /Volumes/<SSD>
-   sudo mkdir /Volumes/<SSD>/hangar-vm && sudo chown hangar:staff /Volumes/<SSD>/hangar-vm && sudo chmod 700 /Volumes/<SSD>/hangar-vm
-   ```
-   An external volume ignores ownership by default, which would let every user of the Mac read a running job's clone; the worker refuses such a volume. FileVault or an encrypted volume is recommended: a deleted clone is not scrubbed.
-3. **Turn VM builds on**: `hw vm enable` (add `--storage /Volumes/<SSD>/hangar-vm`, `--slots 2` on a Mac with the memory for two, `--memory-gb`, `--cpus`, `--timeout-minutes`). This writes the `vm` section of the worker's `config.json`.
-4. **Install the network filter** (it needs root; `sudo` here only because `hangar`'s home is closed to you, and `--dry-run` changes nothing):
-   ```sh
-   sudo /Users/hangar/.local/bin/hangar-worker vm network install --dry-run   # the rules, files and commands
-   sudo /Users/hangar/.local/bin/hangar-worker vm network install
-   ```
-   It writes the pf anchor `com.apple/250.HangarVM` (`/etc/pf.anchors/app.hangar.vm`) and a LaunchDaemon, `app.hangar.pf`, that loads it and enables pf at every boot; `/etc/pf.conf` is not changed. The rules let this Mac open connections into the VMs (SSH) and let the VMs use DNS and the internet; everything from a VM to this Mac, private ranges (10/8, 172.16/12, 192.168/16), the tailnet (100.64/10), link-local, multicast and IPv6 is dropped. `hw vm network check` says whether the worker sees it loaded. `vm network uninstall` removes it (VM builds then stop).
-5. **Import the vanilla macOS image** (about 5 minutes and 26 GB; pinned by digest): `hw vm image import`. It is Cirrus Labs' public `macos-tahoe-vanilla:26.6.2`, which has Setup Assistant done and an `admin` user whose published password the next step replaces.
-6. **Build the job image** from it with this Mac's Xcode (about 5 minutes for Xcode 27.2, plus downloads): `hw vm image build`. It replaces `admin`'s password and turns off password logins, creates `builder` (not an administrator, no sudo, logged in automatically), streams `/Applications/Xcode.app` in, accepts its license, runs `xcodebuild -runFirstLaunch`, downloads no simulator platform unless asked (`--platform iOS`, repeatable; only test jobs need one, archives use the SDKs inside Xcode), turns off Spotlight, sleep and software update, and then saves each slot's state. Nothing else goes in: a job installs what it needs itself. `/opt/homebrew` exists, empty and owned by `builder`, so a job's script can unpack Homebrew there without sudo (`curl -fsSL https://github.com/Homebrew/brew/tarball/main | tar xz --strip-components 1 -C /opt/homebrew`). `--homebrew` installs Homebrew into it ahead of time, and `--metal-toolchain` the Metal toolchain. `--xcode /Applications/Xcode_27.2.app` picks another Xcode; each image holds one.
-7. **The signing identity.** Nothing to do on the worker. VM archives sign with the Hangar server's one Apple Development identity, which each archive's assignment carries into its VM; a VM never creates certificates of its own. Create it once in Settings › Signing (or `hangar signing create`), or import a `.p12` you have there (`hangar signing import <file.p12>`). VM archives wait until the server has one; tests do not need it. Only to make one worker use a different identity: `HANGAR_P12_PASSWORD=… hw vm identity import <file.p12>` (or `hw vm identity from-keychain`) stores an override on that worker; `hw vm identity remove` goes back to the server's.
-8. **Restart the worker**: `sudo launchctl kill SIGTERM system/app.hangar.worker`. On the Machines page the Mac shows its VM slots and images. `hw vm status` prints the same report as JSON, and `hw vm smoke` boots a job's VM from slot 0, runs a command in it and deletes it, printing how long it took.
-
-`hw vm disable` turns VM builds off (images and states stay; `hw vm image remove <name>` deletes one). `hw vm image list` lists images and slot states; `hw vm slots prepare` saves the states again (stop the worker first).
-
-**What a job sees in its VM.** The same steps and `CI_*` variables as on the host, with the workspace in `/Users/builder/hangar`, `HOMEBREW_NO_AUTO_UPDATE=1` set, and Xcode at `/Applications/Xcode.app`. The job log's first line says how the VM came up ("VM: restored slot 0's saved state in 4.5 s"). `tools:` in `.hangar.yml` is not checked on a VM Mac: a `ci_post_clone.sh` installs what it needs, as on Xcode Cloud. The workflow's `xcode:` is matched against the images.
-
-**When things go wrong.** A job that runs longer than `vm.jobTimeoutMinutes` (default 120) is cancelled and its VM stopped. A cancelled job's VM gets a minute to report, then is stopped. A VM that stops or stops answering fails its job with the reason. The worker deletes every leftover clone when it starts, and a crashed worker's VMs end with it. When macOS on the Mac is updated, a saved state may no longer restore: the next job cold-boots (about 20 s more) and the slot is saved again afterwards.
-
-## Move an existing worker to the `hangar` user
+### Move an existing worker to the `hangar` user
 
 A worker installed as your own user moves without a new pairing code: same machine in Hangar, same token, and its build cache (checkouts and DerivedData) moves too, so the next build fetches instead of cloning. Run the install command again as that administrator, or, with the worker already on your `PATH`:
 
@@ -156,11 +178,11 @@ A `hangar` user set up by Hangar 0.8 or earlier runs the worker as a launch agen
 
 When the server runs on the same Mac, it stays your user's; the worker becomes `hangar`. If `hangar` can read the server's `master.key`, the command stops before moving anything and prints the `chmod 700` to run on the server's data directory. **Use This Mac for Builds** on the setup page shows this command instead of installing the worker as the server's user.
 
-## The Apple Development identity
+### The Apple Development identity
 
 You do not create the signing identity by hand. The first archive with the App Store Connect team API key creates the Apple Development identity and its private key in the worker's default keychain: the CI keychain for `hangar`, the login keychain for a worker installed as yourself (where an individual key's Xcode account can create it too). A `hangar` worker whose CI keychain is ready counts as able to sign before that first archive, so it gets one. A worker installed as yourself reports `canSignWithoutPrompt` `false` until the identity exists; after the first archive, run the doctor again and, if needed, do the Access Control step above.
 
-## Signing without a login
+### Signing without a login
 
 The `hangar` worker runs before anyone logs in, so no login keychain is unlocked for it, and there is nobody to click "Always Allow" when codesign asks for a key. It uses its own keychain instead:
 
@@ -171,7 +193,7 @@ The `hangar` worker runs before anyone logs in, so no login keychain is unlocked
 
 The keychain holds only Hangar's signing identity, never yours. Why keeping its password on disk is acceptable: [the worker isolation design](superpowers/specs/2026-11-05-worker-isolation-design.md#revised-launchdaemon-and-the-ci-keychain).
 
-## Team and individual API keys
+### Team and individual API keys
 
 With a team key (`HANGAR_ASC_ISSUER_ID` set), archive, export and the TestFlight upload pass `-authenticationKeyPath`, `-authenticationKeyID` and `-authenticationKeyIssuerID` to xcodebuild. xcodebuild does not accept individual keys, so with an individual key those flags are left out and `-allowProvisioningUpdates` uses the Apple account signed in to Xcode on the Mac; the job log says "No team API key; xcodebuild signs with the Xcode account on this Mac." Build numbers and TestFlight processing, groups and review still go through the App Store Connect API with the individual key. A job fails before checkout when `HANGAR_ASC_KEY_ID` or `HANGAR_ASC_KEY_PATH` is missing.
 

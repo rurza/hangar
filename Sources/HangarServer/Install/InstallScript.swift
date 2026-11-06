@@ -42,20 +42,26 @@ enum InstallScript {
         #
         #   curl -fsSL __HANGAR_ORIGIN__/install | sh
         #
-        # Run it in Terminal as an administrator. Builds then run as a separate, unprivileged macOS user named
-        # hangar: `hangar-worker isolate` creates it with a generated password (shown once and saved in your login
-        # keychain as app.hangar.worker-account; sudo asks for your password), installs the worker there with its
-        # own signing keychain, and runs it as a LaunchDaemon: from boot, with nobody logged in as hangar. An
-        # enrolled worker running as you moves with its enrollment and build cache. With HANGAR_AS_CURRENT_USER=1,
-        # or as a standard (non-admin) account, it installs for the current user instead: no sudo. Either way it downloads
-        # hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac, enrolls this Mac,
-        # writes the worker configuration and starts the agent. No checkout, no Swift build.
+        # Run it in Terminal as an administrator. It checks this Mac first (Apple silicon, Xcode, free space,
+        # Tailscale), downloads hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac and
+        # enrolls this Mac. The worker runs as a separate, unprivileged macOS user named hangar: `hangar-worker
+        # isolate` creates it with a generated password (shown once and saved in your login keychain as
+        # app.hangar.worker-account; sudo asks for your password) and runs the worker as a LaunchDaemon, from boot,
+        # with nobody logged in as hangar. An enrolled worker running as you moves with its enrollment and build
+        # cache. With HANGAR_AS_CURRENT_USER=1, or as a standard (non-admin) account, it installs for the current
+        # user instead, as a launch agent. No checkout, no Swift build.
+        #
+        # Builds run in VMs: on Apple silicon a new Mac is enrolled with its builds paused, and the script then offers
+        # `sudo hangar-worker vm setup`, which sets up VM builds (a fresh macOS VM per build) in the same sudo
+        # session, in about 15 minutes. Resume builds on the Mac's card once it says VM builds are ready.
         #
         # Run it again to update: when this Mac is already enrolled with this server (`hangar-worker check`), it
         # replaces the binary and restarts the agent without asking for a code.
         #
         # Settings, all optional, as environment variables (put them after the pipe: ... | HANGAR_MAX_JOBS=2 sh):
         #   HANGAR_AS_CURRENT_USER=1  install for the user running this, not for the hangar user
+        #   HANGAR_VM=0           build on this Mac itself (the older setup): enroll with builds on and skip VM setup
+        #   HANGAR_VM_SETUP       1 runs `vm setup` without asking, 0 skips it (it prints the command); asked when unset
         #   HANGAR_PAIRING_CODE   the pairing code; asked for on the terminal when unset
         #   HANGAR_MACHINE_NAME   how this Mac appears in Hangar (default: its local host name)
         #   HANGAR_BIN_DIR        where hangar-worker goes when installing for the current user (default:
@@ -180,7 +186,9 @@ enum InstallScript {
                 index=$((index + 1))
             done
             say "  Xcode: ${versions:-none found}"
-            if [ "$(printf '%s' "$report" | json_value canSignWithoutPrompt)" = true ]; then
+            if [ -n "$(printf '%s' "$report" | json_value vm.configuredSlots)" ] || vm_planned; then
+                say "  Builds: in VMs (they sign with Hangar's certificate, Settings > Signing)"
+            elif [ "$(printf '%s' "$report" | json_value canSignWithoutPrompt)" = true ]; then
                 say "  Can sign without a prompt: yes"
             else
                 say "  Can sign without a prompt: not yet. Normal on a new Mac: the first archive creates the signing"
@@ -229,7 +237,10 @@ enum InstallScript {
 
             # Enroll. The body goes on stdin and the answer, which holds the token, stays in this shell.
             say "Enrolling $name..."
-            body=$(printf '{"code":"%s","name":"%s","maxConcurrentJobs":%s}' "$code" "$(json_escape "$name")" "$max_jobs")
+            # A Mac meant for VM builds takes none until they are ready: it is enrolled paused, never building on the host.
+            paused=false
+            ! vm_planned || paused=true
+            body=$(printf '{"code":"%s","name":"%s","maxConcurrentJobs":%s,"paused":%s}' "$code" "$(json_escape "$name")" "$max_jobs" "$paused")
             response=$(printf '%s' "$body" | curl -sS -X POST -H 'Content-Type: application/json' \
                 --data-binary @- -w '\n%{http_code}' "$HANGAR_SERVER/api/v1/enroll") \
                 || die "Cannot reach $HANGAR_SERVER. Check that this Mac is on the tailnet."
@@ -254,6 +265,96 @@ enum InstallScript {
             HANGAR_WORKER_TOKEN=$token "$worker" setup --server "$HANGAR_SERVER" --max-jobs "$max_jobs" "$@" \
                 || die "hangar-worker setup failed. $name is enrolled already: remove it in Hangar → Machines before running this again."
             unset token
+            enrolled_now=1
+        }
+
+        # Whether this Mac is meant for VM builds: Apple silicon, unless HANGAR_VM=0.
+        vm_planned() {
+            [ "${HANGAR_VM:-1}" != 0 ] && [ "$(uname -m)" = arm64 ]
+        }
+
+        is_admin() { id -Gn | tr ' ' '\n' | grep -qx admin; }
+
+        # One line of the preflight checklist. check_line <mark> <title> <detail>
+        check_line() { say "  $1 $2: $3"; }
+
+        # What this Mac has before anything is installed. Nothing here stops the install: `vm setup` checks again.
+        preflight() {
+            say "Checking this Mac:"
+            if [ "$(uname -m)" = arm64 ]; then
+                check_line ✓ "Apple silicon" "yes"
+            else
+                check_line ! "Apple silicon" "no ($(uname -m)): macOS VMs need Apple silicon, so this Mac builds on the host"
+            fi
+            check_line ✓ macOS "$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+            xcode=''
+            if [ -d /Applications/Xcode.app ]; then
+                xcode=/Applications/Xcode.app
+            else
+                for candidate in /Applications/Xcode*.app; do [ -d "$candidate" ] && xcode=$candidate; done
+            fi
+            if [ -n "$xcode" ]; then
+                version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$xcode/Contents/version.plist" 2>/dev/null || true)
+                check_line ✓ Xcode "${version:-?} at $xcode"
+                if DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -license check >/dev/null 2>&1; then
+                    check_line ✓ "Xcode license" accepted
+                else
+                    check_line ! "Xcode license" "not accepted yet (VM setup accepts it)"
+                fi
+            else
+                check_line ✗ Xcode "not in /Applications: install it from the App Store and open it once; the worker cannot build without it"
+            fi
+            free=$(df -g / 2>/dev/null | awk 'NR == 2 { print $4 }')
+            case $free in '' | *[!0-9]*) free='' ;; esac
+            if [ -z "$free" ]; then
+                check_line ! "Free space" unknown
+            elif [ "$free" -ge 105 ]; then
+                check_line ✓ "Free space" "$free GB on the startup disk (VM builds need about 105)"
+            else
+                check_line ! "Free space" "$free GB on the startup disk; VM builds need about 105 (images, a job, a 40 GB floor): free some, or use an external SSD with vm setup --storage"
+            fi
+            tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+            if [ -x "$tailscale" ] && "$tailscale" status >/dev/null 2>&1; then
+                check_line ✓ Tailscale connected
+            elif [ -x "$tailscale" ]; then
+                check_line ! Tailscale "installed but not connected: open it and log in to the tailnet"
+            else
+                check_line ! Tailscale "not found in /Applications (fine if the server is reachable another way)"
+            fi
+            if curl -fsS -o /dev/null --max-time 5 "$HANGAR_SERVER/install" 2>/dev/null; then
+                check_line ✓ Hangar "reachable at $HANGAR_SERVER"
+            else
+                check_line ✗ Hangar "cannot reach $HANGAR_SERVER: check that this Mac is on the tailnet"
+            fi
+        }
+
+        # After a new Mac's install: sets up VM builds with `sudo hangar-worker vm setup` in the same Terminal, so sudo
+        # usually does not ask again. Asked unless HANGAR_VM_SETUP says; skipped (with the command) when declined.
+        # offer_vm_setup <installed hangar-worker>
+        offer_vm_setup() {
+            [ "$enrolled_now" = 1 ] && vm_planned || return 0
+            command="sudo $1 vm setup"
+            if [ "${HANGAR_NO_LAUNCHD:-}" = 1 ] || ! is_admin; then
+                say "Next, an administrator sets up VM builds on this Mac (builds stay paused until then): $command"
+                return 0
+            fi
+            answer=${HANGAR_VM_SETUP:-}
+            if [ -z "$answer" ]; then
+                if (: </dev/tty) 2>/dev/null; then
+                    printf 'Set up VM builds now? It takes about 15 minutes (a 26 GB download). [Y/n] ' >/dev/tty
+                    IFS= read -r answer </dev/tty || answer=n
+                else
+                    answer=n
+                fi
+            fi
+            case $answer in
+                '' | [Yy]* | 1) ;;
+                *)
+                    say "Builds stay paused on $name until VM builds are set up. When you are ready, run: $command"
+                    return 0
+                    ;;
+            esac
+            sudo "$1" vm setup </dev/tty || die "VM setup did not finish. Run it again to pick up where it stopped: $command"
         }
 
         # Whether builds should run as the dedicated hangar user, set up by `hangar-worker isolate`: yes for an
@@ -271,8 +372,8 @@ enum InstallScript {
         # LaunchDaemon, which needs no login.
         install_isolated() {
             me=$(id -un)
-            say "Builds run as a separate, unprivileged macOS user named hangar, so a build cannot read $me's files."
-            say "To build as $me instead: curl -fsSL $HANGAR_SERVER/install | HANGAR_AS_CURRENT_USER=1 sh"
+            say "The worker runs as a separate, unprivileged macOS user named hangar, from boot, with nobody logged in."
+            say "To run it as $me instead (a launch agent): curl -fsSL $HANGAR_SERVER/install | HANGAR_AS_CURRENT_USER=1 sh"
             (: </dev/tty) 2>/dev/null \
                 || die "Setting up the hangar user needs a terminal (sudo asks for your password). Run this in Terminal, or set HANGAR_AS_CURRENT_USER=1."
             work=$(mktemp -d "${TMPDIR:-/tmp}/hangar-install.XXXXXX") || die "Cannot create a temporary directory."
@@ -301,20 +402,14 @@ enum InstallScript {
                 fi
             fi
             "$worker" "$@" </dev/tty || die "hangar-worker isolate did not finish. Run this command again to pick up where it stopped."
+            offer_vm_setup /Users/hangar/.local/bin/hangar-worker
         }
 
         main() {
             [ "$(uname -s)" = Darwin ] || die "The Hangar worker runs on macOS only."
             say "Installing the Hangar worker from $HANGAR_SERVER"
-            say "This Mac: macOS $(sw_vers -productVersion 2>/dev/null || echo unknown), $(uname -m)"
-            if developer=$(xcode-select -p 2>/dev/null); then
-                case $developer in
-                    *.app/*) say "Xcode: $developer" ;;
-                    *) warn "Only the Command Line Tools are selected ($developer). Install Xcode before building." ;;
-                esac
-            else
-                warn "Xcode is not installed. The worker installs, but cannot build until you install Xcode."
-            fi
+            enrolled_now=''
+            preflight
 
             bin_dir=$(absolute "${HANGAR_BIN_DIR:-$HOME/.local/bin}")
             bin_dir=${bin_dir%/}
@@ -406,6 +501,7 @@ enum InstallScript {
             install_agent
             summary
             say "$2"
+            offer_vm_setup "$worker"
         }
 
         # Nothing runs until the whole script has arrived: a cut-off download only defines functions.

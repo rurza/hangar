@@ -11,9 +11,9 @@ public enum VMImageBuildError: Error, Equatable, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case .noBaseImage(let name): "no image \(name): import one with `hangar-worker vm image import`"
+        case .noBaseImage(let name): "no image \(name): import one with `\(WorkerCommandLine.current().asWorker("vm", "image", "import"))`"
         case .xcodeUnreadable(let path): "\(path) is not an Xcode (no version in Contents/version.plist)"
-        case .exists(let name): "there is already an image named \(name); remove it first (`hangar-worker vm image remove \(name)`)"
+        case .exists(let name): "there is already an image named \(name); remove it first (`\(WorkerCommandLine.current().asWorker("vm", "image", "remove", name))`)"
         case .lowDisk(let free, let floor): "stopped: only \(free) GB free on the VM storage volume (the floor is \(floor) GB)"
         case .guestDidNotShutDown: "the VM did not shut down within 3 minutes"
         }

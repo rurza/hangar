@@ -147,10 +147,12 @@ public struct VMNetworkFilter: Sendable, Equatable {
     }
 
     /// Nil when the marker says these rules were loaded in this boot by root; otherwise what is wrong.
+    /// `installCommand` is how the filter is installed on this Mac, for the message.
     public func problem(
-        markerPath: String = VMNetworkFilter.markerPath, bootTime: Int? = VMNetworkFilter.bootTime(), ownerID: Int = 0
+        markerPath: String = VMNetworkFilter.markerPath, bootTime: Int? = VMNetworkFilter.bootTime(), ownerID: Int = 0,
+        installCommand: String = WorkerCommandLine.current().asRoot("vm", "network", "install")
     ) -> String? {
-        let install = "run `hangar-worker vm network install` as an administrator"
+        let install = "run `\(installCommand)`"
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: markerPath),
             let data = FileManager.default.contents(atPath: markerPath)
         else { return "the VM network filter is not installed: \(install)" }

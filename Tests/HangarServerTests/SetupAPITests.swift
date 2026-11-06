@@ -824,4 +824,14 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         }
         #expect(github.requests.count == 1)
     }
+
+    /// The Add Mac sheet on localhost names the server by its MagicDNS name, which every tailnet Mac can reach.
+    @Test func theStatusNamesTheServersTailnetName() async throws {
+        let fixture = try APIFixture(allowedHosts: ["*.ts.net", "mini", "mini.tail1234.ts.net"])
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
+                #expect(try decode(SetupStatus.self, response).tailnetName == "mini.tail1234.ts.net")
+            }
+        }
+    }
 }

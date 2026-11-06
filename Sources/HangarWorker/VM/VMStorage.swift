@@ -163,6 +163,13 @@ public enum VMVolume {
         return info.f_flags & UInt32(MNT_IGNORE_OWNERSHIP) == 0
     }
 
+    /// The mount point of the volume holding `path` ("/Volumes/SSD"), or nil.
+    public static func mountPoint(of path: String) -> String? {
+        volumeInfo(of: path).map { info in
+            withUnsafeBytes(of: info.f_mntonname) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        }
+    }
+
     public static func freeGB(at path: String) -> Double {
         guard let info = volumeInfo(of: path) else { return 0 }
         return Double(info.f_bavail) * Double(info.f_bsize) / 1_000_000_000
