@@ -32,15 +32,18 @@ extension JobRunner {
         public var missing: [MissingProfile]
         /// What the server did ("created development profile …"), for the archive's log.
         public var notes: [String]
+        /// The certificate's team, for the targets that sign without a profile.
+        public var teamID: String?
 
         public init(
             profiles: [JobProvisioningProfile] = [], developmentKey: AppStoreConnectKey? = nil, missing: [MissingProfile] = [],
-            notes: [String] = []
+            notes: [String] = [], teamID: String? = nil
         ) {
             self.profiles = profiles
             self.developmentKey = developmentKey
             self.missing = missing
             self.notes = notes
+            self.teamID = teamID
         }
 
         /// Manual development signing for every target whose bundle ID has a profile, chosen per target by bundle
@@ -54,6 +57,11 @@ extension JobRunner {
                 "CODE_SIGN_IDENTITY = Apple Development",
                 "PROVISIONING_PROFILE_SPECIFIER = $(HANGAR_PROFILE_$(PRODUCT_BUNDLE_IDENTIFIER:identifier))",
             ]
+            // Every target signs with the certificate; those without a profile (package resource bundles, macros) need
+            // its team, which a package target does not set itself.
+            if let teamID, teamID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }), !teamID.isEmpty {
+                lines.append("DEVELOPMENT_TEAM = \(teamID)")
+            }
             for profile in profiles.sorted(by: { $0.bundleID < $1.bundleID }) {
                 // A name that could expand into another setting is never written.
                 guard !profile.name.contains("$"), !profile.name.contains(where: \.isNewline) else { continue }

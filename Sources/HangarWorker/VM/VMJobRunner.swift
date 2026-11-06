@@ -135,7 +135,7 @@ public struct VMJobRunner: JobRunning {
                 }
                 signing = JobRunner.GuestSigning(
                     profiles: provisioning.profiles, developmentKey: provisioning.developmentKey,
-                    missing: provisioning.missing, notes: provisioning.notes)
+                    missing: provisioning.missing, notes: provisioning.notes, teamID: provisioning.teamID)
             } catch {
                 return await fail(jobID, "could not ask Hangar for this archive's development profiles: \(error)")
             }

@@ -144,6 +144,7 @@ final class ProvisioningASC: AppStoreConnectClient, Sendable {
 
         #expect(result.missing.isEmpty)
         #expect(result.developmentKey == nil, "the development key comes only when a profile is missing")
+        #expect(result.teamID == "TEAM", "targets without a profile sign with the certificate's team")
         #expect(result.profiles.map(\.bundleID) == ["com.acme.legilo", "com.acme.legilo.widget"])
         #expect(result.profiles.map(\.uuid) == ["EXISTING-B1", "UUID-B2"])
         #expect(result.profiles.allSatisfy { !$0.isMac })

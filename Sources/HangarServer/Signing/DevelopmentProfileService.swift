@@ -118,7 +118,7 @@ public actor DevelopmentProfileService {
         let existing = try await client.developmentProfiles(type: type).filter {
             $0.certificateIDs.contains(certificateID) && ($0.expirationDate.map { $0 > cutoff } ?? true)
         }
-        var result = JobProvisioning()
+        var result = JobProvisioning(teamID: identity.teamID)
         var devices: [String]?
         for bundleID in bundleIDs {
             if let profile = existing.first(where: { $0.bundleIDResourceID == bundleID.id }) {

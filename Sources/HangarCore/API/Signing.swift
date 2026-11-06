@@ -181,14 +181,18 @@ public struct JobProvisioning: Codable, Equatable, Sendable {
     public var developmentKey: AppStoreConnectKey?
     /// What the server did, for the job's log ("created development profile …").
     public var notes: [String]
+    /// The team of the certificate the profiles hold: targets without a profile (package resource bundles, macros)
+    /// sign with the identity alone, and Xcode wants a team for that.
+    public var teamID: String?
 
     public init(
         profiles: [JobProvisioningProfile] = [], missing: [MissingProfile] = [], developmentKey: AppStoreConnectKey? = nil,
-        notes: [String] = []
+        notes: [String] = [], teamID: String? = nil
     ) {
         self.profiles = profiles
         self.missing = missing
         self.developmentKey = developmentKey
         self.notes = notes
+        self.teamID = teamID
     }
 }

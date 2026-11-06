@@ -1091,4 +1091,15 @@ extension JobRunnerTests {
         #expect(!lines.contains { $0.contains("evil") })
         #expect(JobRunner.GuestSigning.identifier("9lives.app") == "_9lives_app")
     }
+
+    /// Package resource bundles and macros have no profile and no team of their own: "Signing for "GRDB_GRDB" requires
+    /// a development team" failed a real Legilo archive until the certificate's team was set for every target.
+    @Test func theXcconfigGivesEveryTargetTheCertificatesTeam() {
+        func lines(_ teamID: String?) -> [String] {
+            JobRunner.GuestSigning(teamID: teamID).xcconfig.split(separator: "\n").map(String.init)
+        }
+        #expect(lines("YL78V8PY6H").contains("DEVELOPMENT_TEAM = YL78V8PY6H"))
+        #expect(!lines(nil).contains { $0.hasPrefix("DEVELOPMENT_TEAM") })
+        #expect(!lines("X $(HOME)").contains { $0.hasPrefix("DEVELOPMENT_TEAM") })
+    }
 }
