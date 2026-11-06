@@ -7,6 +7,7 @@ import { button, card, confirm, field, h, page, replaceChildren, section, toast 
 import { variableGroupsEditor, variablesEditor } from './variables.js';
 import { agentTokensEditor } from './agent-tokens.js';
 import { accessCard } from './access.js';
+import { diskUsageText, gbText, retentionText } from '../disk-usage.js';
 import { signingCard } from './signing.js';
 import {
   ASC_KEYS_URL, appCountText, GH_NOTE, GITHUB_TOKEN_URL, externalLink, issuerField, keyDropZone, problem, withBusy,
@@ -100,7 +101,40 @@ export async function settingsPage(params, context) {
         + 'workflows or only some. An app’s own variable with the same name replaces a group’s; a group’s replaces a '
         + 'global one.',
     }, variableGroupsEditor({ signal })),
+    section({
+      title: 'Storage',
+      footer: `${retentionText(status.storage)} Each Mac also clears its own leftovers: old VM images, unused `
+        + 'workspaces and temporary files.',
+    }, storageCard(status.storage, { signal })),
     section({ title: 'About' }, about));
+}
+
+/** The server's build files, the part of its usage the cap applies to. */
+function buildFilesGB(usage) {
+  return usage?.parts?.find((part) => part.label === 'Build logs and artifacts')?.gb ?? 0;
+}
+
+/** What Hangar's files take on the server's Mac and on each build Mac. */
+function storageCard(storage, { signal }) {
+  const element = card({ class: 'settings-card' });
+  const server = diskUsageText(storage?.usage);
+  const machineList = h('dl', { class: 'facts' });
+  replaceChildren(element,
+    h('p', { class: 'card-headline' },
+      server ? `The server uses ${server.value} on its Mac` : 'Not measured yet'),
+    storage ? h('p', { class: 'card-detail' }, `Build logs and artifacts: ${gbText(buildFilesGB(storage.usage))} of `
+      + `${gbText(storage.maxGB)}`) : null,
+    machineList);
+  api.get('/machines', { signal }).then((machines) => {
+    const measured = machines.filter((machine) => diskUsageText(machine.report?.diskUsage));
+    replaceChildren(machineList, measured.map((machine) => {
+      const usage = diskUsageText(machine.report.diskUsage);
+      return h('div', { class: 'fact', title: usage.detail || null },
+        h('dt', { class: 'fact-label' }, machine.name),
+        h('dd', { class: 'fact-value' }, `${usage.value} for builds`));
+    }));
+  }).catch(() => {});
+  return element;
 }
 
 /** For build scripts: what reaches a job's environment and what never does. Most people never need it. */
