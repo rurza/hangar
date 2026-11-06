@@ -5,7 +5,7 @@ import Synchronization
 
 /// Keeps the worker's disk clean without anyone asking: on start and every hour it removes what `DiskSweepPlan`
 /// finds, each removal confined to the Hangar directory it belongs in (`SafeRemoval`), logs one line saying what went
-/// and how much that freed, and measures what Hangar still uses for the heartbeat.
+/// (the first few by name) and how much that freed, and measures what Hangar still uses for the heartbeat.
 public final class DiskSweeper: Sendable {
     public struct Locations: Sendable, Equatable {
         public var workDirectory: String
@@ -24,6 +24,7 @@ public final class DiskSweeper: Sendable {
         var storage: VMStorage? { vm.map { VMStorage(root: $0.storage) } }
         var workspaceDirectories: [String] { Array(Set([workDirectory + "/workspaces", dataDirectory + "/workspaces"])).sorted() }
         var jobTemporaryRoot: String { WorkspaceLayout.temporaryRoot(dataDirectory: workDirectory) }
+        var jobsDirectories: [String] { Array(Set([workDirectory + "/jobs", dataDirectory + "/jobs"])).sorted() }
     }
 
     /// What one sweep did.
@@ -33,12 +34,17 @@ public final class DiskSweeper: Sendable {
         public var freedBytes: UInt64 = 0
         public var usage: HangarDiskUsage?
 
+        /// How many removals the line names; the rest are counted.
+        static let namedInLine = 5
+
         /// The one line logged; nil when the sweep found nothing to remove.
         public var line: String? {
             guard !removed.isEmpty || !failures.isEmpty else { return nil }
             var line = "disk sweep"
             if !removed.isEmpty {
-                line += " removed \(removed.joined(separator: ", ")) and freed \(DiskUsage.text(freedBytes))"
+                var named = removed.prefix(Self.namedInLine).joined(separator: ", ")
+                if removed.count > Self.namedInLine { named += " and \(removed.count - Self.namedInLine) more" }
+                line += " removed \(named) and freed \(DiskUsage.text(freedBytes))"
             }
             if !failures.isEmpty { line += (removed.isEmpty ? " " : "; ") + "could not remove \(failures.joined(separator: "; "))" }
             if let usage { line += "; Hangar uses \(DiskUsage.text(UInt64(usage.totalGB * 1_000_000_000))) on this Mac" }
@@ -86,6 +92,7 @@ public final class DiskSweeper: Sendable {
         if xcodesNeeded != nil, locations.vm != nil { context.hostXcodes = await hostXcodes() }
         var removals = DiskSweepPlan.temporary(
             systemTemporary: locations.systemTemporary, jobTemporaryRoot: locations.jobTemporaryRoot, context: context)
+        removals += DiskSweepPlan.jobDirectories(in: locations.jobsDirectories, context: context)
         removals += DiskSweepPlan.workspaces(
             in: locations.workspaceDirectories, vmBuilds: locations.vm != nil, context: context)
         // Images and slots go only while the sweep holds every slot: no job runs and no state is being saved.
@@ -116,6 +123,7 @@ public final class DiskSweeper: Sendable {
                             try SafeRemoval.removeItem(atPath: removal.path, within: removal.root)
                         }
                     } else {
+                        if removal.jobDirectory { try SecretsMaterializer(directory: removal.path + "/secrets").wipe() }
                         try SafeRemoval.removeItem(atPath: removal.path, within: removal.root)
                         removed = true
                     }

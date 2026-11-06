@@ -99,6 +99,21 @@ private struct Disk {
         #expect(!names.contains(running.uuidString))
         #expect(removals.allSatisfy { SafeRemoval.isStrictlyInside($0.path, root: $0.root) })
     }
+
+    /// A worker killed mid-build leaves its job directory, and what the build was still writing can bring it back
+    /// after the start-up sweep: the hourly sweep removes it too, its secrets first.
+    @Test func jobDirectoriesOfJobsNotRunningGoWithTheirSecrets() throws {
+        let disk = try Disk()
+        defer { disk.cleanUp() }
+        let running = UUID(), leftover = UUID(), older = UUID()
+        try disk.file("work/jobs/\(running.uuidString)/secrets/TOKEN")
+        try disk.file("work/jobs/\(leftover.uuidString)/result.xcresult/Info.plist")
+        try disk.file("data/jobs/\(older.uuidString)/secrets/TOKEN")
+        let removals = DiskSweepPlan.jobDirectories(
+            in: [disk.path("data/jobs"), disk.path("work/jobs")], context: SweepContext(now: Disk.now, runningJobIDs: [running]))
+        #expect(removals.map(\.label) == ["job directory \(older.uuidString)", "job directory \(leftover.uuidString)"])
+        #expect(removals.allSatisfy { $0.jobDirectory && SafeRemoval.isStrictlyInside($0.path, root: $0.root) })
+    }
 }
 
 @Suite struct WorkspaceSweepTests {
@@ -259,6 +274,30 @@ private struct Disk {
         #expect(usage.totalGB > 0.0009 && usage.totalGB < 0.0011)
         #expect(usage.parts.map(\.label) == ["Workspaces"])
         #expect(summary.line == "disk sweep removed temporary hangar-doctor-1, workspace idle and freed 5 MB; Hangar uses 1 MB on this Mac")
+    }
+
+    @Test func aSweepRemovesALeftoverJobDirectoryAndWipesItsSecretsFirst() async throws {
+        let disk = try Disk()
+        defer { disk.cleanUp() }
+        let leftover = UUID()
+        let secret = try disk.file("work/jobs/\(leftover.uuidString)/secrets/TOKEN", bytes: 64)
+        // Another link to the secret file: it shows the bytes were zeroed, not only unlinked.
+        let link = disk.path("kept-link")
+        try FileManager.default.linkItem(atPath: secret, toPath: link)
+        let summary = await sweeper(disk).sweepQuietly(runningJobIDs: [], xcodesNeeded: nil)
+        #expect(summary.removed == ["job directory \(leftover.uuidString)"])
+        #expect(!disk.exists("work/jobs/\(leftover.uuidString)"))
+        #expect(try Data(contentsOf: URL(fileURLWithPath: link)) == Data(count: 64))
+    }
+
+    @Test func aLongSweepLineNamesTheFirstFewAndCountsTheRest() {
+        var summary = DiskSweeper.Summary()
+        summary.removed = (1...4300).map { "temporary hangar-api-\($0)" }
+        summary.freedBytes = 2_000_000
+        #expect(
+            summary.line
+                == "disk sweep removed temporary hangar-api-1, temporary hangar-api-2, temporary hangar-api-3, "
+                + "temporary hangar-api-4, temporary hangar-api-5 and 4295 more and freed 2 MB")
     }
 
     @Test func aSweepWithNothingToRemoveStillMeasuresAndLogsNothing() async throws {

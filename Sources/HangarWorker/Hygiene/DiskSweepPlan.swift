@@ -9,12 +9,15 @@ public struct SweepRemoval: Equatable, Sendable {
     public var root: String
     /// Set for a local workspace: removed only while no job holds it (`WorkspaceUse`).
     public var workspace: Bool = false
+    /// Set for a job directory: its `secrets` are zeroed before it is removed.
+    public var jobDirectory: Bool = false
 
-    public init(label: String, path: String, root: String, workspace: Bool = false) {
+    public init(label: String, path: String, root: String, workspace: Bool = false, jobDirectory: Bool = false) {
         self.label = label
         self.path = path
         self.root = root
         self.workspace = workspace
+        self.jobDirectory = jobDirectory
     }
 }
 
@@ -64,6 +67,18 @@ public enum DiskSweepPlan {
             removals.append(SweepRemoval(label: "job temporary directory \(name)", path: jobs + "/" + name, root: jobs))
         }
         return removals
+    }
+
+    // MARK: Job directories
+
+    /// The job directories in each `jobs` directory of jobs this worker is not running. The worker removes them when
+    /// a job ends and when it starts, but a build killed with the worker can still write into one afterwards.
+    public static func jobDirectories(in jobsDirectories: [String], context: SweepContext) -> [SweepRemoval] {
+        jobsDirectories.map(standardized).flatMap { jobs in
+            entries(jobs).filter { !isRunning($0, context) }.map {
+                SweepRemoval(label: "job directory \($0)", path: jobs + "/" + $0, root: jobs, jobDirectory: true)
+            }
+        }
     }
 
     // MARK: Workspaces
