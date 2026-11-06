@@ -83,7 +83,7 @@ public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
         let path = "jobs/\(jobID.uuidString)/artifacts/\(Self.segment(name))"
         var request = request("POST", path)
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        let (_, response) = try await session.upload(for: request, fromFile: fileURL)
+        let (_, response) = try await Self.retryingLostConnection { try await session.upload(for: request, fromFile: fileURL) }
         _ = try Self.check(response, method: "POST", path: path)
     }
 
@@ -119,8 +119,19 @@ public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
             request.httpBody = try JSONCoding.encoder.encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await Self.retryingLostConnection { try await session.data(for: request) }
         return (data, try Self.check(response, method: method, path: path))
+    }
+
+    /// Runs `operation` again once when the connection it was sent on had already been closed. URLSession reuses
+    /// idle connections, and a guest's relay serves one request per connection: the next request on that connection
+    /// fails with `networkConnectionLost` before the server ever sees it.
+    static func retryingLostConnection<T>(_ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
+        } catch let error as URLError where error.code == .networkConnectionLost {
+            return try await operation()
+        }
     }
 
     /// `path` is already percent-encoded (fixed words, UUIDs and `segment(_:)` output).
