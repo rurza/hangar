@@ -413,8 +413,43 @@ struct ImmediateClock: Clock {
         let report = VMDoctor(host: fixture.host(FakeEngine()), identity: VMIdentityStore(dataDirectory: fixture.root),
             networkFilterProblem: { nil }).report(runningJobs: 0)
         #expect(report.slots == 0)
-        #expect(report.problem?.contains("vm image build") == true)
+        #expect(report.problem?.hasPrefix("no VM image with Xcode yet: run `sudo ") == true)
+        #expect(report.problem?.hasSuffix(" vm setup`") == true)
         #expect(report.images.isEmpty)
+    }
+
+    @Test func theChecklistShowsEveryMissingPieceAtOnceWithItsCommand() throws {
+        let fixture = try VMFixture(buildUser: nil, xcode: nil)
+        defer { fixture.cleanUp() }
+        let commands = WorkerCommandLine(binary: "/Users/hangar/.local/bin/hangar-worker", user: "hangar")
+        let report = VMDoctor(
+            host: fixture.host(FakeEngine(unavailable: VMError.entitlementMissing.description)),
+            identity: VMIdentityStore(dataDirectory: fixture.root),
+            networkFilterProblem: { "the VM network filter is not installed: run `sudo x vm network install`" },
+            commands: commands
+        ).report(runningJobs: 0)
+        #expect(report.checks.map(\.id) == ["settings", "entitlement", "storage", "networkFilter", "image"])
+        #expect(report.checks.map(\.ok) == [true, false, true, false, false])
+        // The first problem is still the one older servers show.
+        #expect(report.problem?.contains("com.apple.security.virtualization") == true)
+        #expect(report.problem?.contains("install-server.sh") == true)
+        let image = try #require(report.checks.last)
+        #expect(image.command == "sudo /Users/hangar/.local/bin/hangar-worker vm setup")
+        #expect(report.imageBuildCommand == "sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker vm image build")
+    }
+
+    @Test func slotStatesAreAnOptionalRow() throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        let report = VMDoctor(
+            host: fixture.host(FakeEngine()), identity: VMIdentityStore(dataDirectory: fixture.root),
+            networkFilterProblem: { nil }
+        ).report(runningJobs: 0)
+        let states = try #require(report.checks.last)
+        #expect(states.id == "slotStates" && !states.ok && !states.required)
+        #expect(states.detail.contains("xcode-27.2 slot 0"))
+        // Jobs run without a saved state, so the Mac is ready.
+        #expect(report.problem == nil && report.slots == 1)
     }
 
     @Test func aBinaryWithoutTheEntitlementReportsIt() throws {

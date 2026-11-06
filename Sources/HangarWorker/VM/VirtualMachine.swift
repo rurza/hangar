@@ -44,7 +44,7 @@ public enum VMError: Error, Equatable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .entitlementMissing:
-            "hangar-worker is not signed with the com.apple.security.virtualization entitlement; install it with the install script"
+            "hangar-worker is not signed with the com.apple.security.virtualization entitlement: reinstall the server with the latest scripts/server/install-server.sh (it signs the hangar-worker it hands out), then run the install command from Machines › Add Mac again"
         case .stateIncompatible(let detail): "the saved VM state does not fit any more (\(detail))"
         case .tooManyVMs: "this Mac already runs two macOS VMs, the most macOS allows"
         case .invalidConfiguration(let detail): "the VM configuration is invalid: \(detail)"

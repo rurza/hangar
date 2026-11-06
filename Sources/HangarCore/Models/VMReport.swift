@@ -32,6 +32,32 @@ public struct VMImageInfo: Codable, Equatable, Sendable {
     }
 }
 
+/// One row of a VM Mac's readiness checklist (`VMReport.checks`): what VM builds need, whether this Mac has it, and
+/// the command that fixes it, as an administrator types it on that Mac.
+public struct VMCheck: Codable, Equatable, Sendable {
+    /// What is checked: "settings", "entitlement", "storage", "networkFilter", "image" or "slotStates". A string, so
+    /// an older server shows a newer worker's rows.
+    public var id: String
+    /// "Network filter".
+    public var title: String
+    public var ok: Bool
+    /// False for a row jobs run without (saved slot states: a job cold-boots instead).
+    public var required: Bool
+    /// What was found: "loaded", or what is wrong.
+    public var detail: String
+    /// The command to run on the Mac when `ok` is false, or nil when there is none to give.
+    public var command: String?
+
+    public init(id: String, title: String, ok: Bool, required: Bool = true, detail: String, command: String? = nil) {
+        self.id = id
+        self.title = title
+        self.ok = ok
+        self.required = required
+        self.detail = detail
+        self.command = command
+    }
+}
+
 /// The VM side of a machine (`MachineReport.vm`). Present only when the worker is configured for VM builds; such a
 /// machine runs every job in a VM and none on the host. With `slots` at 0 it takes no jobs, and `problem` says why.
 public struct VMReport: Codable, Equatable, Sendable {
@@ -51,12 +77,21 @@ public struct VMReport: Codable, Equatable, Sendable {
     /// The worker holds its own identity (`hangar-worker vm identity import`), which overrides the server's: its VM
     /// archives do not need the server's.
     public var ownIdentity: Bool
+    /// Everything VM builds need, in order, each with its state; empty from an older worker, which sends `problem`
+    /// only.
+    public var checks: [VMCheck]
+    /// The command that builds a job image from this Mac's Xcode, as typed on it (`vm image build`), for the
+    /// Machines page to show when the host's Xcode has no image yet.
+    public var imageBuildCommand: String?
 
     public init(
         slots: Int, configuredSlots: Int, freeSlots: Int, storageFreeGB: Double, networkFilter: Bool,
-        problem: String? = nil, images: [VMImageInfo] = [], ownIdentity: Bool = false
+        problem: String? = nil, images: [VMImageInfo] = [], ownIdentity: Bool = false, checks: [VMCheck] = [],
+        imageBuildCommand: String? = nil
     ) {
         self.ownIdentity = ownIdentity
+        self.checks = checks
+        self.imageBuildCommand = imageBuildCommand
         self.slots = slots
         self.configuredSlots = configuredSlots
         self.freeSlots = freeSlots
@@ -67,7 +102,8 @@ public struct VMReport: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case slots, configuredSlots, freeSlots, storageFreeGB, networkFilter, problem, images, ownIdentity
+        case slots, configuredSlots, freeSlots, storageFreeGB, networkFilter, problem, images, ownIdentity, checks
+        case imageBuildCommand
     }
 
     public init(from decoder: any Decoder) throws {
@@ -80,6 +116,8 @@ public struct VMReport: Codable, Equatable, Sendable {
         problem = try container.decodeIfPresent(String.self, forKey: .problem)
         images = try container.decodeIfPresent([VMImageInfo].self, forKey: .images) ?? []
         ownIdentity = try container.decodeIfPresent(Bool.self, forKey: .ownIdentity) ?? false
+        checks = try container.decodeIfPresent([VMCheck].self, forKey: .checks) ?? []
+        imageBuildCommand = try container.decodeIfPresent(String.self, forKey: .imageBuildCommand)
     }
 
     /// The Xcode versions a job can get on this machine: those of its images.

@@ -10,25 +10,33 @@ public struct VMDoctor: Sendable {
     public var identity: VMIdentityStore
     /// Reads the network filter's state; the marker check by default.
     public var networkFilterProblem: @Sendable () -> String?
+    /// How the commands in the report are typed on this Mac.
+    public var commands: WorkerCommandLine
 
     public init(
         host: VMHost, identity: VMIdentityStore,
-        networkFilterProblem: @escaping @Sendable () -> String? = { VMNetworkFilter.current().problem() }
+        networkFilterProblem: (@Sendable () -> String?)? = nil,
+        commands: WorkerCommandLine = .current()
     ) {
         self.host = host
         self.identity = identity
-        self.networkFilterProblem = networkFilterProblem
+        self.commands = commands
+        self.networkFilterProblem = networkFilterProblem ?? {
+            VMNetworkFilter.current().problem(installCommand: commands.asRoot("vm", "network", "install"))
+        }
     }
 
     public func report(runningJobs: Int) -> VMReport {
         let images = host.images().filter(\.metadata.isJobImage)
         let filterProblem = networkFilterProblem()
-        let problem = self.problem(images: images, filterProblem: filterProblem)
+        let checks = self.checks(images: images, filterProblem: filterProblem)
+        let problem = Self.firstProblem(checks)
         let slots = problem == nil ? host.settings.slots : 0
         return VMReport(
             slots: slots, configuredSlots: host.settings.slots, freeSlots: max(0, slots - runningJobs),
             storageFreeGB: (VMVolume.freeGB(at: host.storage.root) * 10).rounded() / 10, networkFilter: filterProblem == nil,
-            problem: problem, images: images.map(\.metadata.info), ownIdentity: identity.exists)
+            problem: problem, images: images.map(\.metadata.info), ownIdentity: identity.exists, checks: checks,
+            imageBuildCommand: commands.asWorker("vm", "image", "build"))
     }
 
     /// What keeps VM jobs from running right now, or nil; checked before each job.
@@ -38,12 +46,62 @@ public struct VMDoctor: Sendable {
 
     /// The first thing that keeps VM jobs from running, or nil.
     public func problem(images: [VMImage], filterProblem: String?) -> String? {
-        if let problem = host.settings.problem { return problem }
-        if let reason = host.engine.unavailableReason() { return reason }
-        if let problem = VMVolume.problem(at: host.storage.root) { return problem.description }
-        if let filterProblem { return filterProblem }
-        if images.isEmpty { return "no VM image with Xcode yet: build one with `hangar-worker vm image build`" }
-        return nil
+        Self.firstProblem(checks(images: images, filterProblem: filterProblem))
+    }
+
+    /// The first required row that fails, with its command: "no VM image with Xcode yet: run `sudo … vm setup`".
+    static func firstProblem(_ checks: [VMCheck]) -> String? {
+        checks.first { $0.required && !$0.ok }.map { check in
+            check.command.map { "\(check.detail): run `\($0)`" } ?? check.detail
+        }
+    }
+
+    /// Everything VM jobs need, in the order to fix it, each with its state. A later row is checked even when an
+    /// earlier one fails, so the Machines page shows the whole list at once.
+    public func checks(images: [VMImage], filterProblem: String?) -> [VMCheck] {
+        let settings = host.settings
+        var checks: [VMCheck] = []
+        let settingsProblem = settings.problem
+        checks.append(VMCheck(
+            id: "settings", title: "VM settings", ok: settingsProblem == nil,
+            detail: settingsProblem
+                ?? "\(settings.slots) \(settings.slots == 1 ? "slot" : "slots") of \(settings.cpus) CPUs and \(settings.memoryGB) GB",
+            command: settingsProblem == nil ? nil : commands.asWorker("vm", "enable")))
+        let engineProblem = host.engine.unavailableReason()
+        checks.append(VMCheck(
+            id: "entitlement", title: "Virtualization", ok: engineProblem == nil,
+            detail: engineProblem ?? "this Mac and its worker can run macOS VMs"))
+        let storageProblem = VMVolume.problem(at: host.storage.root)
+        let free = (VMVolume.freeGB(at: host.storage.root) * 10).rounded() / 10
+        checks.append(VMCheck(
+            id: "storage", title: "Storage", ok: storageProblem == nil,
+            detail: storageProblem?.description ?? "\(host.storage.root), \(free) GB free",
+            command: storageProblem == nil ? nil : commands.vmSetup))
+        checks.append(VMCheck(
+            id: "networkFilter", title: "Network filter", ok: filterProblem == nil,
+            // The filter's own message names the command.
+            detail: filterProblem ?? "loaded: VMs cannot reach this Mac, the LAN or the tailnet"))
+        let versions = images.compactMap(\.metadata.xcode)
+        checks.append(VMCheck(
+            id: "image", title: "Xcode image", ok: !images.isEmpty,
+            detail: images.isEmpty
+                ? "no VM image with Xcode yet"
+                : "Xcode \(versions.isEmpty ? "?" : versions.joined(separator: ", "))",
+            command: images.isEmpty ? commands.vmSetup : nil))
+        if !images.isEmpty {
+            let unsaved = images.flatMap { image in
+                (0..<settings.slots).compactMap { slot -> String? in
+                    let state = Self.slotState(image: image, slot: slot, host: host)
+                    return state.hasPrefix("saved") ? nil : "\(image.metadata.name) slot \(slot)"
+                }
+            }
+            checks.append(VMCheck(
+                id: "slotStates", title: "Saved states", ok: unsaved.isEmpty, required: false,
+                detail: unsaved.isEmpty
+                    ? "every slot restores in seconds"
+                    : "\(unsaved.joined(separator: ", ")): no current saved state, so a job there cold-boots (about 20 s more) and saves one"))
+        }
+        return checks
     }
 
     /// One line per slot for `vm image list`.
