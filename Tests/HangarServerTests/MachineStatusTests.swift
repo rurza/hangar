@@ -14,6 +14,17 @@ import Testing
         #expect(try Self.run(#"{"name": "MacBook"}"#, "String(isServerMac(input, null))") == "false")
     }
 
+    @Test func aMacIsOnlineForNinetySecondsAfterItsLastHeartbeat() throws {
+        func online(_ seen: String?, at now: String) throws -> String {
+            let machine = seen.map { #"{"lastSeenAt": "\#($0)"}"# } ?? "{}"
+            return try Self.run(machine, "String(isOnline(input, new Date('\(now)')))")
+        }
+        #expect(try online("2026-11-06T10:00:00Z", at: "2026-11-06T10:01:30Z") == "true")
+        #expect(try online("2026-11-06T10:00:00Z", at: "2026-11-06T10:01:31Z") == "false")
+        #expect(try online("not a date", at: "2026-11-06T10:00:00Z") == "false")
+        #expect(try online(nil, at: "2026-11-06T10:00:00Z") == "false")
+    }
+
     @Test func aPausedMacSaysSoWhereItWouldSayIdle() throws {
         func load(_ json: String) throws -> String {
             try Self.run(json, "(() => { const t = loadText(input); return `${t.headline} | ${t.detail}`; })()")

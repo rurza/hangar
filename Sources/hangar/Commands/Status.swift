@@ -76,12 +76,9 @@ struct Status: HangarCommand {
     /// "Tests: 40 passed · 2 failed · 1 skipped" and a line per failing test (its message's first line), from the
     /// job's `test.*` outputs; nothing before the results are in.
     static func testSummary(_ job: Job) -> [String] {
-        let outputs = job.outputs
-        guard job.action.kind == .test, let passed = outputs["test.passed"] else { return [] }
-        var lines = ["Tests: \(passed) passed · \(outputs["test.failed"] ?? "0") failed · \(outputs["test.skipped"] ?? "0") skipped"]
-        struct Failure: Decodable { var name: String; var message: String }
-        let failures = outputs["test.failures"].flatMap { try? JSONDecoder().decode([Failure].self, from: Data($0.utf8)) } ?? []
-        for failure in failures {
+        guard job.action.kind == .test, let tests = TestOutputs(job.outputs), let passed = tests.passed else { return [] }
+        var lines = ["Tests: \(passed) passed · \(tests.failed ?? 0) failed · \(tests.skipped ?? 0) skipped"]
+        for failure in tests.failures ?? [] {
             lines.append("  ✗ \(failure.name): \(failure.message.split(separator: "\n").first.map(String.init) ?? "")")
         }
         return lines

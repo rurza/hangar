@@ -49,7 +49,7 @@ A Mac with VM builds on but not ready (no network filter, no image, a worker wit
 
 What it needs: Apple silicon, an up-to-date worker (the install scripts sign it with the `com.apple.security.virtualization` entitlement), and room on one APFS volume: about 26 GB for the vanilla macOS image, 6 GB more for an image with Xcode (plus 8 to 17 GB per simulator runtime, and 3 GB for the Metal toolchain if asked for), a few GB per slot's saved state, and up to `jobReserveGB` (25) per running job, above a floor of `floorGB` (40) that the worker never goes below. A Mac whose internal disk cannot hold that uses an external APFS SSD.
 
-**What a job sees in its VM.** The same steps and `CI_*` variables as on the host, with the workspace in `/Users/builder/hangar`, `HOMEBREW_NO_AUTO_UPDATE=1` set, and Xcode at `/Applications/Xcode.app`. The job log's first line says how the VM came up ("VM: restored slot 0's saved state in 4.5 s"). `tools:` in `.hangar.yml` is not checked on a VM Mac: a `ci_post_clone.sh` installs what it needs, as on Xcode Cloud. The workflow's `xcode:` is matched against the images.
+**What a job sees in its VM.** The same steps and `CI_*` variables as on the host, with the workspace in `/Volumes/workspace/hangar`, `HOMEBREW_NO_AUTO_UPDATE=1` set, and Xcode at `/Applications/Xcode.app`. The job log's first line says how the VM came up ("VM: restored slot 0's saved state in 4.5 s"). `tools:` in `.hangar.yml` is not checked on a VM Mac: a `ci_post_clone.sh` installs what it needs, as on Xcode Cloud. The workflow's `xcode:` is matched against the images.
 
 **When things go wrong.** A job that runs longer than `vm.jobTimeoutMinutes` (default 120) is cancelled and its VM stopped. A cancelled job's VM gets a minute to report, then is stopped. A VM that stops or stops answering fails its job with the reason. The worker deletes every leftover clone when it starts, and a crashed worker's VMs end with it. When macOS on the Mac is updated, a saved state may no longer restore: the next job cold-boots (about 20 s more) and the slot is saved again afterwards.
 
@@ -139,25 +139,12 @@ Before VM builds, a Mac built on the host as the `hangar` user (or as its owner)
    `hangar-worker check [--config <file>]` exits 0 when the token is accepted (it prints the machine's name), 3 when the server refuses it, 4 when the server cannot be reached and 2 when the configuration cannot be read.
 
    The worker the server hands out is universal (Apple silicon and Intel). Before enrolling, the script checks that it can write the configuration, so a permissions problem never leaves a machine in Hangar without a worker.
-5. **Install from source instead** (the old way, which also works without the server handing out a binary). Create the machine on the server, on any Mac on the tailnet (or with **Add Manually…** in the Add Mac sheet):
-   ```sh
-   hangar machines add <name>
-   ```
-   It prints the machine's token once. Then, logged in as `hangar` (create it in System Settings › Users & Groups, a standard account), from a checkout of this repository, enter the token without echo, so it reaches neither shell history nor the process list:
-   ```sh
-   read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
-   scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
-   ```
-   (If the variable is unset and you are at a terminal, the script prompts for the token itself.) `--token <token>` also works, but the token is then visible in `ps` for the whole release build and stays in your shell history.
-   Pass `--bin-dir ~/.local/bin`: the default, `/usr/local/bin`, needs `sudo` and leaves a binary the idle self-update cannot replace. The script builds in release mode, installs `hangar-worker` into `/usr/local/bin` unless told otherwise (using `sudo` only if needed), runs `hangar-worker setup` (the configuration is written to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600; the token is never printed), renders `~/Library/LaunchAgents/app.hangar.worker.plist` and loads it with `launchctl bootstrap gui/$(id -u)`. Run it again to upgrade. Logs go to `~/Library/Logs/Hangar/worker.log`.
-   This worker is a launch agent: it runs only while `hangar` is logged in, and signs with its login keychain. To make it the LaunchDaemon that needs no login, run `hangar-worker isolate` afterwards as an administrator.
-   To install without `sudo`, add `--bin-dir ~/.local/bin` (any directory you own; it is created if missing and the launchd plist points at the binary there). `--render-only <file>` just writes the plist, for testing. The `INSTALL_DIR` environment variable is no longer read; use `--bin-dir`.
-6. **Run the doctor** as `hangar`, from an administrator's Terminal:
+5. **Run the doctor** as `hangar`, from an administrator's Terminal:
    ```sh
    sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker doctor
    ```
    Confirm `"canSignWithoutPrompt" : true` and `"headless" : true`. If it cannot sign, `keychainProblem` says why ("the CI keychain does not unlock with its stored password; run hangar-worker isolate again"), and the Machines page shows the same. Until then the scheduler gives this machine no jobs. For a worker installed as yourself (`HANGAR_AS_CURRENT_USER=1`), run `hangar-worker doctor`; if it cannot sign, open Keychain Access, find the Apple Development private key, and under Access Control allow `codesign`.
-7. **Check from the server** that the machine is online:
+6. **Check from the server** that the machine is online:
    ```sh
    hangar machines list
    ```
@@ -173,8 +160,6 @@ hangar-worker isolate
 ```
 
 Run it when nothing important is building: it stops your user's agent, and a build in flight is cancelled with it ("stopped (SIGTERM)"). It creates `hangar` if needed (as above), copies the worker and its configuration into that user with the data directory rewritten to `/Users/hangar/Library/Application Support/Hangar/worker` and the work directory to `/Users/hangar/.hangar/worker`, and moves each app's workspace from your work directory (`~/.hangar/worker/workspaces`, and from the data directory's `workspaces/` if an older worker left one there) into `/Users/hangar/.hangar/worker/workspaces` (`mv` on one volume; a copy, then removal, across volumes). An app `hangar` already has keeps its copy. As when the work directory moves within one user, the parts of DerivedData that record the old path are dropped (`DerivedData/Build`, and `workspace-state.json`, `artifacts` and `checkouts` under `SourcePackages`); the package mirrors in `SourcePackages/repositories` are kept, and Xcode rebuilds the rest once. Everything moved is given to `hangar`. It removes leftover `jobs/` and `tmp/` and your emptied `~/.hangar/worker`, creates the CI keychain, starts the LaunchDaemon, and once Hangar sees the Mac heartbeat from it removes your user's launch agent and configuration. If that confirmation does not come, both stay, and the error says how to start the old agent again. It never copies your login keychain, `~/Library/Developer`, `~/Library/Caches` or `~/.gitconfig`: the first archive as `hangar` creates its own signing identity in the CI keychain. It never moves or deletes the `hangar-worker` next to `hangar-server` (the file other Macs download) or one in `/usr/local/bin`.
-
-A `hangar` user set up by Hangar 0.8 or earlier runs the worker as a launch agent in its login session. Running `hangar-worker isolate` (or the install command) again moves it to the LaunchDaemon: it boots out `gui/<hangar uid>/app.hangar.worker`, removes `/Users/hangar/Library/LaunchAgents/app.hangar.worker.plist`, creates the CI keychain and starts the daemon. You can then log out of `hangar` for good; its login keychain and the identity in it are no longer used, and the first archive creates a new identity in the CI keychain.
 
 When the server runs on the same Mac, it stays your user's; the worker becomes `hangar`. If `hangar` can read the server's `master.key`, the command stops before moving anything and prints the `chmod 700` to run on the server's data directory. **Use This Mac for Builds** on the setup page shows this command instead of installing the worker as the server's user.
 

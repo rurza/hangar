@@ -138,7 +138,7 @@ public final class JobLog: Sendable {
     // MARK: Full log
 
     /// The file name the full log is uploaded under.
-    public static let fullLogArtifactName = "full-log.txt"
+    public static let fullLogArtifactName = APIPath.fullLogArtifact
 
     private static let fullLogTime = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
 

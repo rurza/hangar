@@ -125,49 +125,6 @@ private func legiloRepo(_ host: FakeSourceHost) {
         }
     }
 
-    @Test func repoIconServesTheImageAndCachesIt() async throws {
-        let fixture = try APIFixture()
-        try fixture.createApp()
-        legiloRepo(fixture.host)
-        try await fixture.test { client in
-            for _ in 0..<2 {
-                try await client.execute(uri: "/api/v1/apps/legilo/repo-icon", method: .get) { response throws in
-                    #expect(response.status == .ok)
-                    #expect(response.headers[.contentType] == "image/png")
-                    #expect(Data(response.body.readableBytesView) == png)
-                }
-            }
-        }
-        #expect(fixture.host.state.withLock { $0.reads.filter { $0 == iconPath }.count } == 1)
-    }
-
-    @Test func repoIconNotFoundForIconComposer() async throws {
-        let fixture = try APIFixture()
-        try fixture.createApp()
-        fixture.host.state.withLock { state in
-            state.tree = RepositoryTree(paths: [
-                "App.xcodeproj", "App.xcodeproj/xcshareddata/xcschemes/App.xcscheme", "App/AppIcon.icon",
-                "App/AppIcon.icon/icon.json", "App/AppIcon.icon/Assets/Layer.png",
-            ])
-        }
-        try await fixture.test { client in
-            try await client.execute(uri: "/api/v1/apps/legilo/repo-icon", method: .get) { response throws in
-                #expect(response.status == .notFound)
-                #expect(try decode(APIError.self, response).code == "icon_not_found")
-            }
-        }
-    }
-
-    @Test func repoIconRefusesWhatIsNotAnImage() async throws {
-        let fixture = try APIFixture()
-        try fixture.createApp()
-        legiloRepo(fixture.host)
-        fixture.host.state.withLock { $0.data[iconPath] = Data("<html>".utf8) }
-        try await fixture.test { client in
-            try await client.execute(uri: "/api/v1/apps/legilo/repo-icon", method: .get) { #expect($0.status == .notFound) }
-        }
-    }
-
     // MARK: Inspecting a repository before adding it
 
     private struct BundleASC: AppStoreConnectClient {
@@ -306,6 +263,18 @@ private func legiloRepo(_ host: FakeSourceHost) {
             }
         }
         #expect(fixture.host.state.withLock { $0.reads.filter { $0 == iconPath }.count } == 1)
+    }
+
+    @Test func repositoryIconRefusesWhatIsNotAnImage() async throws {
+        let fixture = try inspectFixture(asc: nil)
+        fixture.host.state.withLock { $0.data[iconPath] = Data("<html>".utf8) }
+        let query = "path=\(iconPath.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!)&commit=0123456789abcdef0123456789abcdef01234567"
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/github/repos/rurza/Legilo/icon?\(query)", method: .get) { response throws in
+                #expect(response.status == .notFound)
+                #expect(try decode(APIError.self, response).code == "icon_not_found")
+            }
+        }
     }
 
     // MARK: Review round

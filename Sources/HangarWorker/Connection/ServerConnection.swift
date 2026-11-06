@@ -83,7 +83,7 @@ public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
 
     /// Streams the file from disk, so large archives are never held in memory.
     public func uploadArtifact(jobID: UUID, name: String, fileURL: URL) async throws {
-        let path = "jobs/\(jobID.uuidString)/artifacts/\(Self.segment(name))"
+        let path = "jobs/\(jobID.uuidString)/artifacts/\(APIPath.segment(name))"
         var request = request("POST", path)
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await Self.retryingLostConnection { try await session.upload(for: request, fromFile: fileURL) }
@@ -142,7 +142,7 @@ public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
         }
     }
 
-    /// `path` is already percent-encoded (fixed words, UUIDs and `segment(_:)` output).
+    /// `path` is already percent-encoded (fixed words, UUIDs and `APIPath.segment(_:)` output).
     private func request(_ method: String, _ path: String, query: [URLQueryItem] = []) -> URLRequest {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) ?? URLComponents()
         var root = components.percentEncodedPath
@@ -161,12 +161,5 @@ public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
             throw ServerConnectionError.status(http.statusCode, method: method, path: path)
         }
         return http.statusCode
-    }
-
-    /// One path segment: anything but unreserved characters is percent-encoded, so a name cannot add segments.
-    private static func segment(_ name: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
     }
 }

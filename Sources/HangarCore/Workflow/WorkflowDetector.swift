@@ -157,9 +157,7 @@ extension WorkflowDetector {
         var name: String
         /// XcodeGen `type` or the pbxproj product type (without `com.apple.product-type.`).
         var type: String?
-        var platform: Platform?
-        /// Every platform the target builds for. Empty when none could be worked out. `platform` is the only one
-        /// when there is exactly one, and nil when there are several.
+        /// Every platform the target builds for. Empty when none could be worked out.
         var platforms: [Platform] = []
         var sources: [String] = []
         var iconName: String?
@@ -686,7 +684,7 @@ extension WorkflowDetector {
             let bundleID = all["PRODUCT_BUNDLE_IDENTIFIER"].map { resolve($0, settings: all) }
                 ?? bundleIDPrefix.map { resolve("\($0).\(name)", settings: all) }
             var target = Target(
-                name: name, type: map["type"]?.string, platform: foundPlatforms.count == 1 ? foundPlatforms[0] : nil,
+                name: name, type: map["type"]?.string,
                 platforms: foundPlatforms, sources: sources.map(Self.trimmedPath),
                 iconName: all["ASSETCATALOG_COMPILER_APPICON_NAME"], hasScheme: map["scheme"] != nil)
             target.team = all["DEVELOPMENT_TEAM"]
@@ -899,7 +897,7 @@ extension WorkflowDetector {
             let foundPlatforms = Self.platforms(from: tokens)
             let type = (target["productType"] as? String).map { $0.replacingOccurrences(of: "com.apple.product-type.", with: "") }
             var entry = Target(
-                name: name, type: type, platform: foundPlatforms.count == 1 ? foundPlatforms[0] : nil,
+                name: name, type: type,
                 platforms: foundPlatforms, iconName: setting("ASSETCATALOG_COMPILER_APPICON_NAME", settings))
             entry.team = setting("DEVELOPMENT_TEAM", settings)
             entry.settings = strings(settings.first)

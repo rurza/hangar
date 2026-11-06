@@ -92,8 +92,9 @@ fileprivate final class Lines: Sendable {
                     .write(to: invoker.defaultConfig)
             }
             if withOldAgent {
-                try WorkerLaunchAgent.plist(binary: binary, logs: home + "/Library/Logs/Hangar")
-                    .write(toFile: invoker.plist, atomically: true, encoding: .utf8)
+                let agent: [String: Any] = ["Label": WorkerLaunchAgent.label, "ProgramArguments": [binary, "run"]]
+                try PropertyListSerialization.data(fromPropertyList: agent, format: .xml, options: 0)
+                    .write(to: URL(fileURLWithPath: invoker.plist))
             }
         }
 
@@ -119,7 +120,7 @@ fileprivate final class Lines: Sendable {
             createdAt: start)
     }
 
-    /// A Mac with no hangar user, no older agent in it and no CI keychain; the daemon is not loaded until it is
+    /// A Mac with no hangar user and no CI keychain; the daemon is not loaded until it is
     /// bootstrapped, then runs, and the server then sees the machine from it.
     fileprivate static func freshMac(_ runner: ScriptedRunner) {
         runner.on { command, seen in
@@ -136,8 +137,7 @@ fileprivate final class Lines: Sendable {
         }
         runner.on { command, _ in
             guard command.arguments.contains("/bin/test"), let path = command.arguments.last else { return nil }
-            let absent = path.hasSuffix("LaunchAgents/app.hangar.worker.plist") || path.hasSuffix(CIKeychain.fileName)
-                || path.hasSuffix(CIKeychain.passwordFileName)
+            let absent = path.hasSuffix(CIKeychain.fileName) || path.hasSuffix(CIKeychain.passwordFileName)
             return absent ? IsolationResult(exitCode: 1) : nil
         }
         // The old worker is gone after bootout; hangar cannot read anything it should not.
@@ -191,7 +191,6 @@ fileprivate final class Lines: Sendable {
             "/usr/bin/sudo /usr/bin/dscl . <<< <redacted>",
             "/usr/bin/sudo /usr/sbin/createhomedir -c -u hangar",
             "/bin/launchctl bootout gui/501/app.hangar.worker",
-            "/usr/bin/sudo /bin/test -f \(home)/Library/LaunchAgents/app.hangar.worker.plist",
             "/usr/bin/sudo /usr/bin/install -d -o hangar -g staff -m 700 '\(home)/Library/Application Support' '\(home)/Library/Application Support/Hangar' \(support) \(home)/.hangar \(home)/.hangar/worker \(home)/.hangar/worker/workspaces \(home)/Library/Logs \(home)/Library/Logs/Hangar \(home)/Library/Keychains",
             "/usr/bin/sudo /usr/bin/install -d -o hangar -g staff -m 755 \(home)/.local \(home)/.local/bin",
             "/usr/bin/sudo /usr/bin/install -o hangar -g staff -m 755 \(IsolationCommand.quote(URL(fileURLWithPath: fixture.binary).resolvingSymlinksInPath().path)) \(home)/.local/bin/hangar-worker",
@@ -449,32 +448,6 @@ fileprivate final class Lines: Sendable {
         ])
     }
 
-    /// An account set up by 0.8: its worker is a launch agent in its login session. The agent goes before the daemon
-    /// starts, so two workers never share the token.
-    @Test func anOlderVersionsAgentInTheAccountIsBootedOutAndRemoved() async throws {
-        let fixture = try Fixture()
-        defer { fixture.cleanUp() }
-        let runner = ScriptedRunner()
-        runner.on { command, _ in command.arguments == ["/usr/bin/id", "-u", "hangar"] ? IsolationResult(exitCode: 0, output: "502") : nil }
-        runner.on { command, _ in
-            command.arguments == ["/usr/bin/sudo", "/bin/test", "-f", "/Users/hangar/Library/LaunchAgents/app.hangar.worker.plist"]
-                ? IsolationResult(exitCode: 0) : nil
-        }
-        runner.on { command, _ in
-            command.arguments.contains("gui/502/app.hangar.worker") && command.arguments.contains("print")
-                ? IsolationResult(exitCode: 0, output: "state = running") : nil
-        }
-        Self.freshMac(runner)
-        let output = Lines()
-        _ = try await Self.isolation(fixture, runner: runner, output: output).run()
-        let changes = runner.changes
-        let bootout = try #require(changes.firstIndex(of: "/usr/bin/sudo /bin/launchctl bootout gui/502/app.hangar.worker"))
-        let remove = try #require(changes.firstIndex(of: "/usr/bin/sudo /bin/rm -f /Users/hangar/Library/LaunchAgents/app.hangar.worker.plist"))
-        let bootstrap = try #require(changes.firstIndex { $0.contains("launchctl bootstrap system") })
-        #expect(bootout < remove && remove < bootstrap)
-        #expect(output.text.contains("moves to a LaunchDaemon"))
-    }
-
     @Test func aKeychainThatUnlocksWithItsStoredPasswordIsKept() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -648,20 +621,6 @@ fileprivate final class Lines: Sendable {
         #expect(!runner.changes.contains { $0.hasPrefix("/bin/rm -f") })
     }
 
-    @Test func aHeartbeatFromAnOlderServerCountsOnlyAfterTheOldAgentStopped() async throws {
-        let fixture = try Fixture()
-        defer { fixture.cleanUp() }
-        let runner = ScriptedRunner()
-        Self.freshMac(runner)
-        _ = try await Self.isolation(
-            fixture, runner: runner,
-            check: { _, call in
-                .accepted(Self.machine(runningUser: nil, lastSeen: call < 3 ? Self.start : Self.start.addingTimeInterval(30)))
-            }
-        ).run()
-        #expect(runner.changes.contains { $0.hasPrefix("/bin/rm -f") })
-    }
-
     @Test func aWorkerThatWillNotStopIsReported() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
@@ -694,17 +653,12 @@ fileprivate final class Lines: Sendable {
     }
 
     @Test func theDaemonsHeartbeatIsTheOneThatCounts() {
-        let since = Self.start
-        let later = since.addingTimeInterval(30)
-        // A 0.9 server keeps `headless`: only the daemon's report counts, however recent the agent's.
-        #expect(WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: "hangar", lastSeen: since), user: "hangar", since: since))
-        // An older version's agent in the account reports hangar too, but not `headless`: its report is stale.
+        #expect(WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: "hangar", lastSeen: Self.start), user: "hangar"))
+        // The invoker's agent reports another user, and is not `headless`.
         #expect(!WorkerIsolation.isDaemonHeartbeat(
-            Self.machine(runningUser: "hangar", lastSeen: since, headless: false), user: "hangar", since: since))
-        #expect(!WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: "adam", lastSeen: later), user: "hangar", since: since))
-        // An older server drops it: a heartbeat as hangar, or without a user, after the old workers stopped.
-        #expect(!WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: nil, lastSeen: since), user: "hangar", since: since))
-        #expect(WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: nil, lastSeen: later), user: "hangar", since: since))
+            Self.machine(runningUser: "hangar", lastSeen: Self.start, headless: false), user: "hangar"))
+        #expect(!WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: "adam", lastSeen: Self.start), user: "hangar"))
+        #expect(!WorkerIsolation.isDaemonHeartbeat(Self.machine(runningUser: nil, lastSeen: Self.start), user: "hangar"))
     }
 
     @Test func aKeychainTheWorkerCannotUseIsReportedAfterTheHeartbeat() async throws {
@@ -747,7 +701,6 @@ fileprivate final class Lines: Sendable {
         #expect(printed.text.contains("would run: /usr/bin/sudo /bin/mv"))
         #expect(printed.text.contains("would save the generated password"))
         #expect(printed.text.contains("would run: /usr/bin/sudo -u hangar -H /usr/bin/security -i <<< <redacted>"))
-        #expect(printed.text.contains("would run: /usr/bin/sudo /bin/launchctl bootout gui/<hangar-uid>/app.hangar.worker"))
         #expect(printed.text.contains("would run: /usr/bin/sudo /usr/bin/install -o root -g wheel -m 644"))
         #expect(printed.text.contains("would run: /usr/bin/sudo /bin/launchctl bootstrap system \(IsolationCommand.quote(fixture.daemonPlist))"))
         #expect(!printed.text.contains("log in"))
@@ -778,20 +731,6 @@ fileprivate final class Lines: Sendable {
     @Test func runningMeansLaunchctlSaysSo() {
         #expect(WorkerIsolation.isRunning(launchctlPrint: "system/app.hangar.worker = {\n\tactive count = 1\n\tstate = running\n}"))
         #expect(!WorkerIsolation.isRunning(launchctlPrint: "system/app.hangar.worker = {\n\tstate = not running\n}"))
-    }
-
-    @Test func theLaunchAgentHasTheInstallScriptsKeys() throws {
-        let text = WorkerLaunchAgent.plist(binary: "/Users/hangar/.local/bin/hangar-worker", logs: "/Users/hangar/Library/Logs/Hangar")
-        let plist = try #require(
-            try PropertyListSerialization.propertyList(from: Data(text.utf8), format: nil) as? [String: Any])
-        #expect(plist["Label"] as? String == "app.hangar.worker")
-        #expect(plist["ProgramArguments"] as? [String] == ["/Users/hangar/.local/bin/hangar-worker", "run"])
-        #expect(plist["LimitLoadToSessionType"] as? String == "Aqua")
-        #expect(plist["RunAtLoad"] as? Bool == true)
-        #expect(plist["KeepAlive"] as? Bool == true)
-        #expect(plist["ExitTimeOut"] as? Int == 120)
-        #expect(plist["UserName"] == nil)
-        #expect(plist["StandardOutPath"] as? String == "/Users/hangar/Library/Logs/Hangar/worker.log")
     }
 
     @Test func theLaunchDaemonRunsTheWorkerAsTheAccountWithoutALogin() throws {

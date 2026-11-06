@@ -11,9 +11,8 @@ import {
   appendEntries, countLabel, createLog, defaultOpenSteps, displayText, issuePositions, issueTotals, lineSegments, visibleLines,
 } from '../log-model.js';
 import { appIcon } from './apps.js';
+import { platformName } from '../workflow-summary.js';
 
-const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
-const ONLINE_WINDOW_MS = 90_000;
 const FULL_LOG = 'full-log.txt';
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
@@ -41,7 +40,7 @@ const OUTPUT_LABELS = {
 /** "Archive – iOS · LegiloMobile" or "Test – iOS · LegiloTests" for a `WorkflowAction`. */
 export function actionLabel(action) {
   const kind = action?.kind === 'test' ? 'Test' : 'Archive';
-  return `${kind} – ${PLATFORM_NAMES[action?.platform] ?? action?.platform ?? '?'} · ${action?.scheme ?? '?'}`;
+  return `${kind} – ${platformName(action?.platform)} · ${action?.scheme ?? '?'}`;
 }
 
 /** A test job's results from its `test.*` outputs, or null before they are in. */
@@ -70,13 +69,6 @@ function testsView(job) {
         h('span', { class: 'test-failure-name mono' }, failure.name),
         failure.message ? h('span', { class: 'test-failure-message' }, String(failure.message)) : null)))
       : null);
-}
-
-/** A machine is online when it was seen within the last 90 seconds. */
-export function isOnline(machine, now = new Date()) {
-  if (!machine?.lastSeenAt) return false;
-  const seen = new Date(machine.lastSeenAt);
-  return !Number.isNaN(seen.getTime()) && now - seen <= ONLINE_WINDOW_MS;
 }
 
 export function isTerminal(status) {

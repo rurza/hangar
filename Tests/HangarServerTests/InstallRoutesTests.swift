@@ -148,6 +148,12 @@ import Testing
         #expect(InstallScript.render(origin: "http://localhost", workerSHA256: "'; rm -rf ~; '").contains("HANGAR_WORKER_SHA256=''\n"))
     }
 
+    /// The owner's launch agent gives a stopping worker as long as the LaunchDaemon does; launchd's default is 20 s.
+    @Test func theLaunchAgentWaitsTwoMinutesBeforeSIGKILL() {
+        let script = InstallScript.render(origin: "http://localhost")
+        #expect(script.contains("<key>ExitTimeOut</key>\n    <integer>120</integer>"))
+    }
+
     /// Runs the script's own `verify_sha256` (everything but the final `main` call) on a file.
     static func verify(file: URL, expected: String) throws -> Int32 {
         let script = InstallScript.render(origin: "http://localhost")

@@ -348,7 +348,6 @@ final class Counter: Sendable {
         GET apps/:id/environment read
         GET apps/:id/global-secrets read
         GET apps/:id/numbers read
-        GET apps/:id/repo-icon read
         GET apps/:id/variable-groups read
         GET apps/:id/variables read
         GET apps/:id/workflow-file read

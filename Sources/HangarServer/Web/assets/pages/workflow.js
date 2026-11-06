@@ -14,9 +14,9 @@ import { workflowToYAML } from '../yaml.js';
 import {
   PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, detectionNotes, fileFromModels,
   firstExactBranch, firstScheme, itemProblems, modelsFromFile, platformHasSchemes, platformName, schemesFor, scratchWorkflow,
-  testDestinationText, toWorkflow, uniqueName,
+  testDestinationText, toWorkflow, unique, uniqueName,
 } from '../workflow-model.js';
-import { workflowSummary } from '../workflow-summary.js';
+import { listText, workflowSummary } from '../workflow-summary.js';
 import {
   betaGroupsStore, branchesStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, guessNotes, plusGlyph, segmented,
   tile,
@@ -1099,7 +1099,7 @@ function workflowEditor({ app, stored: initial, context }) {
     return {
       header: header({ icon: 'testflight', title: 'TestFlight' }),
       body: h('div', { class: 'wf-form' }, explainBox, box,
-        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step waits for approval (requires-approval in the file).') : null,
+        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step requires approval (requires-approval in the file), which Hangar does not support yet, so deploys of this workflow are refused.') : null,
         h('div', { class: 'wf-danger-zone' },
           button('Delete Post-Action…', { kind: 'plain', class: 'button button-plain wf-destructive wf-flush-start', onClick: removeTestFlight }))),
     };
@@ -1510,11 +1510,3 @@ function itemKey(item) {
   return item.kind === 'action' ? `action-${item.index}` : item.kind;
 }
 
-function unique(items) {
-  return items.filter((item, index) => items.indexOf(item) === index);
-}
-
-function listText(items) {
-  if (items.length <= 1) return items.join('');
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-}

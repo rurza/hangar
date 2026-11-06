@@ -437,4 +437,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, automaticGroupNames, defaultGroup, groupRow, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, uniqueName, wizardModel };
+export { ACTION_KINDS, automaticGroupNames, defaultGroup, groupRow, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, unique, uniqueName, wizardModel };

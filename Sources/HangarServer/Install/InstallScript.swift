@@ -2,8 +2,8 @@ import Foundation
 
 /// The worker install script `GET /install` serves, with the server's address baked in.
 ///
-/// The launchd plist is embedded in the script (a heredoc with the same keys as scripts/worker/app.hangar.worker.plist)
-/// rather than served separately: one download fewer, and nothing on the server to keep in sync with it.
+/// The launchd plist of a worker run as the Mac's owner is embedded in the script (a heredoc) rather than served
+/// separately: one download fewer, and nothing on the server to keep in sync with it.
 enum InstallScript {
     static let originPlaceholder = "__HANGAR_ORIGIN__"
 
@@ -111,7 +111,8 @@ enum InstallScript {
             [ "$actual" = "$2" ]
         }
 
-        # Writes the launchd agent (the keys of scripts/worker/app.hangar.worker.plist) and (re)loads it.
+        # Writes the launchd agent and (re)loads it. ExitTimeOut matches the LaunchDaemon's (WorkerLaunchDaemon.exitTimeout):
+        # a stopping worker cancels its jobs and reports their results before launchd's SIGKILL.
         install_agent() {
             plist="$HOME/Library/LaunchAgents/$LABEL.plist"
             logs="$HOME/Library/Logs/Hangar"
@@ -138,6 +139,8 @@ enum InstallScript {
             <true/>
             <key>KeepAlive</key>
             <true/>
+            <key>ExitTimeOut</key>
+            <integer>120</integer>
             <key>LimitLoadToSessionType</key>
             <string>Aqua</string>
             <key>ProcessType</key>

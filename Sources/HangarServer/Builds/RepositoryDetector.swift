@@ -120,18 +120,6 @@ public final class RepositoryDetector: Sendable {
         }
     }
 
-    /// The flat icon `WorkflowDetector` finds for the repository at `ref`, cached by `key` (the app and the ref).
-    func icon(key: String, repoURL: String, ref: String?, token: String?, bundleIDs: [String]? = nil) async throws -> Image {
-        try await cached("icon|\(key)") {
-            let snapshot = try await self.read(repoURL: repoURL, ref: ref, token: token)
-            guard let icon = try? WorkflowDetector.suggest(
-                tree: snapshot.tree, files: snapshot.files, machines: [], bundleIDs: bundleIDs).icon,
-                icon.kind == .appiconset
-            else { return nil }
-            return try await self.image(repoURL: repoURL, commit: snapshot.commit, path: icon.path, token: token)
-        }
-    }
-
     static let iconNotFound = APIError(code: "icon_not_found", message: "The repository has no app icon image Hangar can show.")
 
     /// Hits for an hour, misses for ten minutes; errors are not remembered.

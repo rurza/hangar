@@ -595,7 +595,7 @@ public struct HangarTools: Sendable {
                 let artifacts = try await api.artifacts(jobID: job.id).map {
                     Artifact(
                         name: $0.name, sizeBytes: $0.sizeBytes,
-                        downloadURL: Views.page(server, "api/v1/jobs/\(job.id.uuidString)/artifacts/\(Self.pathSegment($0.name))"))
+                        downloadURL: Views.page(server, "api/v1/jobs/\(job.id.uuidString)/artifacts/\(APIPath.segment($0.name))"))
                 }
                 result.append(JobArtifacts(job: job.id, action: Views.label(job.action), status: job.status, artifacts: artifacts))
             }
@@ -719,12 +719,6 @@ extension HangarTools {
             throw ToolError("'\(text)' is not a GitHub repository; give owner/name or https://github.com/owner/name.")
         }
         return rest
-    }
-
-    static func pathSegment(_ name: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return name.addingPercentEncoding(withAllowedCharacters: allowed) ?? name
     }
 
     static func describe(_ spec: PostActionSpec) -> String {

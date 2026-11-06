@@ -165,15 +165,9 @@ public struct BuildRepository: Sendable {
         }
     }
 
-    /// `running` sets `startedAt`, a terminal status sets `finishedAt`.
-    public func setJobStatus(id: UUID, status: JobStatus, at date: Date, failureReason: String? = nil) throws {
-        try database.write { db in
-            try Self.setJobStatus(db, id: id, from: nil, to: status, at: date, failureReason: failureReason)
-        }
-    }
-
-    /// Like `setJobStatus`, but only when the job is currently in one of `from` and, with `machineID`, still
-    /// assigned to that machine (checked in the same statement); true when it moved.
+    /// Moves the job to `status` when it is currently in one of `from` and, with `machineID`, still assigned to that
+    /// machine (checked in the same statement); true when it moved. `running` sets `startedAt`, a terminal status
+    /// sets `finishedAt`.
     @discardableResult
     public func transitionJob(
         id: UUID, from: Set<JobStatus>, to status: JobStatus, at date: Date, failureReason: String? = nil,
@@ -260,11 +254,6 @@ public struct BuildRepository: Sendable {
 
     // MARK: Build numbers
 
-    /// Fails with a constraint error when the number is already reserved for the app.
-    public func reserveNumber(appID: UUID, number: Int, buildID: UUID) throws {
-        try database.write { db in try Self.reserveNumber(db, appID: appID, number: number, buildID: buildID) }
-    }
-
     public func highestAssigned(appID: UUID) throws -> Int? {
         try database.read { db in try Self.highestAssigned(db, appID: appID) }
     }
@@ -273,7 +262,9 @@ public struct BuildRepository: Sendable {
         try database.write { db in try Self.setHighestAssigned(db, appID: appID, number) }
     }
 
-    /// Variants for use inside `inTransaction`, so number reservation and build insertion commit together.
+    /// Variants for use inside `inTransaction`, so reading, reserving and advancing the counter commit together.
+    /// The build itself is inserted afterwards, in a transaction of its own. Reserving fails with a constraint error
+    /// when the number is already reserved for the app.
     public static func reserveNumber(_ db: GRDB.Database, appID: UUID, number: Int, buildID: UUID) throws {
         try db.execute(
             sql: "INSERT INTO build_numbers (app_id, number, build_id) VALUES (?, ?, ?)",

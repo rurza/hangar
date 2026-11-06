@@ -3,6 +3,10 @@
 Date: 2026-11-04
 Status: approved by the author 2026-11-04
 
+**Current state (2026-11-06).** Two decisions here were changed by later designs: the worker runs as a
+LaunchDaemon of the `hangar` user, with no login (2026-11-05-worker-isolation-design.md), and builds run in a
+fresh macOS VM per job (2026-11-05-vm-builds-design.md). The text below is the original design.
+
 ## Intent
 
 Xcode Cloud is temporarily unavailable to the author. The author has two Macs

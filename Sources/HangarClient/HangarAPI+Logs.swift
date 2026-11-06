@@ -14,9 +14,6 @@ public enum LogSource: String, Sendable, Equatable {
 }
 
 extension HangarAPI {
-    /// The name of the artifact holding a job's uncondensed log.
-    public static let fullLogArtifact = "full-log.txt"
-
     /// A job's log for people and agents: condensed by default (`XcodebuildLogCondenser`), or with `raw` as xcodebuild
     /// printed it. `step` and `tail` apply after condensing, so a tail never starts inside a task's invocation.
     public func readableLog(jobID: UUID, step: String? = nil, tail: Int? = nil, raw: Bool = false) async throws
@@ -29,8 +26,8 @@ extension HangarAPI {
         guard raw else {
             return (tailed(XcodebuildLogCondenser.condense(try await log(jobID: jobID, step: step))), .condensed)
         }
-        if try await artifacts(jobID: jobID).contains(where: { $0.name == Self.fullLogArtifact }) {
-            let text = String(decoding: try await artifact(jobID: jobID, name: Self.fullLogArtifact), as: UTF8.self)
+        if try await artifacts(jobID: jobID).contains(where: { $0.name == APIPath.fullLogArtifact }) {
+            let text = String(decoding: try await artifact(jobID: jobID, name: APIPath.fullLogArtifact), as: UTF8.self)
             var entries = Self.fullLogEntries(text)
             if let step { entries = entries.filter { $0.step == step } }
             return (tailed(entries), .full)
