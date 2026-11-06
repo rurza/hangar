@@ -5,7 +5,7 @@ import Testing
 @testable import HangarServer
 
 @Suite struct LogStoreTests {
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-logs-\(UUID().uuidString)")
+    let directory = TestScratch.directory("logs")
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
     func entry(_ step: String, _ line: String) -> LogEntry { LogEntry(t: t0, step: step, line: line) }

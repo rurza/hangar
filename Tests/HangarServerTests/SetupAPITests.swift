@@ -80,7 +80,7 @@ private struct KeyHome {
     let custom: URL
 
     init() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-setup-\(UUID().uuidString)")
+        let root = TestScratch.directory("setup")
         home = root.appendingPathComponent("home")
         cwd = root.appendingPathComponent("cwd")
         custom = root.appendingPathComponent("custom-keys")

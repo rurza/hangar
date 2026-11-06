@@ -94,7 +94,7 @@ struct APIFixture {
         githubTransport: any HTTPTransport = StubTransport(), setup: SetupEnvironment? = nil,
         tailnet: FakeTailnet = FakeTailnet(), ownerCheck: (any OwnerIdentifying)? = FixedOwner("owner@github")
     ) throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
+        directory = TestScratch.directory("api")
         let database = try HangarServer.Database(path: ":memory:")
         try database.migrate()
         server = try HangarServerApp(

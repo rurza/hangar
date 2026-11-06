@@ -100,7 +100,7 @@ private final class StageLog: Sendable {
 
         init() throws {
             start = clock.now
-            directory = NSTemporaryDirectory() + "hangar-tf-" + UUID().uuidString
+            directory = TestScratch.directory("tf").path
             layout = WorkspaceLayout(dataDirectory: directory, appSlug: "demo", jobID: UUID())
             try FileManager.default.createDirectory(atPath: layout.jobDirectory, withIntermediateDirectories: true)
         }

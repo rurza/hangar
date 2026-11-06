@@ -23,7 +23,7 @@ private func openssl(_ arguments: [String], input: String? = nil) async throws -
 private enum SigningTestError: Error { case openssl(String) }
 
 private func scratch() throws -> String {
-    let path = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-signing-\(UUID().uuidString)").path
+    let path = TestScratch.directory("signing").path
     try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
     return path
 }
