@@ -281,9 +281,7 @@ private struct DescriptionASC: AppStoreConnectClient {
         let fixture = try APIFixture(
             appStoreConnectFactory: { _ in DescriptionASC(localizations: localizations) }, now: { clock })
         try fixture.createApp()
-        try fixture.server.variables.set(scope: .global, name: "HANGAR_ASC_KEY_ID", input: VariableInput(value: "K"))
-        try fixture.server.variables.set(
-            scope: .global, name: "HANGAR_ASC_KEY_PATH", input: VariableInput(value: "pem", isSecret: true, asFile: true))
+        try fixture.storeASCKey(keyID: "K", issuerID: nil, privateKey: "pem")
         _ = try addMachine(fixture, "mini", report: report())
         fixture.host.state.withLock {
             $0.files[WorkflowFile.path] = """

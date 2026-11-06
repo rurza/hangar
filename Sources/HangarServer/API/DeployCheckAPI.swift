@@ -38,7 +38,7 @@ extension HangarServerApp {
                 throw DeployError.workflowNotFound(name: name, available: file.workflows.keys.sorted())
             }
             let entries = try variables.resolvedEntries(appID: app.id, workflow: name)
-            var check = try deployCheck(workflow: workflow, pinned: pinned, teamKey: SchedulerLoop.hasTeamKey(entries))
+            var check = try deployCheck(workflow: workflow, pinned: pinned, teamKey: try ascKeys.key(.main)?.isTeamKey ?? false)
             let own = try variables.summaries(scope: .app(app.id))
             let links = try variables.links(appID: app.id)
             check.notices = await preflight.notices(

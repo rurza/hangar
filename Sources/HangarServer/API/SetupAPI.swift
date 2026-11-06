@@ -15,9 +15,7 @@ extension HangarServerApp {
             let local = viewerIsLocal(context)
             return try Response.json(
                 SetupStatus(
-                    appStoreConnect: try Self.appStoreConnectCredentials(variables: variables).map {
-                        ASCKeyStatus(keyID: $0.keyID, issuerID: $0.issuerID)
-                    },
+                    appStoreConnect: try ascKeys.status(.main),
                     github: try await githubStatus(), machines: machines.count, apps: try apps.all().count,
                     localWorker: hostName.map { name in machines.contains { $0.name.caseInsensitiveCompare(name) == .orderedSame } }
                         ?? false,
@@ -120,8 +118,8 @@ extension HangarServerApp {
 
     // MARK: App Store Connect
 
-    /// Asks App Store Connect for the key's apps; only a key it accepts is stored, in the three `HANGAR_ASC_*`
-    /// globals the Settings page uses. A 401 without an issuer ID means a team key: 409 `issuer_required`.
+    /// Asks App Store Connect for the key's apps; only a key it accepts is stored, as the server's `main` key (a
+    /// setting, never a variable). A 401 without an issuer ID means a team key: 409 `issuer_required`.
     func testAndSaveASCKey(keyID: String, issuerID: String?, privateKey: String) async throws -> ASCKeyTestResult {
         let issuerID = issuerID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         guard privateKey.contains("PRIVATE KEY") else { throw Self.invalidASCKey }
@@ -147,14 +145,7 @@ extension HangarServerApp {
         } catch let error as ASCError {
             throw APIError(code: "asc_unavailable", message: "App Store Connect could not be asked: \(Self.appStoreConnectReason(error)).")
         }
-        // The key ID goes last: the key counts as configured once the ID and the key are both set.
-        try variables.set(scope: .global, name: "HANGAR_ASC_KEY_PATH", input: VariableInput(value: privateKey, isSecret: true, asFile: true))
-        if let issuerID {
-            try variables.set(scope: .global, name: "HANGAR_ASC_ISSUER_ID", input: VariableInput(value: issuerID))
-        } else {
-            try variables.delete(scope: .global, name: "HANGAR_ASC_ISSUER_ID")
-        }
-        try variables.set(scope: .global, name: "HANGAR_ASC_KEY_ID", input: VariableInput(value: keyID))
+        try ascKeys.set(.main, AppStoreConnectKey(keyID: keyID, issuerID: issuerID, privateKey: privateKey))
         return ASCKeyTestResult(kind: issuerID == nil ? .individual : .team, keyID: keyID, appCount: apps.count)
     }
 

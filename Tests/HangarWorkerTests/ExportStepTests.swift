@@ -40,9 +40,7 @@ private final class ExportingRunner: ProcessRunner {
 }
 
 @Suite(.timeLimit(.minutes(1))) struct ExportStepTests {
-    private static let key = ASCKeyArguments(environment: [
-        "HANGAR_ASC_KEY_PATH": "/k.p8", "HANGAR_ASC_KEY_ID": "K", "HANGAR_ASC_ISSUER_ID": "I",
-    ])!
+    private static let key = ASCKeyArguments(keyPath: "/k.p8", keyID: "K", issuerID: "I")
 
     private func plist(_ data: Data) throws -> [String: Any] {
         try #require(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])

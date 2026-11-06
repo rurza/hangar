@@ -136,9 +136,12 @@ public struct TestStep: Sendable {
     }
 
     /// Throws only when packages cannot be resolved or a tool cannot be launched; test failures are in the result.
+    /// With `keyFile`, the team key's file is written for `xcodebuild test` alone (not for package resolution, whose
+    /// manifests are the repository's code), and `key` is ignored.
     public func run(
         workflow: Workflow, action: WorkflowAction, repository: String, layout: WorkspaceLayout, developerDir: String,
         destination: TestDestination, key: ASCKeyArguments?, environment: [String: String], gitHubToken: String?,
+        keyFile: (file: AppStoreConnectKeyFile, key: AppStoreConnectKey?)? = nil,
         log: @escaping @Sendable (String) -> Void
     ) async throws -> TestRun {
         guard !action.scheme.isEmpty, !action.scheme.contains("/"), !action.scheme.contains("..") else {
@@ -153,13 +156,23 @@ public struct TestStep: Sendable {
         let resolved = try await runner.run(resolve, onLine: log)
         guard resolved.exitCode == 0 else { throw ArchiveError.packageResolutionFailed(exitCode: resolved.exitCode) }
 
-        let command = Self.command(
-            workflow: workflow, action: action, repository: repository, layout: layout, developerDir: developerDir,
-            destination: destination, key: key, environment: environment)
-        let outcome = try await runner.run(command, onLine: log)
+        let outcome = try await Self.keyed(keyFile, fallback: key) { [runner] key in
+            let command = Self.command(
+                workflow: workflow, action: action, repository: repository, layout: layout, developerDir: developerDir,
+                destination: destination, key: key, environment: environment)
+            return try await runner.run(command, onLine: log)
+        }
         let summary = await readSummary(
             layout: layout, developerDir: developerDir, environment: environment, exitCode: outcome.exitCode, log: log)
         return TestRun(exitCode: outcome.exitCode, summary: summary)
+    }
+
+    private static func keyed<Value: Sendable>(
+        _ keyFile: (file: AppStoreConnectKeyFile, key: AppStoreConnectKey?)?, fallback: ASCKeyArguments?,
+        _ body: (ASCKeyArguments?) async throws -> Value
+    ) async throws -> Value {
+        guard let keyFile else { return try await body(fallback) }
+        return try await keyFile.file.with(keyFile.key, body)
     }
 
     /// Logs the totals and each failing test; nil (logged) when there is no readable result bundle, or when a failed

@@ -211,9 +211,6 @@ import Testing
         #expect(needs(workflow.actions[0], teamKey: false))
         #expect(!needs(workflow.actions[0], teamKey: true))
         #expect(!needs(workflow.actions[1], teamKey: false), "a test signs with the key when there is one, but needs none")
-        #expect(SchedulerLoop.hasTeamKey([EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: "issuer")]))
-        #expect(!SchedulerLoop.hasTeamKey([EnvEntry(name: "HANGAR_ASC_ISSUER_ID", value: "")]))
-        #expect(!SchedulerLoop.hasTeamKey([EnvEntry(name: "HANGAR_ASC_KEY_ID", value: "KEY")]))
     }
 
     @Test func aJobNeedingACapabilityWaitsForAnUpdatedWorker() throws {

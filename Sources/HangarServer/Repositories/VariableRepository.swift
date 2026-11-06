@@ -167,8 +167,9 @@ public struct VariableRepository: Sendable {
                 rank = 4
                 source = VariableSource(kind: .global)
             }
-            guard let rank else { continue }
             let name: String = row["name"]
+            // Never resolved, even if such a row were left: the key is a setting (migration v11 deleted them).
+            guard let rank, !name.hasPrefix(Self.appStoreConnectPrefix) else { continue }
             byName[name, default: []].append((
                 rank, row["position"] as Int? ?? 0,
                 Candidate(
@@ -298,6 +299,9 @@ public struct VariableRepository: Sendable {
         }
     }
 
+    /// The App Store Connect key's old variable names (`HANGAR_ASC_KEY_ID` and so on): the key is a server setting now.
+    static let appStoreConnectPrefix = "HANGAR_ASC_"
+
     /// The server reads `HANGAR_*` names without a workflow, so they apply to all workflows and are never in a group.
     static func check(scope: VariableScope, name: String, workflows: [String]) throws {
         switch scope {
@@ -311,6 +315,11 @@ public struct VariableRepository: Sendable {
             break
         }
         guard name.hasPrefix("HANGAR_") else { return }
+        if name.hasPrefix(Self.appStoreConnectPrefix) {
+            throw APIError(
+                code: "reserved_variable",
+                message: "\(name) is not a variable: set the App Store Connect key in Settings › App Store Connect. Jobs never get it in their environment.")
+        }
         if case .group = scope {
             throw APIError(
                 code: "reserved_variable", message: "\(name) can’t be in a group: set it in Settings or on the app.")

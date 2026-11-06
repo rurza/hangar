@@ -86,13 +86,14 @@ export async function settingsPage(params, context) {
     section({ title: 'About' }, about));
 }
 
-/** For build scripts: the variables the key and the token reach jobs as. Most people never need it. */
+/** For build scripts: what reaches a job's environment and what never does. Most people never need it. */
 function advanced() {
   return h('details', { class: 'disclosure' },
     h('summary', null, 'Advanced: Variables in Build Scripts'),
     h('p', { class: 'section-footer' },
-      'Jobs get the App Store Connect key as HANGAR_ASC_KEY_ID, HANGAR_ASC_ISSUER_ID and HANGAR_ASC_KEY_PATH, '
-      + 'and the GitHub token as HANGAR_GITHUB_TOKEN.'));
+      'Jobs get the GitHub token as HANGAR_GITHUB_TOKEN (an app’s own token, when it has one). '
+      + 'The App Store Connect key is never in a job’s environment: workers use it for xcodebuild themselves, '
+      + 'and a VM’s build never gets it.'));
 }
 
 /** "Not connected" with a grey dot: a card's state before it is set up. */

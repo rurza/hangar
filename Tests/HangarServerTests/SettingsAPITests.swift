@@ -41,11 +41,7 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
 
 @Suite(.timeLimit(.minutes(1))) struct SettingsAPITests {
     private func configureASC(_ fixture: APIFixture) throws {
-        for (name, value) in [
-            ("HANGAR_ASC_KEY_ID", "KEY123"), ("HANGAR_ASC_ISSUER_ID", "issuer-uuid"), ("HANGAR_ASC_KEY_PATH", privateKey),
-        ] {
-            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-        }
+        try fixture.storeASCKey(keyID: "KEY123", issuerID: "issuer-uuid", privateKey: privateKey)
     }
 
     @Test func settingsReportsNothingConfigured() async throws {
@@ -81,9 +77,7 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
 
     @Test func individualKeyIsConfigured() async throws {
         let fixture = try APIFixture()
-        for (name, value) in [("HANGAR_ASC_KEY_ID", "INDIVIDUAL1"), ("HANGAR_ASC_KEY_PATH", privateKey)] {
-            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-        }
+        try fixture.storeASCKey(keyID: "INDIVIDUAL1", issuerID: nil, privateKey: privateKey)
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/settings", method: .get) { response throws in
                 let raw = String(buffer: response.body)
@@ -99,8 +93,7 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
 
     @Test func settingsNeedsKeyIDAndKey() async throws {
         let fixture = try APIFixture()
-        try fixture.server.variables.set(
-            scope: .global, name: "HANGAR_ASC_KEY_ID", input: VariableInput(value: "KEY123", isSecret: false))
+        try fixture.storeASCKey(keyID: "KEY123", issuerID: nil, privateKey: "")
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/settings", method: .get) { response throws in
                 #expect(try decode(SettingsStatus.self, response).appStoreConnect == nil)
@@ -154,9 +147,7 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
             issuers.withLock { $0.append(credentials.issuerID) }
             return AppsASC(apps: [ASCApp(id: "7", name: "Atlas", bundleID: "com.acme.atlas")])
         })
-        for (name, value) in [("HANGAR_ASC_KEY_ID", "INDIVIDUAL1"), ("HANGAR_ASC_ISSUER_ID", ""), ("HANGAR_ASC_KEY_PATH", privateKey)] {
-            try fixture.server.variables.set(scope: .global, name: name, input: VariableInput(value: value, isSecret: true))
-        }
+        try fixture.storeASCKey(keyID: "INDIVIDUAL1", issuerID: "", privateKey: privateKey)
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/asc/apps", method: .get) { response throws in
                 #expect(response.status == .ok)

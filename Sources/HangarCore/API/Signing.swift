@@ -108,3 +108,25 @@ public struct JobSigningIdentity: Codable, Equatable, Sendable, CustomStringConv
     public var description: String { "<identity>" }
     public var debugDescription: String { "<identity>" }
 }
+
+/// An App Store Connect API key as the server holds it (Settings › App Store Connect): never a variable, so never in
+/// a job's environment. A `JobAssignment` carries it only to a worker that runs `xcodebuild` with it itself: the host
+/// Mac's xcodebuild steps, or a VM Mac's host-side export and upload. It never enters a VM guest.
+public struct AppStoreConnectKey: Codable, Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible {
+    public var keyID: String
+    /// Nil for an individual key; xcodebuild only accepts team keys.
+    public var issuerID: String?
+    /// The `.p8` file's contents.
+    public var privateKey: String
+
+    public init(keyID: String, issuerID: String?, privateKey: String) {
+        self.keyID = keyID
+        self.issuerID = issuerID
+        self.privateKey = privateKey
+    }
+
+    public var isTeamKey: Bool { issuerID.map { !$0.isEmpty } ?? false }
+
+    public var description: String { "<App Store Connect key \(keyID)>" }
+    public var debugDescription: String { description }
+}

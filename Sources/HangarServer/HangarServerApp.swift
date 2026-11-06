@@ -51,6 +51,8 @@ public struct HangarServerApp: Sendable {
     let setup: SetupEnvironment
     /// Server-wide settings that are not variables.
     let serverSettings: ServerSettingsRepository
+    /// The App Store Connect keys (Settings › App Store Connect): settings, never variables.
+    let ascKeys: AppStoreConnectKeyRepository
     /// Whose the GitHub token is.
     let githubAccounts: GitHubAccounts
     let localHostName = LocalHostName()
@@ -60,7 +62,7 @@ public struct HangarServerApp: Sendable {
     let preflight: DeployPreflight
 
     /// `numberSources` replaces the default sources (App Store Connect builds, Xcode Cloud runs, appcast), which
-    /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
+    /// read the stored App Store Connect key on every use so credentials set after start-up take effect. `iconTransport`
     /// carries the public iTunes lookup that finds icons App Store Connect has none for; `githubTransport` the
     /// repository list and the token's account. `setup` is this Mac as the first-run setup sees it. `signingRunner`
     /// runs `/usr/bin/openssl` for the signing identity.
@@ -88,23 +90,25 @@ public struct HangarServerApp: Sendable {
         let box = SecretBox(key: try MasterKey.loadOrCreate(at: configuration.masterKeyPath))
         let variables = VariableRepository(database: database, box: box)
         self.variables = variables
+        let ascKeys = AppStoreConnectKeyRepository(database: database, box: box)
+        self.ascKeys = ascKeys
         SigningWorkspace.sweep(parent: configuration.dataDirectory)
         let signing = SigningIdentityService(
             repository: SigningIdentityRepository(database: database, box: box),
             crypto: SigningCrypto(runner: signingRunner, workParent: configuration.dataDirectory),
-            credentials: { try Self.appStoreConnectCredentials(variables: variables) }, factory: appStoreConnectFactory,
+            credentials: { try Self.appStoreConnectCredentials(keys: ascKeys) }, factory: appStoreConnectFactory,
             now: now)
         self.signing = signing
         numbers = BuildNumberService(
             repository: builds,
-            sources: numberSources ?? { try Self.defaultNumberSources(variables: variables, factory: appStoreConnectFactory) })
+            sources: numberSources ?? { try Self.defaultNumberSources(keys: ascKeys, factory: appStoreConnectFactory) })
         events = EventBus()
         scheduler = SchedulerLoop(
             builds: builds, machines: machines, events: events,
             config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock, now: now,
-            // An unreadable variable counts as a team key: the worker then says what is wrong, instead of every
-            // headless machine refusing the job.
-            teamKey: { appID in (try? variables.resolvedEntries(appID: appID, workflow: nil)).map(SchedulerLoop.hasTeamKey) ?? true },
+            // An unreadable key counts as a team key: the worker then says what is wrong, instead of every headless
+            // machine refusing the job.
+            teamKey: { _ in (try? ascKeys.key(.main)).map { $0?.isTeamKey ?? false } ?? true },
             signingProblem: { signing.jobProblem() })
         cancelRequests = CancelRequests()
         buildService = BuildService(
@@ -115,7 +119,7 @@ public struct HangarServerApp: Sendable {
         sweeper = RetentionSweeper(
             jobsDirectory: configuration.jobsDirectory, builds: builds, retentionDays: configuration.retentionDays)
         appIcons = AppIconResolver(
-            client: { try Self.appStoreConnectClient(variables: variables, factory: appStoreConnectFactory) },
+            client: { try Self.appStoreConnectClient(keys: ascKeys, factory: appStoreConnectFactory) },
             transport: iconTransport, clock: clock, now: now)
         appIconBackfill = AppIconBackfill(resolver: appIcons, apps: apps, now: now)
         pairings = PairingCodes(now: now)
@@ -157,33 +161,27 @@ public struct HangarServerApp: Sendable {
         return ServiceGroup(configuration: configuration)
     }
 
-    /// The App Store Connect credentials from the `HANGAR_ASC_*` globals, nil unless the key ID and the key are set.
-    /// The key-path variable holds the `.p8` contents; the worker writes them to a file for xcodebuild. A missing or
-    /// empty `HANGAR_ASC_ISSUER_ID` means an individual key.
-    static func appStoreConnectCredentials(variables: VariableRepository) throws -> ASCCredentials? {
-        func global(_ name: String) throws -> String? {
-            try variables.value(global: name).flatMap { $0.isEmpty ? nil : $0 }
-        }
-        guard let keyID = try global("HANGAR_ASC_KEY_ID"), let privateKey = try global("HANGAR_ASC_KEY_PATH")
-        else { return nil }
-        return ASCCredentials(keyID: keyID, issuerID: try global("HANGAR_ASC_ISSUER_ID"), privateKeyPEM: privateKey)
+    /// The server's App Store Connect credentials (Settings › App Store Connect), nil when no key is stored. No issuer
+    /// ID means an individual key.
+    static func appStoreConnectCredentials(keys: AppStoreConnectKeyRepository) throws -> ASCCredentials? {
+        try keys.key(.main).map { ASCCredentials(keyID: $0.keyID, issuerID: $0.issuerID, privateKeyPEM: $0.privateKey) }
     }
 
-    /// A client for the configured key, nil when it is not configured. Reads the globals on every call.
+    /// A client for the stored key, nil when there is none. Reads the key on every call.
     func appStoreConnectClient() throws -> (any AppStoreConnectClient)? {
-        try Self.appStoreConnectClient(variables: variables, factory: appStoreConnectFactory)
+        try Self.appStoreConnectClient(keys: ascKeys, factory: appStoreConnectFactory)
     }
 
     static func appStoreConnectClient(
-        variables: VariableRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
+        keys: AppStoreConnectKeyRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
     ) throws -> (any AppStoreConnectClient)? {
-        try appStoreConnectCredentials(variables: variables).map(factory)
+        try appStoreConnectCredentials(keys: keys).map(factory)
     }
 
     static func defaultNumberSources(
-        variables: VariableRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
+        keys: AppStoreConnectKeyRepository, factory: @Sendable (ASCCredentials) -> any AppStoreConnectClient
     ) throws -> [any KnownNumberSource] {
-        guard let client = try appStoreConnectClient(variables: variables, factory: factory) else {
+        guard let client = try appStoreConnectClient(keys: keys, factory: factory) else {
             throw BuildNumberError.appStoreConnectNotConfigured
         }
         return [AppStoreConnectBuildsSource(client: client), XcodeCloudRunsSource(client: client), AppcastSource()]

@@ -7,11 +7,10 @@ extension HangarServerApp {
         api.get("settings") { _, _ in
             // Only the key ID, the issuer ID (if any) and the key's kind leave the server; the key contents and the
             // token stay in the store.
-            let credentials = try Self.appStoreConnectCredentials(variables: variables)
             return try Response.json(
                 SettingsStatus(
                     version: HangarVersion.current,
-                    appStoreConnect: credentials.map { ASCKeyStatus(keyID: $0.keyID, issuerID: $0.issuerID) },
+                    appStoreConnect: try ascKeys.status(.main),
                     githubTokenSet: try variables.value(global: "HANGAR_GITHUB_TOKEN") != nil,
                     workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil,
                     github: try await githubStatus()))
