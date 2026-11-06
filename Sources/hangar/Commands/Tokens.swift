@@ -40,8 +40,9 @@ struct Tokens: AsyncParsableCommand {
             abstract: "Create an API token and print its secret once.",
             discussion: """
                 Scopes nest. read: look at apps, workflows, builds, logs and machines. deploy: also start and cancel \
-                builds. configure: also add and delete apps, store workflows and create TestFlight groups. No token \
-                can change variables, settings or machines, or manage tokens.
+                builds. configure: also add and delete apps, store workflows and create TestFlight groups. No token made here \
+                can change variables, settings or machines, or manage tokens; an owner token, made on the server Mac \
+                with hangar-server token create, can.
                 """)
         @OptionGroup var global: GlobalOptions
         @Argument(help: "A name to recognise it by, such as the agent or the Mac it runs on.") var name: String
@@ -52,7 +53,8 @@ struct Tokens: AsyncParsableCommand {
             if cli.json { return try cli.printJSON(created) }
             cli.print("Created API token \(created.token.name) (\(created.token.scope.rawValue)).")
             cli.print("Token: \(created.secret)")
-            cli.print("Save it now; it is not shown again. Give it to hangar mcp as HANGAR_API_TOKEN.")
+            cli.print("Save it now; it is not shown again. Keep it in a file, not on a command line: hangar mcp reads")
+            cli.print("the file named by HANGAR_API_TOKEN_FILE (see hangar mcp --help).")
         }
     }
 

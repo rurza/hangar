@@ -8,7 +8,11 @@ struct Hangar: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "hangar",
         abstract: "Drive a Hangar build server: apps, variables, machines, deploys, builds and logs.",
-        discussion: "The server is --server, else $HANGAR_SERVER, else http://localhost:8787.",
+        discussion: """
+            The server is --server, else $HANGAR_SERVER, else http://localhost:8787. The server answers its owner's \
+            tailnet devices without a token; anywhere else (loopback, scripts) send an API token: HANGAR_API_TOKEN, \
+            the file in HANGAR_API_TOKEN_FILE, or ~/.config/hangar/token.
+            """,
         subcommands: [
             Apps.self, Variables.self, Settings.self, Signing.self, Machines.self, Deploy.self, Status.self, Logs.self,
             Builds.self, Numbers.self, Cancel.self, Workflows.self, Tokens.self, MCP.self,
@@ -59,7 +63,8 @@ struct Console: Sendable {
 /// and a capturing console (`CLIContext.$current.withValue(...)`) without any global mutable state.
 /// The live value talks to the real server and the process's stdio.
 struct CLIContext: Sendable {
-    var makeAPI: @Sendable (URL) -> HangarAPI
+    /// The API for a server URL and the API token to send (nil: none).
+    var makeAPI: @Sendable (URL, String?) -> HangarAPI
     var console: Console
     var environment: [String: String]
     var timeZone: TimeZone
@@ -67,9 +72,11 @@ struct CLIContext: Sendable {
     var pollInterval: Duration
     /// How long a watch keeps retrying failed re-reads before it gives up with exit code 3.
     var lostContactAfter: Duration = .seconds(120)
+    /// Reads a file's text (the API token file); nil when it is missing or unreadable.
+    var readFile: @Sendable (String) -> String? = { try? String(contentsOfFile: $0, encoding: .utf8) }
 
     @TaskLocal static var current = CLIContext(
-        makeAPI: { HangarAPI(baseURL: $0, transport: URLSessionTransport()) },
+        makeAPI: { HangarAPI(baseURL: $0, transport: URLSessionTransport(), token: $1) },
         console: .live, environment: ProcessInfo.processInfo.environment, timeZone: .current,
         pollInterval: .seconds(5))
 }
@@ -101,11 +108,20 @@ extension HangarCommand {
     func run() async throws {
         let context = CLIContext.current
         let server = GlobalOptions.resolveServer(global.server, environment: context.environment)
-        let cli = CLI(api: context.makeAPI(server), context: context, json: global.json)
+        let token: String?
+        do { token = try APITokenSource.resolve(environment: context.environment, readFile: context.readFile) } catch {
+            context.console.writeError("error: \(error.description)\n")
+            throw ExitCode.failure
+        }
+        let cli = CLI(api: context.makeAPI(server, token), context: context, json: global.json)
         do {
             try await run(cli)
         } catch HangarAPIError.server(let error, _) {
             cli.printError("error: \(error.message) (\(error.code))")
+            if error.code == "authentication_required" {
+                cli.printError(
+                    "hint: reach the server by its tailnet address from one of your devices, or save an API token in ~/.config/hangar/token.")
+            }
             throw ExitCode.failure
         } catch HangarAPIError.transport(let error) {
             cli.printError("error: cannot reach the Hangar server at \(server.absoluteString): \(Format.describe(error))")
