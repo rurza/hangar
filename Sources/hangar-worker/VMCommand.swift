@@ -4,9 +4,8 @@ import HangarCore
 import HangarWorker
 import Logging
 
-/// `hangar-worker vm …`: VM builds (VM builds design). Image and slot commands run as the worker's user (`sudo -u
-/// hangar -H hangar-worker vm …` on an isolated Mac): saved states are made and restored by the same user, and the
-/// storage is that user's.
+/// `hangar-worker vm …`: VM builds (VM builds design). Image and slot commands run as the worker's user, the Mac's
+/// owner: saved states are made and restored by the same user, and the storage is that user's.
 struct VMCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "vm", abstract: "Builds in a fresh macOS VM per job: storage, images, slots, network filter, signing.",
@@ -393,7 +392,7 @@ struct VMCommand: AsyncParsableCommand {
                 `hangar signing create|import`), which comes with each archive's assignment. Store one here only to \
                 make this worker use a different identity; `vm identity remove` goes back to the server's.
                 """,
-            subcommands: [Import.self, FromKeychain.self, Show.self, Remove.self])
+            subcommands: [Import.self, Show.self, Remove.self])
 
         struct Import: AsyncParsableCommand {
             static let configuration = CommandConfiguration(
@@ -410,26 +409,6 @@ struct VMCommand: AsyncParsableCommand {
                     ?? String(cString: getpass("Password for \((file as NSString).lastPathComponent): "))
                 let directory = (try? WorkerConfiguration.load(from: config))?.dataDirectory ?? defaultSupportDirectory
                 try VMIdentityStore(dataDirectory: directory).save(p12: data, password: SensitiveText(password))
-                VMCommand.say("stored the VM signing identity in \(directory)")
-            }
-        }
-
-        struct FromKeychain: AsyncParsableCommand {
-            static let configuration = CommandConfiguration(
-                commandName: "from-keychain",
-                abstract: "Exports the CI keychain's identities (the one the host's archives created) for VM jobs.")
-
-            @Option(help: "Worker configuration file.")
-            var config: String = defaultConfigPath
-
-            func run() async throws {
-                guard let keychain = CIKeychain.installed() else { throw VMCommand.fail("this user has no CI keychain (run hangar-worker isolate)") }
-                let directory = (try? WorkerConfiguration.load(from: config))?.dataDirectory ?? defaultSupportDirectory
-                do {
-                    try await VMIdentityStore(dataDirectory: directory).exportFromKeychain(keychain, runner: LiveProcessRunner())
-                } catch {
-                    throw VMCommand.fail("\(error)")
-                }
                 VMCommand.say("stored the VM signing identity in \(directory)")
             }
         }

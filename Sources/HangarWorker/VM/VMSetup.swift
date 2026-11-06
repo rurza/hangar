@@ -1,39 +1,28 @@
 import Foundation
 import HangarCore
 
-/// The worker `sudo hangar-worker vm setup` sets up: the user it runs as, its binary and configuration, and its
-/// launchd job. Either the dedicated `hangar` user's LaunchDaemon or the administrator's own launch agent.
+/// The worker `sudo hangar-worker vm setup` sets up: the administrator's own launch agent (the install script's), its
+/// binary and configuration.
 public struct VMSetupTarget: Sendable, Equatable {
-    public enum Kind: Sendable, Equatable {
-        /// `/Library/LaunchDaemons/app.hangar.worker.plist`, running as `user` from boot.
-        case daemon
-        /// `~/Library/LaunchAgents/app.hangar.worker.plist` of `user`, whose uid it is.
-        case agent(uid: UInt32)
-    }
-
     public var user: String
+    /// The user's uid: its agent is in the `gui/<uid>` domain.
+    public var uid: UInt32
     public var home: String
     public var binary: String
     public var config: String
-    public var kind: Kind
 
-    public init(user: String, home: String, binary: String, config: String, kind: Kind) {
+    public init(user: String, uid: UInt32, home: String, binary: String, config: String) {
         self.user = user
+        self.uid = uid
         self.home = home
         self.binary = binary
         self.config = config
-        self.kind = kind
     }
 
-    public var launchdTarget: String {
-        switch kind {
-        case .daemon: "system/" + WorkerLaunchDaemon.label
-        case .agent(let uid): "gui/\(uid)/" + WorkerLaunchAgent.label
-        }
-    }
+    public var launchdTarget: String { "gui/\(uid)/" + WorkerLaunchAgent.label }
 
     /// How its commands are typed in an administrator's Terminal.
-    public var commands: WorkerCommandLine { WorkerCommandLine(binary: binary, user: user) }
+    public var commands: WorkerCommandLine { WorkerCommandLine(binary: binary) }
 
     /// The argv that runs `hangar-worker <arguments>` as the worker's user, from root (no password asked).
     public func asWorker(_ arguments: [String]) -> [String] {
@@ -44,33 +33,27 @@ public struct VMSetupTarget: Sendable, Equatable {
         home + "/Library/Application Support/Hangar/worker/config.json"
     }
 
-    /// The hangar user's LaunchDaemon when it is installed, else `invoker`'s launch agent (an owner-run worker).
-    /// `config` overrides the configuration the plist names. Nil when neither is there.
+    /// `invoker`'s launch agent, the worker the install script set up; `config` overrides the configuration the plist
+    /// names. Nil when there is none.
     public static func detect(
-        daemonPlist: String, invoker: (name: String, uid: UInt32, home: String)?, config: String?,
-        home: (String) -> String?
+        invoker: (name: String, uid: UInt32, home: String)?, config: String?
     ) -> VMSetupTarget? {
-        if let plist = readPlist(daemonPlist), let user = plist.user, let userHome = home(user) {
-            return VMSetupTarget(
-                user: user, home: userHome, binary: plist.program,
-                config: config ?? plist.config ?? defaultConfig(home: userHome), kind: .daemon)
-        }
         guard let invoker else { return nil }
         let agentPlist = invoker.home + "/Library/LaunchAgents/" + WorkerLaunchAgent.label + ".plist"
         guard let plist = readPlist(agentPlist) else { return nil }
         return VMSetupTarget(
-            user: invoker.name, home: invoker.home, binary: plist.program,
-            config: config ?? plist.config ?? defaultConfig(home: invoker.home), kind: .agent(uid: invoker.uid))
+            user: invoker.name, uid: invoker.uid, home: invoker.home, binary: plist.program,
+            config: config ?? plist.config ?? defaultConfig(home: invoker.home))
     }
 
-    static func readPlist(_ path: String) -> (program: String, config: String?, user: String?)? {
+    static func readPlist(_ path: String) -> (program: String, config: String?)? {
         guard let data = FileManager.default.contents(atPath: path),
             let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
             let arguments = plist["ProgramArguments"] as? [String], let program = arguments.first
         else { return nil }
         var config: String?
         if let index = arguments.firstIndex(of: "--config"), index + 1 < arguments.count { config = arguments[index + 1] }
-        return (program, config, plist["UserName"] as? String)
+        return (program, config)
     }
 }
 

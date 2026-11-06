@@ -109,8 +109,8 @@ private final class Shared<Value: Sendable>: Sendable {
         let credentials = Shared<[ASCCredentials]>([])
         var appStoreConnect = ProcessedBuildClient()
         var assignment: JobAssignment
-        /// Set by `makeHeadless()`: the worker then runs as a LaunchDaemon would.
-        var keychain: CIKeychain?
+        /// Set by `makeJobKeychain()`: the job then signs with its own keychain, as in a VM guest.
+        var keychain: JobKeychain?
         var jobTimeout: Duration?
 
         init(xcode: String = "27.2", connection: FakeServerConnection = FakeServerConnection()) throws {
@@ -201,14 +201,13 @@ private final class Shared<Value: Sendable>: Sendable {
             return await run(cancelled: cancelled, stopReason: stopReason)
         }
 
-        /// A CI keychain and its password file (`keychain-secret`) next to the data directory; `security` itself is
-        /// the recording runner's, which answers 0.
-        mutating func makeHeadless() throws {
+        /// A job keychain (password `keychain-secret`, in memory) next to the data directory, as `GuestKeychain`
+        /// makes one in a VM; `security` itself is the recording runner's, which answers 0.
+        mutating func makeJobKeychain() throws {
             let directory = dataDirectory + "-keychain"
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            let keychain = CIKeychain(path: directory + "/" + CIKeychain.fileName, passwordFile: directory + "/keychain-password")
+            let keychain = JobKeychain(path: directory + "/job.keychain-db", password: SensitiveText("keychain-secret"))
             FileManager.default.createFile(atPath: keychain.path, contents: Data())
-            try "keychain-secret\n".write(toFile: keychain.passwordFile, atomically: true, encoding: .utf8)
             self.keychain = keychain
         }
 
@@ -627,16 +626,16 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.credentials.get().map(\.issuerID) == ["issuer-1"])
     }
 
-    // MARK: Headless
+    // MARK: A job keychain (VM guest)
 
     private static func isPartitionList(_ command: ProcessCommand) -> Bool {
         command.standardInput?.value.hasPrefix("set-key-partition-list") == true
     }
 
-    @Test func aHeadlessJobUnlocksTheKeychainFirstAndAllowsCodesignAfterArchiveAndExport() async throws {
+    @Test func aJobKeychainIsUnlockedFirstAndCodesignAllowedAfterArchiveAndExport() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        try fixture.makeHeadless()
+        try fixture.makeJobKeychain()
         let keychain = try #require(fixture.keychain)
 
         let result = await fixture.run()
@@ -659,13 +658,13 @@ private final class Shared<Value: Sendable>: Sendable {
         // The password is never an argument and never logged.
         #expect(!commands.contains { $0.arguments.contains { $0.contains("keychain-secret") } })
         #expect(!fixture.connection.logLines.contains { $0.contains("keychain-secret") })
-        #expect(fixture.connection.logLines.contains("unlocked the CI keychain (\(keychain.path))"))
+        #expect(fixture.connection.logLines.contains("unlocked the job's keychain (\(keychain.path))"))
     }
 
     @Test func aFailedArchiveStillLetsCodesignUseItsNewKey() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        try fixture.makeHeadless()
+        try fixture.makeJobKeychain()
         fixture.runner.recording.script(Self.isArchive, lines: ["** ARCHIVE FAILED **"], exitCode: 65)
 
         let result = await fixture.run()
@@ -676,10 +675,10 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(Self.isPartitionList(commands[archive + 1]))
     }
 
-    @Test func aHeadlessTestAllowsCodesignAfterTheTest() async throws {
+    @Test func aTestWithAJobKeychainAllowsCodesignAfterTheTest() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        try fixture.makeHeadless()
+        try fixture.makeJobKeychain()
         try fixture.makeTestJob()
 
         let result = await fixture.run()
@@ -693,16 +692,16 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(test < allow && allow < postXcodebuild)
     }
 
-    @Test func aHeadlessArchiveWithAnIndividualKeyFailsBeforeCheckout() async throws {
+    @Test func anArchiveWithAJobKeychainAndAnIndividualKeyFailsBeforeCheckout() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        try fixture.makeHeadless()
+        try fixture.makeJobKeychain()
         fixture.assignment.appStoreConnectKey?.issuerID = nil
 
         let result = await fixture.run()
 
         #expect(result.status == .failed)
-        #expect(result.failureReason == "Signing on Studio needs a team App Store Connect key (with an issuer ID): its worker runs without an Xcode account. Add the issuer ID in Settings.")
+        #expect(result.failureReason == "Signing in a VM on Studio needs a team App Store Connect key (with an issuer ID): a VM has no Xcode account. Add the issuer ID in Settings.")
         #expect(!fixture.runner.commands.contains { $0.arguments.first == "clone" })
         #expect(!fixture.runner.commands.contains(where: Self.isArchive))
     }
@@ -710,13 +709,13 @@ private final class Shared<Value: Sendable>: Sendable {
     @Test func aKeychainThatDoesNotUnlockFailsBeforeCheckout() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        try fixture.makeHeadless()
+        try fixture.makeJobKeychain()
         fixture.runner.recording.script(
             { $0.standardInput?.value.hasPrefix("unlock-keychain") == true }, lines: ["security: SecKeychainUnlock: wrong"], exitCode: 51)
 
         let result = await fixture.run()
 
-        #expect(result.failureReason == "The CI keychain on Studio is not ready: the CI keychain does not unlock with its stored password; run hangar-worker isolate again")
+        #expect(result.failureReason == "The job's keychain on Studio is not ready: the job keychain does not unlock with its password")
         #expect(!fixture.runner.commands.contains { $0.arguments.first == "clone" })
     }
 

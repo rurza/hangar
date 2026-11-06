@@ -41,20 +41,17 @@ public struct VMJobRunner: JobRunning {
     private let serverURL: URL
     /// Nil when VM jobs may run; checked again before every job.
     private let readiness: @Sendable () -> String?
-    /// The host's CI keychain, unlocked for an archive's export on this Mac; nil in a login session.
-    private let hostKeychain: CIKeychain?
     private let appStoreConnectFactory: JobRunner.AppStoreConnectFactory
     private let logger = Logger(label: "app.hangar.worker.vm")
 
     public init(
         host: VMHost, connection: any ServerConnection & JobTokenIssuing, serverURL: URL, identity: VMIdentityStore,
         slots: VMSlotPool, workerBinary: String, sessions: any GuestSessionLaunching = LiveGuestSessionLauncher(),
-        readiness: @escaping @Sendable () -> String? = { nil }, hostKeychain: CIKeychain? = nil,
+        readiness: @escaping @Sendable () -> String? = { nil },
         appStoreConnectFactory: @escaping JobRunner.AppStoreConnectFactory = {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
         }
     ) {
-        self.hostKeychain = hostKeychain
         self.appStoreConnectFactory = appStoreConnectFactory
         self.host = host
         self.launcher = VMLauncher(host: host)
@@ -76,7 +73,6 @@ public struct VMJobRunner: JobRunning {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
         }
     ) {
-        self.hostKeychain = nil
         self.appStoreConnectFactory = appStoreConnectFactory
         self.host = launcher.host
         self.launcher = launcher
@@ -274,12 +270,12 @@ public struct VMJobRunner: JobRunning {
     }
 
     /// Runs a handed-off archive's export, post-actions, artifact upload and cleanup on this Mac, in the job's own
-    /// directory (deleted with it), with the machine's connection.
+    /// directory (deleted with it), with the machine's connection. The export signs with the owner's login keychain.
     func hostRunner(_ job: VMJobDirectory) -> JobRunner {
         JobRunner(
             connection: connection, runner: host.runner, locator: hostLocator ?? XcodeLocator(runner: host.runner),
             dataDirectory: job.path + "/host", temporaryRoot: job.path + "/host-tmp", machineName: host.machineName,
-            clock: host.clock, appStoreConnectFactory: appStoreConnectFactory, keychain: hostKeychain)
+            clock: host.clock, appStoreConnectFactory: appStoreConnectFactory)
     }
 
     /// Why an archive cannot start: a profile is missing and there is no development key. A macOS app that needs no

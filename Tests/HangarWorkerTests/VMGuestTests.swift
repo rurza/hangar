@@ -27,40 +27,6 @@ import Testing
         #expect(!store.exists)
     }
 
-    @Test func exportingFromTheCIKeychainKeepsThePasswordOffTheCommandLine() async throws {
-        let directory = try Self.directory()
-        defer { try? FileManager.default.removeItem(atPath: directory) }
-        let keychain = CIKeychain(path: directory + "/ci.keychain-db", passwordFile: directory + "/ci-password")
-        try "kc-secret".write(toFile: keychain.passwordFile, atomically: true, encoding: .utf8)
-        FileManager.default.createFile(atPath: keychain.path, contents: Data())
-        let store = VMIdentityStore(dataDirectory: directory)
-        let runner = ExportingRunner()
-        try await store.exportFromKeychain(keychain, runner: runner, password: SensitiveText("p12-secret"))
-
-        let export = try #require(runner.commands.first { $0.standardInput?.value.hasPrefix("export ") == true })
-        #expect(export.arguments == ["-i"])
-        #expect(export.standardInput?.value.contains("-P \"p12-secret\"") == true)
-        #expect(export.standardInput?.value.contains("-t identities -f pkcs12") == true)
-        #expect(!runner.commands.contains { $0.arguments.joined().contains("secret") })
-        #expect(try store.load() == GuestIdentity(p12: Data("exported".utf8), password: "p12-secret"))
-    }
-
-    /// `security -i` that writes the `-o` file of an export.
-    final class ExportingRunner: ProcessRunner {
-        let recording = RecordingProcessRunner()
-        var commands: [ProcessCommand] { recording.commands }
-
-        func run(_ command: ProcessCommand, onLine: @escaping @Sendable (String) -> Void) async throws -> ProcessOutcome {
-            if let input = command.standardInput?.value, input.hasPrefix("export "),
-                let range = input.range(of: "-o \"")
-            {
-                let path = input[range.upperBound...].prefix { $0 != "\"" }
-                FileManager.default.createFile(atPath: String(path), contents: Data("exported".utf8))
-            }
-            return try await recording.run(command, onLine: onLine)
-        }
-    }
-
     /// `security -i` that creates the keychain file a `create-keychain` names.
     final class CreatingRunner: ProcessRunner {
         let recording = RecordingProcessRunner()
@@ -105,7 +71,6 @@ import Testing
         #expect(!runner.commands.contains { $0.arguments.joined().contains("kcpw") || $0.arguments.joined().contains("pw\"") })
         // Nothing but the keychain is left: no .p12, no key or certificate file, and no password file.
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory + "/kc") == ["job.keychain-db"])
-        #expect(keychain.passwordFile.isEmpty)
         #expect(try keychain.readPassword() == SensitiveText("kcpw"))
     }
 

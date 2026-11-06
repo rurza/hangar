@@ -12,8 +12,7 @@ extension VMCommand {
                 Checks this Mac first (Apple silicon, macOS, Xcode and its license, free space, the server), then: \
                 keeps the Mac awake, accepts the Xcode license, prepares the storage, turns VM builds on, installs the \
                 network filter, downloads the macOS image, builds the job image with this Mac's Xcode, and restarts \
-                the worker. The worker is the hangar user's LaunchDaemon, or else your own launch agent. Steps that \
-                are done already are skipped, so running it again finishes an interrupted setup.
+                the worker (your own launch agent, which the install command set up). Steps that are done already are skipped, so running it again finishes an interrupted setup.
                 """)
 
         @Option(help: "The worker's configuration file. Default: the one its launchd job uses.")
@@ -35,13 +34,11 @@ extension VMCommand {
             let environment = ProcessInfo.processInfo.environment
             let invoker = Self.invoker(environment)
             guard let target = VMSetupTarget.detect(
-                daemonPlist: WorkerLaunchDaemon.directory + "/" + WorkerLaunchDaemon.label + ".plist",
-                invoker: invoker, config: config.map { URL(fileURLWithPath: $0).standardizedFileURL.path },
-                home: { FileManager.default.homeDirectory(forUser: $0)?.path })
+                invoker: invoker, config: config.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
             else {
                 throw VMCommand.fail("""
-                    no worker is installed on this Mac (neither the hangar user's LaunchDaemon nor a launch agent of \
-                    \(invoker?.name ?? "yours")). Install it first: Hangar › Machines › Add Mac.
+                    no worker is installed for \(invoker?.name ?? "you") on this Mac (no launch agent). Install it \
+                    first: Hangar › Machines › Add Mac.
                     """)
             }
             if !dryRun, geteuid() != 0 {

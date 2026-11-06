@@ -34,9 +34,9 @@ enum PreparationError: Error, Equatable, CustomStringConvertible {
             "No \(platform) simulator available on \(machine); install one in Xcode › Settings › Components"
         case .simulatorNotFound(let name, let platform, let machine, let available):
             "No \(platform) simulator named “\(name)” on \(machine); available: \(available.joined(separator: ", "))"
-        case .keychainNotReady(let reason, let machine): "The CI keychain on \(machine) is not ready: \(reason)"
+        case .keychainNotReady(let reason, let machine): "The job's keychain on \(machine) is not ready: \(reason)"
         case .teamKeyRequired(let machine):
-            "Signing on \(machine) needs a team App Store Connect key (with an issuer ID): its worker runs without an "
+            "Signing in a VM on \(machine) needs a team App Store Connect key (with an issuer ID): a VM has no "
                 + "Xcode account. Add the issuer ID in Settings."
         }
     }

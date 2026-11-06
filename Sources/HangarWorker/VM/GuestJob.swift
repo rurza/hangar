@@ -105,13 +105,13 @@ public struct GuestJobRunner: Sendable {
         }
         let names = Set(assignment.environment.map(\.name))
         assignment.environment += GuestJobBundle.homebrewEnvironment.filter { !names.contains($0.name) }
-        let keychain: CIKeychain?
+        let keychain: JobKeychain?
         do {
             keychain = try await GuestKeychain.install(bundle.identity, directory: home + "/.hangar-keychain", runner: runner)
         } catch {
             // The pipeline reports it: the checkout step unlocks the keychain first and fails with the reason.
             logger.error("could not set up the job's keychain: \(error)")
-            keychain = CIKeychain(path: home + "/.hangar-keychain/job.keychain-db", passwordFile: home + "/.hangar-keychain/missing")
+            keychain = JobKeychain(path: home + "/.hangar-keychain/job.keychain-db", failure: String(describing: error))
         }
         let jobRunner = JobRunner(
             connection: connection, runner: runner, locator: XcodeLocator(runner: runner), dataDirectory: dataDirectory,
