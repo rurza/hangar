@@ -67,13 +67,15 @@ private struct FixedSource: KnownNumberSource {
         }
     }
 
-    func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil) throws {
+    func report(
+        _ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil, running: [UUID] = []
+    ) throws {
         try machines.updateReport(
             id: machine.id,
             report: MachineReport(
                 macOSVersion: "26.0", xcodes: [InstalledXcode(version: "27.2", build: "A1", path: "/Applications/Xcode.app")],
                 chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: freeDiskGB, onACPower: true, tools: ["git": "2.45"],
-                canSignWithoutPrompt: true, runningJobIDs: [], headless: headless, vm: vm),
+                canSignWithoutPrompt: true, runningJobIDs: running, headless: headless, vm: vm),
             seenAt: now)
     }
 
@@ -266,6 +268,38 @@ private struct FixedSource: KnownNumberSource {
         #expect(published.contains(.job(job)))
         #expect(published.contains { if case .job(let j) = $0 { j.id == jobID && j.queueNote == nil } else { false } })
         #expect(try builds.build(id: job.buildID)?.status == .queued)
+    }
+
+    /// A job the worker was handed stays assigned while it prepares (a VM boots for minutes) and the machine's
+    /// reports list it. It goes back to the queue only once a report made after the hand-out leaves it out.
+    @Test func aHandedOutJobIsNotRequeuedWhileTheMachineReportsIt() async throws {
+        let (_, jobID) = try await deploy()
+        try await loop.tick()
+        await advance(seconds: 50)
+        #expect(try builds.markDispatched(jobID: jobID, machineID: macBook.id, at: now))
+        let dispatchedAt = now
+
+        // Too soon after the hand-out to tell: this report may have been made before the worker had the job.
+        await advance(seconds: 11)
+        try report(macBook)
+        try await loop.tick()
+        #expect(try builds.dispatchedAt(jobID: jobID) == dispatchedAt)
+
+        for _ in 0..<4 {
+            await advance(seconds: 30)
+            try report(macBook, running: [jobID])
+            try await loop.tick()
+            #expect(try builds.job(id: jobID)?.status == .assigned)
+            #expect(try builds.dispatchedAt(jobID: jobID) == dispatchedAt)
+        }
+
+        // The worker restarted and no longer has it: assigned anew, to be handed out again.
+        await advance(seconds: 30)
+        try report(macBook)
+        try await loop.tick()
+        let job = try #require(try builds.job(id: jobID))
+        #expect(job.status == .assigned && job.assignedAt == now)
+        #expect(try builds.dispatchedAt(jobID: jobID) == nil)
     }
 
     @Test func waitingNoteIsPublishedOnceAndNoMachinesIsExplained() async throws {

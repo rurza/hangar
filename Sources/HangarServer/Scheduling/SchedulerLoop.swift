@@ -119,15 +119,28 @@ public actor SchedulerLoop {
         }
     }
 
+    /// A job its machine never picked up goes back to the queue after `assignmentTimeout`. One it was handed stays
+    /// while the machine's reports list it: a VM job is `assigned` through the slot wait and the boot, minutes. It
+    /// goes back only once a report made after the hand-out leaves it out (the worker restarted, or the response was
+    /// lost on the way).
     private func requeueStaleAssignments(_ machines: [UUID: Machine], now: Date) throws {
         for job in try builds.jobs(status: [.assigned]) {
             guard let assignedAt = job.assignedAt, now.timeIntervalSince(assignedAt) > config.assignmentTimeout,
-                let machineID = job.machineID, machines[machineID]?.isOnline(now: now) == true,
-                try builds.unassign(jobID: job.id)
+                let machineID = job.machineID, let machine = machines[machineID], machine.isOnline(now: now)
             else { continue }
+            if let dispatchedAt = try builds.dispatchedAt(jobID: job.id) {
+                guard let seen = machine.lastSeenAt, seen.timeIntervalSince(dispatchedAt) > Self.reportLag,
+                    machine.report?.runningJobIDs.contains(job.id) != true
+                else { continue }
+            }
+            guard try builds.unassign(jobID: job.id) else { continue }
             try publishChange(jobID: job.id, buildID: job.buildID)
         }
     }
+
+    /// How long a worker may take to put together a report it then sends: a report that arrives sooner after a
+    /// hand-out may have been made before the worker had the job.
+    static let reportLag: TimeInterval = 15
 
     private func assignQueuedJobs(_ machines: [Machine], now: Date) throws {
         let running = try Self.runningCounts(builds)
