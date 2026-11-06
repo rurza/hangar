@@ -48,7 +48,7 @@ The CLI defaults to `http://localhost:8787`, so set this on every Mac, the serve
 
 The server answers its owner and API tokens, nobody else ([details](api.md#who-may-call-the-api)):
 
-- **Your devices.** A browser or the CLI on a device signed in to Tailscale as the login that owns the server Mac's tailnet node needs nothing else; the server asks Tailscale who each device belongs to (`tailscale whois`). This covers the server Mac itself when it uses its tailnet address. Allow other logins in **Settings › Access**, or on the server Mac with `hangar-server access allow <login>…` (`hangar-server access show` prints the list, `reset` goes back to the node's login). A tagged server node has no owner of its own: set the logins.
+- **Your devices.** A browser or the CLI on a device signed in to Tailscale as the login that owns the server Mac's tailnet node needs nothing else; the server asks Tailscale who each device belongs to (`tailscale whois`). This covers the server Mac itself when it uses its tailnet address, for processes of the user the server runs as; other users there (a build running as `hangar`) need a token. Allow other logins in **Settings › Access**, or on the server Mac with `hangar-server access allow <login>…` (`hangar-server access show` prints the list, `reset` goes back to the node's login). A tagged server node has no owner of its own: set the logins.
 - **Everything else needs an API token**: scripts on loopback, agents, and every caller while Tailscale is down. Agents get scoped tokens ([MCP access](mcp.md)). For your own CLI where Tailscale cannot vouch for it, make an owner token on the server Mac, as the user the server runs as:
 
   ```sh
