@@ -71,6 +71,40 @@ final class LineCollector: Sendable {
         #expect(begin.duration(to: clock.now) < .seconds(10))
     }
 
+    /// A script's `server &` that keeps printing holds the pipe open after the script exits: the run still ends,
+    /// and the process is kept in `leftovers` until the job stops it.
+    @Test func aChattyBackgroundProcessNeitherHoldsTheRunNorOutlivesItsJob() async throws {
+        let leftovers = ProcessGroups()
+        let clock = ContinuousClock()
+        let begin = clock.now
+        let outcome = try await LiveProcessRunner(drainLimit: .seconds(1)).run(
+            ProcessCommand(
+                executable: "/bin/sh", arguments: ["-c", "(while :; do echo x; sleep 0.2; done) & echo done"],
+                leftovers: leftovers)
+        ) { _ in }
+        #expect(begin.duration(to: clock.now) < .seconds(10))
+        #expect(outcome.exitCode == 0)
+        #expect(outcome.output.split(separator: "\n").contains("done"))
+        #expect(await leftovers.stopAll() == 1)
+        #expect(await leftovers.stopAll() == 0)
+    }
+
+    @Test func cancellationStopsWhatTheChildStarted() async throws {
+        let lines = LineCollector()
+        let task = Task {
+            try await runner.run(ProcessCommand(executable: "/bin/sh", arguments: ["-c", "sleep 30 & echo $!; wait"])) {
+                lines.append($0)
+            }
+        }
+        while lines.values.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        let child = try #require(pid_t(lines.values[0]))
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while kill(child, 0) == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(kill(child, 0) != 0)
+    }
+
     @Test func slowConsumerStillReceivesEveryLineOfLargeOutput() async throws {
         // 600 lines of 120 bytes exceed the 64 KB pipe buffer, so the child exits while data is still unread.
         // At 10 ms per line, delivering one pipe chunk takes longer than the 1 s idle cap.

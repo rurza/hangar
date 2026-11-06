@@ -89,6 +89,8 @@ public struct JobRunner: Sendable {
         let masker = SecretMasker(secrets: assignment.environment.filter { $0.isSecret || $0.asFile }.map(\.value))
         let log = JobLog(jobID: jobID, masker: masker, connection: connection, clock: clock, fullLogPath: layout.fullLog)
         let materializer = SecretsMaterializer(directory: layout.secrets)
+        // What the job's scripts leave running (`./mock-server &`) lives until the job ends, as in an Xcode Cloud VM.
+        let leftovers = ProcessGroups()
 
         do {
             try await connection.start(jobID: jobID)
@@ -119,7 +121,8 @@ public struct JobRunner: Sendable {
         var outputs: [String: String] = [:]
         if let prepared {
             outputs = await build(
-                assignment, prepared: prepared, layout: layout, log: log, masker: masker, pipeline: &pipeline)
+                assignment, prepared: prepared, layout: layout, log: log, masker: masker, leftovers: leftovers,
+                pipeline: &pipeline)
         } else {
             let sequence = StepName.sequence(
                 for: assignment.job.action, postActions: assignment.workflow.postActions.map(\.name))
@@ -136,7 +139,8 @@ public struct JobRunner: Sendable {
         }
 
         await pipeline.report(StepName.cleanup, .running)
-        let cleanedUp = await cleanup(layout: layout, materializer: materializer, log: log.lines(StepName.cleanup))
+        let cleanedUp = await cleanup(
+            layout: layout, materializer: materializer, leftovers: leftovers, log: log.lines(StepName.cleanup))
         await pipeline.report(StepName.cleanup, cleanedUp ? .succeeded : .failed)
         await log.finalFlush()
 
@@ -322,14 +326,14 @@ public struct JobRunner: Sendable {
     /// The steps from `post-clone` through the post-actions; returns the post-actions' merged outputs.
     private func build(
         _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, log: JobLog, masker: SecretMasker,
-        pipeline: inout JobPipeline
+        leftovers: ProcessGroups, pipeline: inout JobPipeline
     ) async -> [String: String] {
         let workflow = assignment.workflow
         let action = assignment.job.action
         let environment = prepared.environment
         let projectDirectory = workflow.projectDirectory
         let scripts = layout.repository + (projectDirectory == "." ? "" : "/" + projectDirectory) + "/ci_scripts"
-        let hooks = HookRunner(runner: runner)
+        let hooks = HookRunner(runner: runner, leftovers: leftovers)
         let archivePath = layout.archive(scheme: action.scheme)
         let absent: (HookOutcome) -> Bool = { $0 == .absent }
 
@@ -474,7 +478,10 @@ public struct JobRunner: Sendable {
 
     /// Wipes the secrets, cleans the repository and removes the job directory. Every problem is logged and the rest
     /// still runs; returns whether all of it worked.
-    private func cleanup(layout: WorkspaceLayout, materializer: SecretsMaterializer, log: @escaping @Sendable (String) -> Void) async -> Bool {
+    private func cleanup(
+        layout: WorkspaceLayout, materializer: SecretsMaterializer, leftovers: ProcessGroups,
+        log: @escaping @Sendable (String) -> Void
+    ) async -> Bool {
         var succeeded = true
         func attempt(_ what: String, _ body: () async throws -> Void) async {
             do { try await body() } catch {
@@ -482,6 +489,9 @@ public struct JobRunner: Sendable {
                 succeeded = false
             }
         }
+        // First: they hold the job's secrets in their environment, and may still write to the workspace.
+        let stopped = await leftovers.stopAll()
+        if stopped > 0 { log("stopped what ci_scripts left running (\(stopped) process group\(stopped == 1 ? "" : "s"))") }
         await attempt("wipe secrets") { try materializer.wipe() }
         if FileManager.default.fileExists(atPath: layout.repository) {
             await attempt("clean the repository") {
