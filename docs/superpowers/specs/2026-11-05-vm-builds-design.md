@@ -8,6 +8,21 @@ worker isolation design (2026-11-05-worker-isolation-design.md) and the "VM isol
 deferral in the 2026-11-04 design. The `hangar` user, its LaunchDaemon and its CI keychain stay: they become
 the host side of the VM executor.
 
+**Current state (2026-11-06).** Slice 1 shipped in 0.11 and VM builds are the recommended setup
+(docs/worker-setup.md); a worker run as the Mac's owner can host them too. Where the shipped code differs from
+the text below:
+- `sudo hangar-worker vm setup` does the host setup in one go, including `diskutil enableOwnership` for an
+  external volume and the network filter (`vm network install`, see *First slice as built*); `isolate` does
+  neither.
+- The image build is `hangar-worker vm image build`, from the command line only; there is no Machines-page
+  build and no `executor` switch: VM builds are on when the worker's configuration has a `vm` section
+  (decision 1 of *First slice as built*), and the owner allows them per machine on the server.
+- Partial images are `images/.partial-<name>`, not `.building-<name>`.
+- The guest's work directory is `/Volumes/workspace/hangar` (the image's workspace volume), else
+  `/Users/builder/hangar`.
+- VM archives sign with the server's one Apple Development identity, not one per worker (the revision under
+  *Signing* replaces key decision 7).
+
 ## Intent
 
 Every build starts from scratch. The build machine is assumed to have macOS and Xcode and nothing else, the

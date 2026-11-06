@@ -1099,7 +1099,7 @@ function workflowEditor({ app, stored: initial, context }) {
     return {
       header: header({ icon: 'testflight', title: 'TestFlight' }),
       body: h('div', { class: 'wf-form' }, explainBox, box,
-        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step waits for approval (requires-approval in the file).') : null,
+        t.requiresApproval ? h('p', { class: 'wf-note' }, 'This step requires approval (requires-approval in the file), which Hangar does not support yet, so deploys of this workflow are refused.') : null,
         h('div', { class: 'wf-danger-zone' },
           button('Delete Post-Action…', { kind: 'plain', class: 'button button-plain wf-destructive wf-flush-start', onClick: removeTestFlight }))),
     };

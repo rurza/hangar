@@ -103,7 +103,7 @@ Swift packages are resolved before the archive (or the tests), in a separate `xc
 
 ### Post-actions
 
-An entry is either a bare name (`- testflight`) or a one-key map (`- testflight: { ... }`). Every post-action accepts `requires-approval: true`, which holds the step until someone approves it. Unknown post-action names, unknown settings and wrongly typed settings are rejected when the file is parsed.
+An entry is either a bare name (`- testflight`) or a one-key map (`- testflight: { ... }`). Every post-action accepts `requires-approval: true`, reserved for approvals, which Hangar does not have yet: a deploy of a workflow with such a step is refused (`approval_not_supported`). Unknown post-action names, unknown settings and wrongly typed settings are rejected when the file is parsed.
 
 #### `testflight`
 
