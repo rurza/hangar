@@ -232,13 +232,16 @@ struct VMFixture {
         try text.write(toFile: leases, atomically: true, encoding: .utf8)
     }
 
-    func host(_ engine: FakeEngine, runner: some ProcessRunner = RecordingProcessRunner(), settings: VMSettings? = nil) -> VMHost {
+    func host(
+        _ engine: FakeEngine, runner: some ProcessRunner = RecordingProcessRunner(), settings: VMSettings? = nil,
+        screenIsLocked: @escaping @Sendable () -> Bool = { false }
+    ) -> VMHost {
         // No floor: the tests must not depend on this Mac's free space.
         var settings = settings ?? VMSettings(storage: storage.root, floorGB: 0, jobReserveGB: 0)
         settings.storage = storage.root
         return VMHost(
             settings: settings, engine: engine, runner: runner, machineName: machineName, hostBuild: "25G83",
-            leasesFile: leases)
+            leasesFile: leases, screenIsLocked: screenIsLocked)
     }
 
     func image() throws -> VMImage { try VMImage(directory: storage.image("xcode-27.2")) }

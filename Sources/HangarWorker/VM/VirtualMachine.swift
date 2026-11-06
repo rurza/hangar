@@ -36,6 +36,9 @@ public enum VMError: Error, Equatable, CustomStringConvertible {
     case entitlementMissing
     /// "Invalid argument" on restore: the state does not fit this configuration or this host any more. Cold boot.
     case stateIncompatible(String)
+    /// "Permission denied" on restore: the state is encrypted to its user's Secure Enclave key, which cannot be used
+    /// while that user's screen is locked (see `ConsoleLock`). The state itself may be fine.
+    case stateUnreadable(String)
     /// Apple's limit of two running macOS VMs is reached, possibly by a VM the owner runs. The slot counts as busy.
     case tooManyVMs
     case invalidConfiguration(String)
@@ -46,6 +49,7 @@ public enum VMError: Error, Equatable, CustomStringConvertible {
         case .entitlementMissing:
             "hangar-worker is not signed with the com.apple.security.virtualization entitlement: reinstall the server with the latest scripts/server/install-server.sh (it signs the hangar-worker it hands out), then run the install command from Machines › Add Mac again"
         case .stateIncompatible(let detail): "the saved VM state does not fit any more (\(detail))"
+        case .stateUnreadable(let detail): "the saved VM state could not be read (\(detail))"
         case .tooManyVMs: "this Mac already runs two macOS VMs, the most macOS allows"
         case .invalidConfiguration(let detail): "the VM configuration is invalid: \(detail)"
         case .failed(let detail): detail

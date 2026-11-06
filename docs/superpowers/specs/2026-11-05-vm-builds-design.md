@@ -598,6 +598,7 @@ problem with `/opt/homebrew` disappears in VM mode: the guest's Homebrew belongs
    very likely to work (Tart runs this way in CI), but it is the first manual check.
 2. **Are saved states tied to the macOS user** as well as the host? Moot if the daemon makes its own states,
    which it does, but it decides whether an image build started as the operator can save the slot states.
+   *(2026-11-06: yes, and to that user's lock state; not to the binary. See decision 24 of* First slice as built.*)*
 3. **Does the two-VM limit count VMs across macOS users?** If yes, an owner's own VM blocks a Hangar slot.
    The design already treats that as "slot busy".
 4. **Why did `ditto` from a virtio-fs share fail with symlink loops** when a small share's symlinks resolve?
@@ -788,6 +789,20 @@ something open, the slice decided as follows.
     environment has it. **What still sees it on a host Mac:** Run Script phases, package plugins and macros run
     as the worker's user during those `xcodebuild` steps and can read the file, and anything running as that user
     can read the worker's memory. VM builds are the boundary; a host Mac is not one.
+24. **A saved state does not restore while the Mac's screen is locked, and is kept** *(2026-11-06, found on the
+    MacBook)*. Virtualization.framework encrypts a state to a Secure Enclave key of the user who saved it. Saving
+    uses only the public half and works locked. Restoring needs the private half, and the Secure Enclave refuses
+    it while the session is locked: the framework's VM process logs `SecKeyCreateDecryptedDataWithParameters
+    failed: … Code=-25308 "unable to compute shared secret"` (`errSecInteractionNotAllowed`) and the restore fails
+    with "permission denied". On the MacBook, whose worker runs as `adam` in the GUI session, every restore
+    between the screen locking (01:22:35) and unlocking (08:31:02) failed this way, every one before and after
+    worked, and the same state then restored from a binary with another code signature and from an SSH session.
+    So states are not tied to the binary's signature (a self-update keeps them) or to the process, only to the
+    user and the lock. A restore that fails with "permission denied" while `IOConsoleUsers` shows a locked session
+    keeps the state, cold-boots the job as the slot, and does not save the slot again afterwards (that held the
+    slot for minutes after every job and made a state as unreadable as the last). With no session locked it is
+    treated as any state that does not restore. Not yet known: whether a worker running as its own user (the
+    mini's `hangar` LaunchDaemon) restores while the owner's screen is locked; the mini never locked in its logs.
 
 **Revised 2026-11-05: an image installs only what is necessary.** *(owner's call)* A job image carries macOS and
 Xcode (first launch done), and nothing else: no Homebrew, no Metal toolchain and no simulator runtime by default

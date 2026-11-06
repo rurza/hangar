@@ -14,12 +14,14 @@ public struct VMHost: Sendable {
     public var hostBuild: String
     public var leasesFile: String
     public var clock: any Clock<Duration>
+    /// Whether a login session's screen is locked: saved states do not restore then (see `ConsoleLock`).
+    public var screenIsLocked: @Sendable () -> Bool
 
     public init(
         settings: VMSettings, engine: any VirtualMachineEngine = LiveVirtualMachineEngine(),
         runner: any ProcessRunner = LiveProcessRunner(), machineName: String = JobRunner.computerName,
         hostBuild: String = VMHost.currentHostBuild(), leasesFile: String = DHCPLeases.path,
-        clock: any Clock<Duration> = ContinuousClock()
+        clock: any Clock<Duration> = ContinuousClock(), screenIsLocked: @escaping @Sendable () -> Bool = ConsoleLock.screenIsLocked
     ) {
         self.settings = settings
         self.storage = VMStorage(root: settings.storage)
@@ -29,6 +31,7 @@ public struct VMHost: Sendable {
         self.hostBuild = hostBuild
         self.leasesFile = leasesFile
         self.clock = clock
+        self.screenIsLocked = screenIsLocked
     }
 
     public static func currentHostBuild() -> String {
@@ -130,17 +133,38 @@ public struct VMLauncher: Sendable {
                 await machine.stop()
                 if error is CancellationError { throw error }
                 if case VMError.tooManyVMs = error { throw error }
+                // The Secure Enclave will not decrypt a state while a screen is locked; it restores again once the
+                // Mac is unlocked. Saving it again would not help (the new one is as unreadable until then), so it
+                // stays, and the slot is not saved again after the job.
+                if case VMError.stateUnreadable(let detail) = error, host.screenIsLocked() {
+                    for file in [job.disk, job.nvram] { try? FileManager.default.removeItem(atPath: file) }
+                    return try await coldBoot(
+                        image: image, slot: slot, job: job, user: user, metadata: metadata,
+                        reason: "the saved state cannot be read while this Mac's screen is locked, and restores again once it is unlocked: \(detail)",
+                        slotIsStale: false)
+                }
                 // A state that does not restore, or a guest that does not come back from it, would fail every job
                 // of the slot the same way: it goes, and this job cold-boots.
-                if case VMError.stateIncompatible(let detail) = error {
+                switch error {
+                case VMError.stateIncompatible(let detail), VMError.stateUnreadable(let detail):
                     staleness = "the saved state did not restore: \(detail)"
-                } else {
+                default:
                     staleness = "the restored VM did not come up: \(error)"
                 }
                 try? FileManager.default.removeItem(atPath: slotDirectory.state)
                 for file in [job.disk, job.nvram] { try? FileManager.default.removeItem(atPath: file) }
             }
         }
+        return try await coldBoot(
+            image: image, slot: slot, job: job, user: user, metadata: metadata, reason: staleness ?? "no saved state",
+            slotIsStale: true)
+    }
+
+    /// Cold-boots a clone of the image itself into `job`, as slot `slot` when it has an identity.
+    private func coldBoot(
+        image: VMImage, slot: Int, job: VMJobDirectory, user: String, metadata: VMSlotMetadata?, reason: String,
+        slotIsStale: Bool
+    ) async throws -> RunningVM {
         // The slot's identity when it has one, with today's CPUs and memory: a cold boot has no state to match.
         var identity = metadata ?? newSlotIdentity(slot: slot, imageID: image.metadata.id)
         identity.cpus = host.settings.cpus
@@ -154,7 +178,7 @@ public struct VMLauncher: Sendable {
             let address = try await waitForSSH(machine, mac: identity.macAddress, user: user, image: image, deadline: bootDeadline)
             return RunningVM(
                 machine: machine, address: address,
-                note: "cold-booted in \(Self.seconds(since: coldStart)) (\(staleness ?? "no saved state"))", slotIsStale: true)
+                note: "cold-booted in \(Self.seconds(since: coldStart)) (\(reason))", slotIsStale: slotIsStale)
         } catch {
             await machine.stop()
             throw error
