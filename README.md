@@ -1,57 +1,98 @@
 # Hangar
 
-Hangar is a self-hosted build fleet for Apple apps. It runs the workflows you would otherwise run on Xcode Cloud, on Macs you own.
+**Your own Xcode Cloud, on Macs you already have.**
 
-- **Xcode Cloud compatible.** Your `ci_scripts/` hooks (`ci_post_clone.sh`, `ci_pre_xcodebuild.sh`, `ci_post_xcodebuild.sh`) run unchanged and see the usual `CI_*` variables. `CI_HANGAR=TRUE` is also set so a script can tell the two apart; `CI_XCODE_CLOUD` is not.
-- **Archive and test actions.** Like Xcode Cloud, a workflow archives schemes (and uploads to TestFlight) and runs their tests on the Mac or a simulator, with the pass/fail totals and failing tests on the build page.
-- **Self-hosted.** A server and one or more workers on your tailnet. Nothing is exposed outside it.
-- **Build numbers that never collide with Xcode Cloud.** The next number is one more than the highest known in Hangar, App Store Connect and Xcode Cloud, so you can use both systems on the same app.
+Hangar builds, tests and ships Apple apps on your own Macs. It runs the same `ci_scripts/` you wrote for Xcode Cloud, archives your schemes, uploads them to TestFlight or exports them with Developer ID, and shows every build live in a web UI. By default each build runs in a fresh macOS VM, so builds start clean and can't see the rest of your Mac.
 
-## Status
+![The Machines page: a Mac building in VMs next to one building locally](docs/images/machines.png)
 
-Phase 1: the TestFlight path (archive, export, upload to App Store Connect, wait for processing, add to beta groups). The Developer ID path (notarized direct distribution) comes in Phase 2.
+## Why
 
-## Architecture
+Xcode Cloud is convenient until you hit its compute-hour limits, wait in its queue, or need a tool its image doesn't have. Hangar keeps the convenience and moves the work to hardware you own:
 
-- `hangar-server`: control plane on one always-on Mac. Stores apps, builds and encrypted secrets, schedules jobs, serves the HTTP API.
-- `hangar-worker`: runs on each build Mac, as a launch agent of the Mac's owner. Heartbeats, long-polls for jobs and builds each one in one of two ways: in a fresh macOS VM per job (the default on Apple silicon), or locally, directly on the Mac as the owner.
-- `hangar`: command-line client for the server API.
-- `hangar mcp`: an MCP server for AI agents, with scoped API tokens; see [MCP access](docs/mcp.md).
-- `plugins/hangar`: Claude Code plugin that registers `hangar mcp`, with deploy and status skills over the CLI.
+- **Bring your existing setup.** `ci_post_clone.sh`, `ci_pre_xcodebuild.sh` and `ci_post_xcodebuild.sh` run unchanged, with the `CI_*` variables they expect, plus `CI_HANGAR=TRUE` so a script can tell the two apart.
+- **Clean builds, isolated from your files.** Every job gets its own VM, cloned from an image that holds only macOS and Xcode. It boots in seconds, can't reach your Mac or your network, and is deleted when the job ends. A job that needs Homebrew installs it, just as it would on Xcode Cloud.
+- **Ship straight to testers.** TestFlight uploads, with processing tracked, testers added to groups, "What to Test" notes and beta review submission. Developer ID exports for apps outside the App Store.
+- **Build numbers that never collide.** The next number is one higher than anything Hangar, App Store Connect or Xcode Cloud knows about, so you can run both side by side.
+- **Built for agents too.** A scoped `hangar mcp` server lets AI agents deploy, read logs and check builds without ever seeing a secret.
 
-## Quick start
+## How it works
 
-Requires macOS 15+, Xcode and [Tailscale](https://tailscale.com) on every Mac. Details: [server setup](docs/server-setup.md), [worker setup](docs/worker-setup.md).
+```
+                 tailnet
+┌────────────────┐        ┌─────────────────────────────┐
+│ hangar-server  │◀──────▶│ hangar-worker  (each Mac)    │
+│ web UI · API   │        │  ├─ VM mode: a fresh macOS   │
+│ secrets · jobs │        │  │  VM per job (default)     │
+└────────────────┘        │  └─ local mode: on the Mac   │
+        ▲                 └─────────────────────────────┘
+        │
+  browser · hangar CLI · hangar mcp
+```
 
-1. **Install the server** on the always-on Mac. Add `--bin-dir ~/.local/bin` to install without sudo (the install scripts no longer read `INSTALL_DIR`; use `--bin-dir`):
+- **`hangar-server`** runs on one always-on Mac. It stores apps, workflows, build history and encrypted secrets, schedules jobs across your Macs, and serves the web UI and HTTP API. It is only reachable on your [Tailscale](https://tailscale.com) network, where your own devices are recognised as you.
+- **`hangar-worker`** runs on each build Mac and keeps itself up to date. It builds in one of two modes:
+  - **VM:** one macOS VM per job, through Apple's Virtualization framework. This is the default on Apple silicon. Signing happens inside the VM with a development certificate Hangar manages; the App Store Connect key stays on the host, which does the export and upload.
+  - **Local:** directly on the Mac, as you. Fast and simple, with warm caches.
+- **`hangar`** is the command-line client, and **`hangar mcp`** is the MCP server for agents.
+
+Workers clean up after themselves: per-job files, old VM images, unused workspaces and old build artifacts are swept automatically.
+
+## Getting started
+
+You need macOS 15 or later, Xcode, and Tailscale on every Mac. Apple silicon is required for VM builds.
+
+1. **Install the server** on the always-on Mac:
 
    ```sh
-   scripts/server/install-server.sh
+   git clone https://github.com/rurza/hangar.git && cd hangar
+   scripts/server/install-server.sh --bin-dir ~/.local/bin
    ```
 
-2. **Open the web UI** at `http://<server>:8787` (the server's tailnet address) and follow it through:
-   - **Settings**: add the App Store Connect key and a GitHub token. (An individual API key has no issuer ID; leave it empty. xcodebuild only accepts team keys, so archives then need a Mac whose worker runs as a logged-in user with an Apple account signed in to Xcode, see the [worker setup](docs/worker-setup.md). Hangar still uses the individual key for build numbers and TestFlight.)
-   - **Apps → Add app**: name, repository and App Store Connect app.
-   - **Workflow**: define the workflow for the app (the editor writes the same configuration as [`.hangar.yml`](docs/hangar-yml.md), which you can also keep in the repo).
-   - **Machines → Add Mac**: it shows a command and a pairing code. Run the command on the build Mac, as an administrator, and type the code; it installs the worker and sets up VM builds (see the [worker setup](docs/worker-setup.md)):
+2. **Open the web UI** at `http://<server>:8787` and follow the setup page. It asks for an App Store Connect team key and a GitHub token; then create the signing certificate VMs use in **Settings › Signing**.
 
-     ```sh
-     curl -fsSL http://<server>:8787/install | sh
-     ```
+3. **Add a Mac.** In **Machines › Add Mac**, run the command shown on the build Mac and type the pairing code:
 
-   - **Deploy**: pick the app, workflow and ref, and watch the build live.
+   ```sh
+   curl -fsSL http://<server>:8787/install | sh
+   ```
 
-The same steps are available from the command line (`hangar settings`, `hangar apps add`, `hangar deploy`, `hangar status`, `hangar logs --follow`, with `HANGAR_SERVER=http://<server>:8787` set); see the [HTTP API](docs/api.md) and the [`.hangar.yml` reference](docs/hangar-yml.md).
+   Choose VM builds, and the installer sets up everything in one `sudo` step: the network filter that keeps VMs off your network, and a VM image with your Xcode.
+
+4. **Add an app and deploy.** Pick the repository, let Hangar suggest a workflow from your project (or keep a [`.hangar.yml`](docs/hangar-yml.md) in the repo), and press Deploy.
+
+Everything in the web UI is also available from the command line:
+
+```sh
+export HANGAR_SERVER=http://<server>:8787
+hangar deploy my-app Beta --ref main
+hangar status
+hangar logs <build-id> --follow
+```
 
 ## Documentation
 
 - [Server setup](docs/server-setup.md)
-- [Worker setup](docs/worker-setup.md)
+- [Worker setup](docs/worker-setup.md), including VM builds and disk use
 - [`.hangar.yml` reference](docs/hangar-yml.md)
 - [HTTP API](docs/api.md)
 - [MCP access for AI agents](docs/mcp.md)
 - [Claude Code plugin](plugins/hangar/README.md)
+- Design notes in [`docs/superpowers/specs`](docs/superpowers/specs)
+
+## Building from source
+
+```sh
+swift build
+swift test
+```
+
+Hangar is written in Swift 6. The server uses [Hummingbird](https://github.com/hummingbird-project/hummingbird) and [GRDB](https://github.com/groue/GRDB.swift), and the web UI is plain JavaScript modules with no build step.
+
+## Status
+
+Hangar is young and moves fast. It builds and ships several apps every day, to TestFlight and with Developer ID, but expect rough edges and breaking changes between versions.
 
 ## License
 
-MIT
+Hangar is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE). If you run a modified Hangar as a service for others, the AGPL requires you to share your changes with them.
