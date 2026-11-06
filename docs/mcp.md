@@ -65,7 +65,7 @@ Read (any scope):
 | `wait_for_build` | Waits up to 10 minutes for a build to finish, then returns `get_build`'s answer. |
 | `get_build_log` | The end of a job's log, at most 1000 lines and 64 KB, optionally one step. xcodebuild's output is condensed to one `▸` line per task with every diagnostic kept; `raw: true` gives it uncondensed. |
 | `list_artifacts` | Each job's artifacts with their download URLs (never their contents). |
-| `list_machines` | Build Macs: online, paused (builds turned off; agents cannot pause or resume a Mac), Xcode versions, simulator runtimes, tools, signing, disk. |
+| `list_machines` | Build Macs: online, paused (builds turned off; agents cannot pause or resume a Mac), whether they build in VMs (with their slots and images) or locally, Xcode versions, simulator runtimes, tools, signing, disk. |
 | `list_variables` | The app's variables by name (never values): each for all workflows or limited to some, and its linked variable groups in precedence order. With `workflow`: what a job of that workflow gets and where each name comes from. Agents cannot change variables. |
 | `list_testflight_groups` | The app's TestFlight groups. |
 

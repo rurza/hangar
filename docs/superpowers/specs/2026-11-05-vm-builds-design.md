@@ -9,11 +9,13 @@ deferral in the 2026-11-04 design. The `hangar` user, its LaunchDaemon and its C
 the host side of the VM executor.
 
 **Current state (2026-11-06).** Slice 1 shipped in 0.11 and VM builds are the recommended setup
-(docs/worker-setup.md); a worker run as the Mac's owner can host them too. Where the shipped code differs from
-the text below:
+(docs/worker-setup.md). A worker has exactly two ways to build: VM builds, or locally on the Mac as its owner. The
+dedicated `hangar` user, its LaunchDaemon, `isolate` and the host CI keychain were removed on 2026-11-06: the VM
+host is the owner's own launch agent, so wherever the text below says the `hangar` user or its daemon hosts the
+VMs, read the worker running as the Mac's owner. The per-job keychain in the guest stays (`JobKeychain`, password
+in memory only), and `vm identity from-keychain` is gone. Where the shipped code differs from the text below:
 - `sudo hangar-worker vm setup` does the host setup in one go, including `diskutil enableOwnership` for an
-  external volume and the network filter (`vm network install`, see *First slice as built*); `isolate` does
-  neither.
+  external volume and the network filter (`vm network install`, see *First slice as built*).
 - The image build is `hangar-worker vm image build`, from the command line only; there is no Machines-page
   build and no `executor` switch: VM builds are on when the worker's configuration has a `vm` section
   (decision 1 of *First slice as built*), and the owner allows them per machine on the server.
