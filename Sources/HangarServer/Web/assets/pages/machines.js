@@ -9,7 +9,9 @@ import {
   plusIcon, selectContents, sheet, spinner, toast,
 } from '../ui.js';
 import { isOnline } from './build.js';
-import { buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine } from '../machine-status.js';
+import {
+  buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine,
+} from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
@@ -240,7 +242,9 @@ function reportView(machine, jobInfo) {
   const runningIDs = Array.isArray(report.runningJobIDs) ? report.runningJobIDs : [];
   const running = runningIDs.length;
   const jobs = max === 1 ? 'job' : 'jobs';
-  const load = loadText({ running, max, paused: Boolean(machine.paused) });
+  const load = loadText({
+    running, max, paused: Boolean(machine.paused), vmNotReady: Boolean(report.vm) && !((report.vm.slots ?? 0) > 0),
+  });
   // "Building Legilo 88 · macOS" as links to the builds, once known.
   const known = runningIDs.map((id) => jobInfo?.(id)).filter(Boolean);
   const verb = known.length && known.every((info) => info.kind === 'test') ? 'Testing' : 'Building';
@@ -272,14 +276,17 @@ function reportView(machine, jobInfo) {
       fact('Free disk', `${formatGB(report.freeDiskGB)} GB`),
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
       fact('macOS', report.macOSVersion || '–'),
-      fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn, report.headless)),
+      // A VM Mac signs in its VMs; its own Xcode account plays no part.
+      report.vm ? null : fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn, report.headless)),
       report.vm
         ? fact('Builds run as', 'builder, in a fresh VM')
         : fact('Runs as', report.runningUser || '–')),
     buildUserWarningView(buildUserWarning(report)),
-    chipGroup('Xcode', xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
-    // The name only; where it lives is a tooltip.
-    chipGroup('Tools', tools.map(([name, detail]) => ({ text: name, title: detail || null })), 'None reported'),
+    // On a VM Mac the host's Xcode only feeds new images; jobs get the images' (the VM line).
+    chipGroup(report.vm ? 'Xcode on This Mac (for New Images)' : 'Xcode',
+      xcodes.map((xcode) => `${xcode.version} (${xcode.build})`), 'No Xcode found'),
+    // The name only; where it lives is a tooltip. A VM job installs its own tools.
+    report.vm ? null : chipGroup('Tools', tools.map(([name, detail]) => ({ text: name, title: detail || null })), 'None reported'),
     // A VM Mac signs in its VMs with Hangar's certificate (Settings › Signing), not with its own keychain.
     report.vm ? null : chipGroup('Signing identities', identities, 'None in the keychain yet'),
     report.vm ? null : report.canSignWithoutPrompt
@@ -309,19 +316,60 @@ function cannotSignAdvice(report) {
     + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.';
 }
 
-/** A VM Mac's slots, images and network filter on one line, and, while no slot is ready, why. */
+/**
+ * A VM Mac's slots, images and network filter on one line; while no slot is ready, the whole checklist with the
+ * command to run on the Mac. Once ready, only an optional row that is not done (slot states) is mentioned.
+ */
 function vmView(vm) {
   const line = vmLine(vm);
+  const checklist = vmChecklist(vm);
+  if (checklist.ready) {
+    const pending = checklist.rows.filter((row) => !row.ok);
+    return [
+      h('p', { class: 'card-detail machine-vm' }, line.text),
+      pending.map((row) => h('p', { class: 'card-note' }, `${row.title}: ${row.detail}`)),
+    ];
+  }
   return [
     h('p', { class: 'card-detail machine-vm' }, line.text),
-    line.problem
-      ? h('div', { class: 'signing signing-warning' },
-        h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
-        h('div', null,
-          h('p', { class: 'signing-title' }, 'VM builds not ready'),
-          h('p', { class: 'card-note' }, line.problem)))
-      : null,
+    h('div', { class: 'signing signing-warning vm-setup' },
+      h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
+      h('div', null,
+        h('p', { class: 'signing-title' }, 'VM builds not ready'),
+        checklist.command
+          ? [h('p', { class: 'card-note' }, 'In Terminal on this Mac, as an administrator, run:'), commandBlock(checklist.command)]
+          : null,
+        h('ul', { class: 'vm-checklist', 'aria-label': 'VM builds checklist' }, checklist.rows.map(checkRow)))),
   ];
+}
+
+function checkRow(row) {
+  const state = row.ok ? 'done' : row.required ? 'missing' : 'optional';
+  return h('li', { class: ['vm-check', `vm-check-${state}`] },
+    h('span', { class: 'vm-check-icon', 'aria-hidden': 'true' }, row.ok ? '✓' : row.required ? '✕' : '–'),
+    h('div', { class: 'vm-check-text' },
+      h('span', { class: 'vm-check-title' }, row.title),
+      h('span', { class: 'visually-hidden' }, row.ok ? ', done: ' : row.required ? ', missing: ' : ', optional: '),
+      h('span', { class: 'vm-check-detail' }, row.detail),
+      row.command ? commandBlock(row.command) : null));
+}
+
+/** A command to paste in Terminal, with its Copy button. */
+function commandBlock(command) {
+  const code = h('code', { class: 'vm-command-text' }, command);
+  return h('div', { class: 'vm-command' },
+    code,
+    button('Copy', {
+      kind: 'plain', class: 'button button-plain button-small', 'aria-label': 'Copy the command',
+      onClick: async () => {
+        if (await copyText(command)) {
+          toast('Copied the command', 'success');
+        } else {
+          selectContents(code);
+          toast('The command is selected. Press ⌘C to copy it.', 'info');
+        }
+      },
+    }));
 }
 
 /** `buildUserWarning`'s warning as the card's warning box, or nothing. */

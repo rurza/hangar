@@ -9,12 +9,18 @@ function isServerMac(machine, hostName) {
 
 /**
  * The load headline and the line under it, `{ headline, detail }`. `headline` is null while jobs run: the page names
- * them ("Building Legilo 88 · macOS").
+ * them ("Building Legilo 88 · macOS"). `vmNotReady`: a VM Mac with no slot ready, which takes no builds; "Idle"
+ * would read as available.
  */
-function loadText({ running, max, paused }) {
+function loadText({ running, max, paused, vmNotReady = false }) {
   const count = `${running} of ${max} ${max === 1 ? 'job' : 'jobs'} running`;
-  if (!paused) return { headline: running === 0 ? 'Idle' : null, detail: count };
-  if (running === 0) return { headline: 'Builds Paused', detail: 'No new builds until resumed' };
+  if (!paused) {
+    if (running === 0 && vmNotReady) return { headline: 'Not Taking Builds', detail: 'VM builds aren’t ready yet' };
+    return { headline: running === 0 ? 'Idle' : null, detail: count };
+  }
+  if (running === 0) {
+    return { headline: 'Builds Paused', detail: vmNotReady ? 'VM builds aren’t ready yet' : 'No new builds until resumed' };
+  }
   return { headline: null, detail: `${count} · no new builds after this` };
 }
 
@@ -70,6 +76,30 @@ function vmLine(vm) {
 }
 
 /**
+ * A VM Mac's readiness checklist (`report.vm`): `{ ready, command, rows }`. `rows` are `{ id, title, ok, required,
+ * detail, command }`; `command` is the one to run first (the first failing required row's), and a row repeats a
+ * command only when it is another one. A worker older than the checklist sends only its first problem, shown as one
+ * row.
+ */
+function vmChecklist(vm) {
+  const ready = (vm?.slots ?? 0) > 0;
+  let rows = (Array.isArray(vm?.checks) ? vm.checks : []).map((check) => ({
+    id: String(check.id ?? ''),
+    title: String(check.title ?? ''),
+    ok: Boolean(check.ok),
+    required: check.required !== false,
+    detail: String(check.detail ?? ''),
+    command: check.ok ? null : check.command || null,
+  }));
+  if (rows.length === 0 && !ready) {
+    rows = [{ id: 'problem', title: 'VM builds', ok: false, required: true, detail: vm?.problem || 'No VM slot is ready.', command: null }];
+  }
+  const first = rows.find((row) => row.required && !row.ok && row.command);
+  const command = first?.command ?? null;
+  return { ready, command, rows: rows.map((row) => (row.command === command ? { ...row, command: null } : row)) };
+}
+
+/**
  * The warning a Mac's card shows about who builds there, or null: a VM Mac builds as `builder` in a fresh VM that
  * cannot see the host, and the dedicated hangar user is the other safe case. An older worker that does not say gets
  * none. `{ title, note }`.
@@ -90,4 +120,4 @@ function joinList(items) {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmLine };
+export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine };

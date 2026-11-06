@@ -26,6 +26,40 @@ import Testing
         #expect(try load(#"{"running": 1, "max": 1, "paused": false}"#) == "null | 1 of 1 job running")
     }
 
+    @Test func aVMMacThatIsNotReadyIsNotIdle() throws {
+        func load(_ json: String) throws -> String {
+            try Self.run(json, "(() => { const t = loadText(input); return `${t.headline} | ${t.detail}`; })()")
+        }
+        #expect(try load(#"{"running": 0, "max": 1, "paused": false, "vmNotReady": true}"#)
+            == "Not Taking Builds | VM builds aren’t ready yet")
+        #expect(try load(#"{"running": 0, "max": 1, "paused": true, "vmNotReady": true}"#)
+            == "Builds Paused | VM builds aren’t ready yet")
+    }
+
+    @Test func theChecklistNamesTheCommandOnceAndKeepsEveryRow() throws {
+        let json = #"""
+            {"slots": 0, "checks": [
+              {"id": "settings", "title": "VM settings", "ok": true, "required": true, "detail": "1 slot"},
+              {"id": "networkFilter", "title": "Network filter", "ok": false, "required": true, "detail": "not installed: run `x`"},
+              {"id": "image", "title": "Xcode image", "ok": false, "required": true, "detail": "none", "command": "sudo w vm setup"},
+              {"id": "storage", "title": "Storage", "ok": false, "required": true, "detail": "ownership", "command": "sudo diskutil enableOwnership /Volumes/SSD"}
+            ]}
+            """#
+        let result = try Self.run(json, """
+            (() => { const c = vmChecklist(input);
+              return [c.ready, c.command, c.rows.map((r) => `${r.id}:${r.ok}:${r.command}`).join(',')].join(' | '); })()
+            """)
+        #expect(result == "false | sudo w vm setup | settings:true:null,networkFilter:false:null,image:false:null,storage:false:sudo diskutil enableOwnership /Volumes/SSD")
+    }
+
+    @Test func anOlderWorkersProblemIsOneRow() throws {
+        let result = try Self.run(#"{"slots": 0, "problem": "no image"}"#, """
+            (() => { const c = vmChecklist(input); return `${c.rows.length} ${c.rows[0].detail} ${c.command}`; })()
+            """)
+        #expect(result == "1 no image null")
+        #expect(try Self.run(#"{"slots": 1}"#, "String(vmChecklist(input).rows.length)") == "0")
+    }
+
     @Test func theButtonAndToastFollowTheState() throws {
         #expect(try Self.run("{}", "pauseButtonLabel(false)") == "Pause Builds")
         #expect(try Self.run("{}", "pauseButtonLabel(true)") == "Resume Builds")
