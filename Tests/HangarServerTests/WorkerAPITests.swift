@@ -451,6 +451,20 @@ final class ManualNow: Sendable {
         }
     }
 
+    /// A VM worker keeps every image a queued or running job's Xcode picks: the heartbeat says which those are.
+    @Test func heartbeatNamesTheXcodesJobsNeed() async throws {
+        let setup = try await Setup()
+        let xcode = try #require(try setup.fixture.server.builds.workflow(buildID: setup.build.id)?.xcode)
+        try await setup.fixture.test { client in
+            try await client.execute(
+                uri: "/api/v1/worker/heartbeat", method: .post, headers: setup.auth,
+                body: try body(HeartbeatRequest(report: Self.report(running: [])))
+            ) { response throws in
+                #expect(try decode(HeartbeatResponse.self, response).xcodesNeeded == [xcode])
+            }
+        }
+    }
+
     func heartbeat(_ client: some TestClientProtocol, _ headers: HTTPFields, running: [UUID]) async throws -> [UUID] {
         try await client.execute(
             uri: "/api/v1/worker/heartbeat", method: .post, headers: headers,

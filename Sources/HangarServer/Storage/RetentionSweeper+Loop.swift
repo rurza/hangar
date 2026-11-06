@@ -10,8 +10,7 @@ extension RetentionSweeper {
         let logger = Logger(label: "app.hangar.server.retention")
         while !Task.isCancelled {
             do {
-                let removed = try sweep(now: now())
-                if !removed.isEmpty { logger.info("removed \(removed.count) expired job directories") }
+                try sweep(now: now())
             } catch {
                 logger.error("retention sweep failed: \(error)")
             }

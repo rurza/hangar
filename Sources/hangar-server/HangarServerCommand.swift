@@ -40,8 +40,12 @@ struct HangarServerCommand: AsyncParsableCommand {
         var port: Int?
         @Option(help: "Directory for hangar.sqlite, master.key and jobs/. Default: ~/Library/Application Support/Hangar/server.")
         var dataDir: String?
-        @Option(help: "Delete job logs and artifacts of builds finished longer ago than this.")
-        var retentionDays: Int = 30
+        @Option(help: "Keep the logs and artifacts of every build that finished within this many days.")
+        var retentionDays: Int = RetentionPolicy.standard.keepDays
+        @Option(help: "Keep the logs and artifacts of each app's latest builds, however old.")
+        var keepBuildsPerApp: Int = RetentionPolicy.standard.keepBuildsPerApp
+        @Option(help: "Keep all builds' logs and artifacts under this many GB together; the oldest go first.")
+        var maxBuildFilesGb: Double = RetentionPolicy.standard.maxGB
         @Option(help: "Machines with less free disk get no new jobs.")
         var minFreeDiskGb: Double = 20
         @Option(
@@ -84,7 +88,9 @@ struct HangarServerCommand: AsyncParsableCommand {
             let localNames = await HostPolicy.detectLocalNames(runner: LiveProcessRunner())
             let configuration = ServerConfiguration(
                 host: resolvedHost!, port: resolvedPort, dataDirectory: resolvedDirectory,
-                retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb, allowedHosts: localNames + extraHosts,
+                retention: RetentionPolicy(
+                    keepBuildsPerApp: max(keepBuildsPerApp, 1), keepDays: max(retentionDays, 0), maxGB: max(maxBuildFilesGb, 1)),
+                minFreeDiskGB: minFreeDiskGb, allowedHosts: localNames + extraHosts,
                 workerBinaryPath: WorkerBinary.locate())
             let server = try HangarServerApp(
                 configuration: configuration, database: database, tailnet: TailscaleCLI(),

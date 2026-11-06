@@ -63,6 +63,16 @@ What it needs: Apple silicon, an up-to-date worker (the install scripts sign it 
 
 To keep a Mac free for your own work (the Mac that runs the server, say), turn builds off there: **Pause builds** on its card on the Machines page, or `hangar machines pause <name>`. The scheduler then gives it no new jobs; a build it is running finishes. Nothing is uninstalled and no administrator is needed: the worker keeps reporting, so the Mac stays online on the Machines page, and it still updates itself. Builds that only that Mac could run wait in the queue ("builds paused"), and the Deploy sheet says so before you deploy. **Resume builds** (or `hangar machines resume <name>`) turns it back on, and waiting builds start at once. A new Mac meant for VM builds is enrolled paused until they are ready (see [Add a new Mac](#add-a-new-mac)).
 
+## Disk space
+
+The worker cleans up after itself; nothing needs removing by hand. When it starts and every hour it removes:
+
+- on a VM Mac: job clones and unfinished images no process is still assembling, slots beyond `vm.slots`, a job image whose Xcode is no longer on the Mac once a newer image exists (never the newest, and never one a queued or running job's `xcode:` picks), a base image once a newer base exists, and the host workspaces left from building on the host. The newest base stays: a job image is its APFS clone, so it costs only the blocks the image build changed (about 2 GB), while getting it again is a 25 GB download;
+- on a host-build Mac: an app's workspace (checkout and package caches) once the app has not been built there for 14 days. Its next build clones again;
+- everywhere: Hangar's own folders in the temporary directory (`hangar-*`) once nothing in them changed for a day, and job `TMPDIR`s of jobs that are not running.
+
+Each removal stays inside the Hangar folder it belongs to, and each sweep that removes something logs one line saying what went and how much it freed. The Mac's card shows what Hangar uses there ("Hangar uses 51 GB"), counted the way APFS stores it: an image, its slots and the job clones share most of their blocks, which `du` counts once per file (136 GB for the same folder).
+
 ## Where builds happen
 
 Checkouts, DerivedData, job folders and each job's `TMPDIR` go to the worker's work directory, which never has a space in its path: projects written for Xcode Cloud (`/Volumes/workspace/repository`) often use `$CI_PRIMARY_REPOSITORY_PATH` unquoted. For the `hangar` user it is `/Users/hangar/.hangar/worker` (mode 0700, inside the 0700 home), named in its `config.json`. For a worker installed as another user it is by default `~/.hangar/worker` for the usual configuration under `~/Library/Application Support/Hangar/worker` (the data directory itself when its path has no spaces). Set another with `hangar-worker setup --work-dir <path>` or `"workDirectory"` in `config.json`; for `hangar`, keep it inside `/Users/hangar`. The first time a worker starts with a new work directory it moves the cached workspaces there (a rename, instant on the same volume), so the next build fetches instead of cloning; Xcode rebuilds what it keyed to the old path once.
