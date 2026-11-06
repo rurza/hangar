@@ -56,6 +56,17 @@ private struct FixedSource: KnownNumberSource {
         await clock.advance(by: .seconds(seconds))
     }
 
+    /// Ticks `loop` every 2 s on the wall clock for `seconds`, as the running server does.
+    func tickThrough(seconds: Int, _ loop: SchedulerLoop? = nil) async throws {
+        var left = seconds
+        while left > 0 {
+            let step = min(2, left)
+            await advance(seconds: step)
+            try await (loop ?? self.loop).tick()
+            left -= step
+        }
+    }
+
     func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil) throws {
         try machines.updateReport(
             id: machine.id,
@@ -168,12 +179,10 @@ private struct FixedSource: KnownNumberSource {
         try builds.setJobStatus(id: jobID, status: .running, at: now)
         _ = await drain(stream)
 
-        await advance(seconds: 100)
-        try await loop.tick()
+        try await tickThrough(seconds: 120)
         #expect(try builds.job(id: jobID)?.status == .running)
 
-        await advance(seconds: 21)
-        try await loop.tick()
+        try await tickThrough(seconds: 1)
         let failed = try #require(try builds.job(id: jobID))
         #expect(failed.status == .failed)
         #expect(failed.failureReason == "worker lost: MacBook Pro stopped reporting")
@@ -196,11 +205,40 @@ private struct FixedSource: KnownNumberSource {
             clock: clock, now: { [current] in current.date })
         let (_, jobID) = try await deploy()
         try await loop.tick()
-        await advance(seconds: 61)
-        try await loop.tick()
+        try await tickThrough(seconds: 61, loop)
         let job = try #require(try builds.job(id: jobID))
         #expect(job.status == .failed)
         #expect(job.failureReason == "worker lost: MacBook Pro stopped reporting")
+    }
+
+    /// Workers back off to a heartbeat a minute while the server is away: after a restart, or a sleep, a machine last
+    /// heard of long ago gets a whole timeout to report again before its jobs fail.
+    @Test func aRestartOrASleepGivesMachinesATimeoutToReportAgain() async throws {
+        let (_, jobID) = try await deploy()
+        try await loop.tick()
+        try builds.setJobStatus(id: jobID, status: .running, at: now)
+
+        // The server was down for five minutes: a new loop's first tick sees a report 300 s old.
+        await advance(seconds: 300)
+        let restarted = SchedulerLoop(
+            builds: builds, machines: machines, events: events, config: SchedulerConfig(), clock: clock,
+            now: { [current] in current.date })
+        try await restarted.tick()
+        #expect(try builds.job(id: jobID)?.status == .running)
+        try await tickThrough(seconds: 60, restarted)
+        try report(macBook)
+
+        // Asleep for ten minutes: the first tick after waking is late, and the machine again gets its timeout.
+        await advance(seconds: 600)
+        try await restarted.tick()
+        try await tickThrough(seconds: 120, restarted)
+        #expect(try builds.job(id: jobID)?.status == .running)
+
+        // Still silent once the server has listened for longer than the timeout: lost.
+        try await tickThrough(seconds: 2, restarted)
+        let lost = try #require(try builds.job(id: jobID))
+        #expect(lost.status == .failed)
+        #expect(lost.failureReason == "worker lost: MacBook Pro stopped reporting")
     }
 
     @Test func requeuesAssignedJobNotStartedWithin60s() async throws {

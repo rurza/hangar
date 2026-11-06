@@ -9,15 +9,19 @@ public struct SchedulerConfig: Sendable {
     /// An assigned job not started this long goes back to the queue.
     public var assignmentTimeout: TimeInterval
     public var tickInterval: Duration
+    /// Ticks further apart than this (or a clock that went back) mean the server was not running meanwhile: stopped,
+    /// upgrading or asleep. Machines then get a whole `machineTimeout` to report again before they count as lost.
+    public var resumeGap: TimeInterval
 
     public init(
         minFreeDiskGB: Double = 20, machineTimeout: TimeInterval = 120, assignmentTimeout: TimeInterval = 60,
-        tickInterval: Duration = .seconds(2)
+        tickInterval: Duration = .seconds(2), resumeGap: TimeInterval = 30
     ) {
         self.minFreeDiskGB = minFreeDiskGB
         self.machineTimeout = machineTimeout
         self.assignmentTimeout = assignmentTimeout
         self.tickInterval = tickInterval
+        self.resumeGap = resumeGap
     }
 }
 
@@ -37,6 +41,9 @@ public actor SchedulerLoop {
     private let logger = Logger(label: "app.hangar.server.scheduler")
     private let wakes: AsyncStream<Void>
     private let wake: AsyncStream<Void>.Continuation
+    private var lastTickAt: Date?
+    /// Since when the server has been ticking without a gap: a machine silent only since then is not lost yet.
+    private var listeningSince: Date?
 
     public init(
         builds: BuildRepository, machines: MachineRepository, events: EventBus, config: SchedulerConfig = .init(),
@@ -76,6 +83,9 @@ public actor SchedulerLoop {
     /// update still guards against any other writer.
     public func tick() async throws {
         let now = now()
+        let resumed = lastTickAt.map { now < $0 || now.timeIntervalSince($0) > config.resumeGap } ?? true
+        if resumed { listeningSince = now }
+        lastTickAt = now
         let all = try machines.all()
         let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
         // Worker loss before requeue: a lost machine's assigned job fails rather than going back to the queue.
@@ -88,11 +98,17 @@ public actor SchedulerLoop {
         do { try await tick() } catch { logger.error("scheduler tick failed: \(error)") }
     }
 
+    /// Silent for `machineTimeout` while the server listened: workers back off to a heartbeat a minute while it is
+    /// away, so a restart or a sleep longer than the timeout must not fail every build in flight.
     private func failJobsOfLostMachines(_ machines: [UUID: Machine], now: Date) throws {
         for job in try builds.jobs(status: [.assigned, .running]) {
             guard let machineID = job.machineID else { continue }
             let machine = machines[machineID]
-            if let seen = machine?.lastSeenAt, now.timeIntervalSince(seen) <= config.machineTimeout { continue }
+            if let machine, let listeningSince,
+                now.timeIntervalSince(max(machine.lastSeenAt ?? .distantPast, listeningSince)) <= config.machineTimeout
+            {
+                continue
+            }
             let name = machine?.name ?? machineID.uuidString
             // Conditional: a job that finished meanwhile keeps its result.
             guard try builds.transitionJob(
