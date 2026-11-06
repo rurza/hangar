@@ -153,6 +153,15 @@ struct ImmediateClock: Clock {
         var jobDirectories: [String] { (try? FileManager.default.contentsOfDirectory(atPath: fixture.storage.jobs)) ?? [] }
     }
 
+    static let key = AppStoreConnectKey(keyID: "ADMIN1", issuerID: "issuer", privateKey: "-----BEGIN PRIVATE KEY-----\nADMIN\n-----END PRIVATE KEY-----")
+
+    /// An iOS archive, as the server assigns it to a VM Mac: with its App Store Connect key, for the host's export.
+    static func archive() -> JobAssignment {
+        var assignment = WorkerLoopTests.assignment()
+        assignment.appStoreConnectKey = key
+        return assignment
+    }
+
     /// Answers the bundle with a result line, as `run-job` does.
     static func succeeding(_ session: FakeGuestSession, _ line: String) {
         guard line.hasPrefix("{") else { return }
@@ -164,7 +173,7 @@ struct ImmediateClock: Clock {
     @Test func aJobRunsInItsVMWithAOneJobTokenAndTheCloneIsGoneAfterwards() async throws {
         let setup = try Setup(script: Self.succeeding)
         defer { setup.fixture.cleanUp() }
-        let assignment = WorkerLoopTests.assignment()
+        let assignment = Self.archive()
         let result = await setup.jobRunner().run(assignment, cancelled: { false }, stopReason: { nil })
 
         #expect(result == JobResult(status: .succeeded, outputs: ["k": "v"]))
@@ -185,7 +194,14 @@ struct ImmediateClock: Clock {
         let bundleLine = try #require(setup.launcher.sessions.first?.sent.first)
         let bundle = try JSONCoding.decoder.decode(GuestJobBundle.self, from: Data(bundleLine.utf8))
         #expect(bundle.token == "hgj_job-token")
-        #expect(bundle.assignment == assignment)
+        // The guest's copy of the assignment never has the server's App Store Connect key.
+        var guestCopy = assignment
+        guestCopy.appStoreConnectKey = nil
+        #expect(bundle.assignment == guestCopy)
+        #expect(!bundleLine.contains("ADMIN"))
+        #expect(bundle.signing?.profiles.map(\.bundleID) == ["com.acme.demo"])
+        #expect(bundle.signing?.developmentKey == nil)
+        #expect(setup.connection.provisioningRequests == [JobProvisioningRequest(useServerIdentity: false)])
         #expect(bundle.serverURL == URL(string: "http://127.0.0.1:8787")!)
         #expect(bundle.identity == GuestIdentity(p12: Data("p12".utf8), password: "pw"))
         #expect(bundle.vmNote?.hasPrefix("VM: restored slot 0's saved state") == true)
@@ -207,7 +223,7 @@ struct ImmediateClock: Clock {
             }
         }
         defer { setup.fixture.cleanUp() }
-        let result = await setup.jobRunner().run(WorkerLoopTests.assignment(), cancelled: { true }, stopReason: { nil })
+        let result = await setup.jobRunner().run(Self.archive(), cancelled: { true }, stopReason: { nil })
         #expect(result.status == .cancelled)
         #expect(setup.launcher.sessions.first?.sent.last == "cancel")
         #expect(setup.jobDirectories.isEmpty)
@@ -217,7 +233,7 @@ struct ImmediateClock: Clock {
         let setup = try Setup { _, _ in }
         defer { setup.fixture.cleanUp() }
         let result = await setup.jobRunner(grace: .milliseconds(100)).run(
-            WorkerLoopTests.assignment(), cancelled: { true }, stopReason: { "hangar-worker on test-mac was stopped (SIGTERM)" })
+            Self.archive(), cancelled: { true }, stopReason: { "hangar-worker on test-mac was stopped (SIGTERM)" })
         #expect(result == JobResult(status: .cancelled, failureReason: "hangar-worker on test-mac was stopped (SIGTERM)"))
         #expect(setup.connection.base.result == result)
         #expect(setup.launcher.sessions.first?.wasTerminated == true)
@@ -234,7 +250,7 @@ struct ImmediateClock: Clock {
         }
         defer { setup.fixture.cleanUp() }
         let result = await setup.jobRunner(timeout: .milliseconds(50)).run(
-            WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+            Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.status == .cancelled)
         #expect(result.failureReason?.contains("VM job timeout on test-mac") == true)
     }
@@ -245,7 +261,7 @@ struct ImmediateClock: Clock {
         }
         defer { setup.fixture.cleanUp() }
         let engine = setup.engine
-        let task = Task { await setup.jobRunner().run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil }) }
+        let task = Task { await setup.jobRunner().run(Self.archive(), cancelled: { false }, stopReason: { nil }) }
         while setup.launcher.sessions.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
         engine.machines.first?.stopOnItsOwn(.error("Internal Virtualization error"))
         let result = await task.value
@@ -258,7 +274,7 @@ struct ImmediateClock: Clock {
     @Test func aGuestThatExitsWithoutAResultFailsTheJob() async throws {
         let setup = try Setup { session, line in if line.hasPrefix("{") { session.end(255) } }
         defer { setup.fixture.cleanUp() }
-        let result = await setup.jobRunner().run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+        let result = await setup.jobRunner().run(Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.failureReason == "the build VM stopped responding (SSH dropped)")
     }
 
@@ -274,7 +290,7 @@ struct ImmediateClock: Clock {
             launcher: launcher, connection: setup.connection, serverURL: URL(string: "http://mini:8787")!,
             identity: setup.identity, slots: setup.pool, workerBinary: "/bin/true", sessions: setup.launcher,
             cancelGrace: .seconds(1))
-        let result = await quick.run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+        let result = await quick.run(Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.status == .failed)
         #expect(result.failureReason?.hasPrefix("could not start the build VM on test-mac: the VM did not answer SSH") == true)
         #expect(setup.connection.base.result == result)
@@ -288,10 +304,11 @@ struct ImmediateClock: Clock {
     /// the assignment; a worker's own identity overrides it.
     @Test func theServersIdentityReachesTheGuestUnlessTheWorkerHasItsOwn() async throws {
         let server = JobSigningIdentity(p12: Data("server-p12".utf8), password: "server-pw")
-        var assignment = WorkerLoopTests.assignment()
+        var assignment = Self.archive()
         assignment.signingIdentity = server
         var expected = assignment
         expected.signingIdentity = nil
+        expected.appStoreConnectKey = nil
 
         let plain = try Setup(identity: false, script: Self.succeeding)
         defer { plain.fixture.cleanUp() }
@@ -314,17 +331,17 @@ struct ImmediateClock: Clock {
         let setup = try Setup(identity: false, script: Self.succeeding)
         defer { setup.fixture.cleanUp() }
         var result = await setup.jobRunner(readiness: { "the VM network filter is not installed" }).run(
-            WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+            Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.failureReason == "VM builds are not ready on test-mac: the VM network filter is not installed")
 
-        var assignment = WorkerLoopTests.assignment()
+        var assignment = Self.archive()
         assignment.workflow.xcode = "28.0"
         result = await setup.jobRunner().run(assignment, cancelled: { false }, stopReason: { nil })
         #expect(result.failureReason?.contains("no VM image with Xcode 28.0") == true)
 
         // An archive needs a development identity (the server's, or this worker's own): without one a fresh VM would
         // create a certificate.
-        result = await setup.jobRunner().run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+        result = await setup.jobRunner().run(Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.failureReason?.contains("Settings › Signing") == true)
         #expect(setup.connection.issued.isEmpty)
         #expect(setup.engine.machines.isEmpty)
@@ -341,7 +358,7 @@ struct ImmediateClock: Clock {
             launcher: launcher, connection: setup.connection, serverURL: URL(string: "http://mini:8787")!,
             identity: setup.identity, slots: setup.pool, workerBinary: "/bin/true", sessions: setup.launcher,
             cancelGrace: .seconds(1))
-        let result = await jobRunner.run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+        let result = await jobRunner.run(Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.status == .succeeded)
         #expect(setup.engine.machines.count == 2)
         #expect(setup.engine.machines[1].calls.contains { if case .save = $0 { true } else { false } })
@@ -360,7 +377,7 @@ struct ImmediateClock: Clock {
             identity: setup.identity, slots: setup.pool, workerBinary: "/bin/true", sessions: setup.launcher,
             cancelGrace: .seconds(1))
         jobRunner.roomRetry = .milliseconds(10)
-        let result = await jobRunner.run(WorkerLoopTests.assignment(), cancelled: { false }, stopReason: { nil })
+        let result = await jobRunner.run(Self.archive(), cancelled: { false }, stopReason: { nil })
         #expect(result.status == .succeeded)
         #expect(engine.machines.prefix(3).map { $0.calls.first } == [.start, .start, .start])
     }

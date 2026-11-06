@@ -50,15 +50,21 @@ public final class JobLog: Sendable {
     private let connection: any ServerConnection
     private let clock: any Clock<Duration>
     private let fullLogPath: String?
+    /// Appends to an existing full log instead of starting one: a VM archive's host goes on with its guest's.
+    private let continuesFullLog: Bool
     private let state = Mutex(State())
     private let logger = Logger(label: "app.hangar.worker.job")
 
+    /// `continuing`: the full log at `fullLogPath` was begun elsewhere (a VM job's guest) and is appended to;
+    /// `alreadyAbridged`: the server's log already left something out of it.
     public init(
         jobID: UUID, masker: SecretMasker, connection: any ServerConnection, clock: any Clock<Duration>,
-        fullLogPath: String? = nil
+        fullLogPath: String? = nil, continuing: Bool = false, alreadyAbridged: Bool = false
     ) {
         self.jobID = jobID
         self.fullLogPath = fullLogPath
+        self.continuesFullLog = continuing
+        if alreadyAbridged { state.withLock { $0.abridged = 1 } }
         self.masker = masker
         self.connection = connection
         self.clock = clock
@@ -140,6 +146,11 @@ public final class JobLog: Sendable {
     private func writeFullLog(_ state: inout State, step: String, line: String, at time: Date) {
         guard let fullLogPath, !state.fullLogFailed else { return }
         do {
+            if state.fullLog == nil, continuesFullLog, FileManager.default.fileExists(atPath: fullLogPath) {
+                let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: fullLogPath))
+                try handle.seekToEnd()
+                state.fullLog = handle
+            }
             if state.fullLog == nil {
                 let url = URL(fileURLWithPath: fullLogPath)
                 try FileManager.default.createDirectory(
@@ -158,6 +169,9 @@ public final class JobLog: Sendable {
             logger.warning("could not write the full log: \(error)", metadata: ["job": "\(jobID.uuidString)"])
         }
     }
+
+    /// Whether the server's log left something out so far (a condensed xcodebuild step, a cut line).
+    public var isAbridged: Bool { state.withLock { $0.abridged > 0 } }
 
     /// Copies the full log to `destination` and returns true when the server's log left something out (a condensed
     /// xcodebuild step, a cut line) and the copy is complete; false, copying nothing, otherwise.

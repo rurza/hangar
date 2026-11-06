@@ -1,4 +1,5 @@
 import Foundation
+import HangarAppStoreConnect
 import HangarCore
 import Logging
 import Synchronization
@@ -10,6 +11,10 @@ import Synchronization
 /// The guest runs the existing pipeline (`hangar-worker vm run-job`) and reports the job's start, steps, log,
 /// artifacts and result itself. The host reports only a failure the guest could not: a VM that did not come up, a
 /// guest that vanished, a timeout it did not answer.
+///
+/// An archive is split (`JobRunner+VM`): the guest archives with the development profiles the server provides and
+/// hands off after `post-xcodebuild`; the host copies the archive out, deletes the VM, and runs the export and the
+/// post-actions itself with the server's App Store Connect key, which never enters the guest.
 public struct VMJobRunner: JobRunning {
     /// How long a cancelled guest gets to report its result before its VM is stopped anyway.
     public var cancelGrace: Duration = .seconds(60)
@@ -19,6 +24,8 @@ public struct VMJobRunner: JobRunning {
     public var slotWait: Duration = .seconds(900)
     /// How often a job whose VM could not start because two VMs already run tries again.
     public var roomRetry: Duration = .seconds(30)
+    /// Finds this Mac's Xcode for a handed-off archive's export; nil for the default (`/Applications`).
+    var hostLocator: XcodeLocator?
     /// The guest's end of the relay.
     public static let guestServerPort = 8787
     static let guestBinary = ".hangar/bin/hangar-worker"
@@ -34,13 +41,21 @@ public struct VMJobRunner: JobRunning {
     private let serverURL: URL
     /// Nil when VM jobs may run; checked again before every job.
     private let readiness: @Sendable () -> String?
+    /// The host's CI keychain, unlocked for an archive's export on this Mac; nil in a login session.
+    private let hostKeychain: CIKeychain?
+    private let appStoreConnectFactory: JobRunner.AppStoreConnectFactory
     private let logger = Logger(label: "app.hangar.worker.vm")
 
     public init(
         host: VMHost, connection: any ServerConnection & JobTokenIssuing, serverURL: URL, identity: VMIdentityStore,
         slots: VMSlotPool, workerBinary: String, sessions: any GuestSessionLaunching = LiveGuestSessionLauncher(),
-        readiness: @escaping @Sendable () -> String? = { nil }
+        readiness: @escaping @Sendable () -> String? = { nil }, hostKeychain: CIKeychain? = nil,
+        appStoreConnectFactory: @escaping JobRunner.AppStoreConnectFactory = {
+            LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
+        }
     ) {
+        self.hostKeychain = hostKeychain
+        self.appStoreConnectFactory = appStoreConnectFactory
         self.host = host
         self.launcher = VMLauncher(host: host)
         self.connection = connection
@@ -56,8 +71,13 @@ public struct VMJobRunner: JobRunning {
     init(
         launcher: VMLauncher, connection: any ServerConnection & JobTokenIssuing, serverURL: URL, identity: VMIdentityStore,
         slots: VMSlotPool, workerBinary: String, sessions: any GuestSessionLaunching,
-        readiness: @escaping @Sendable () -> String? = { nil }, cancelGrace: Duration
+        readiness: @escaping @Sendable () -> String? = { nil }, cancelGrace: Duration,
+        appStoreConnectFactory: @escaping JobRunner.AppStoreConnectFactory = {
+            LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
+        }
     ) {
+        self.hostKeychain = nil
+        self.appStoreConnectFactory = appStoreConnectFactory
         self.host = launcher.host
         self.launcher = launcher
         self.connection = connection
@@ -90,12 +110,35 @@ public struct VMJobRunner: JobRunning {
         var assignment = assignment
         let serverIdentity = assignment.signingIdentity.map { GuestIdentity(p12: $0.p12, password: $0.password) }
         assignment.signingIdentity = nil
-        let guestIdentity: GuestIdentity?
-        do { guestIdentity = try identity.load() ?? serverIdentity } catch {
+        let ownIdentity: GuestIdentity?
+        do { ownIdentity = try identity.load() } catch {
             return await fail(jobID, "cannot read the VM signing identity on \(host.machineName): \(error)")
         }
+        let guestIdentity = ownIdentity ?? serverIdentity
         if assignment.job.action.kind == .archive, guestIdentity == nil {
             return await fail(jobID, "Hangar sent no signing certificate for this VM archive: create or import one in Settings › Signing")
+        }
+        // The server's App Store Connect key stays on this host, for the export; the guest's copy has none. The guest
+        // signs with the server's development profiles, or the development key only when one is missing.
+        let hostAssignment = assignment
+        assignment.appStoreConnectKey = nil
+        var signing: JobRunner.GuestSigning?
+        if assignment.job.action.kind == .archive {
+            guard hostAssignment.appStoreConnectKey != nil else {
+                return await fail(jobID, "Hangar sent no App Store Connect key for this archive's export: set it in Settings › App Store Connect")
+            }
+            do {
+                let provisioning = try await connection.provisioning(
+                    jobID: jobID, JobProvisioningRequest(useServerIdentity: ownIdentity == nil))
+                if let problem = Self.signingProblem(provisioning, platform: assignment.job.action.platform) {
+                    return await fail(jobID, problem)
+                }
+                signing = JobRunner.GuestSigning(
+                    profiles: provisioning.profiles, developmentKey: provisioning.developmentKey,
+                    missing: provisioning.missing, notes: provisioning.notes)
+            } catch {
+                return await fail(jobID, "could not ask Hangar for this archive's development profiles: \(error)")
+            }
         }
         // A slot can be held for a minute while its state is saved again; the job waits for it.
         var acquired = slots.acquire()
@@ -130,9 +173,17 @@ public struct VMJobRunner: JobRunning {
             stale = vm.slotIsStale
             logger.info("job VM up at \(vm.address): \(vm.note)", metadata: metadata)
             try await handOver(to: vm, image: image, slot: slot, user: user)
-            outcome = await runGuest(
+            let ran = await runGuest(
                 assignment, vm: vm, image: image, user: user, relayPort: port, token: token!, identity: guestIdentity,
-                cancelled: cancelled, stopReason: stopReason)
+                signing: signing, cancelled: cancelled, stopReason: stopReason)
+            if case .handedOff(let handOff) = ran {
+                // Copied out while the VM still runs; nothing of the guest's runs on this Mac.
+                outcome = await collect(
+                    handOff, from: vm, image: image, user: user, scheme: assignment.job.action.scheme,
+                    projectDirectory: assignment.workflow.projectDirectory, into: hostRunner(job).layout(for: hostAssignment))
+            } else {
+                outcome = ran
+            }
         } catch VMError.tooManyVMs {
             outcome = .hostFailure("\(host.machineName) already runs two macOS VMs (perhaps one of its owner's); the job could not get a slot")
         } catch {
@@ -146,14 +197,18 @@ public struct VMJobRunner: JobRunning {
                 logger.warning("could not revoke the job's token (it expires with the job): \(error)", metadata: metadata)
             }
         }
-        try? SafeRemoval.removeItem(atPath: job.path, within: host.storage.jobs)
-
         let result: JobResult
         switch outcome {
         case .reported(let reported): result = reported
         case .hostFailure(let reason): result = await fail(jobID, reason)
         case .cancelled(let reason): result = await finish(jobID, JobResult(status: .cancelled, failureReason: reason))
+        case .handedOff: result = await fail(jobID, "the build VM handed off its archive, but it was not copied out")
+        case .exportOnHost(let abridged):
+            logger.info("exporting the archive on this Mac", metadata: metadata)
+            result = await hostRunner(job).runHostExport(
+                hostAssignment, guestLogAbridged: abridged, cancelled: cancelled, stopReason: stopReason)
         }
+        try? SafeRemoval.removeItem(atPath: job.path, within: host.storage.jobs)
         if stale, stopReason() == nil {
             logger.info("saving slot \(slot)'s state again", metadata: metadata)
             do { try await launcher.prepareSlot(image: image, slot: slot) } catch {
@@ -184,6 +239,10 @@ public struct VMJobRunner: JobRunning {
     enum Outcome {
         /// The guest reported this result to the server itself.
         case reported(JobResult)
+        /// The guest archived and handed off; its files are still in the VM.
+        case handedOff(ArchiveHandOff)
+        /// The guest's files are on this Mac: the host exports and reports.
+        case exportOnHost(guestLogAbridged: Bool)
         /// The host reports this failure.
         case hostFailure(String)
         /// Cancelled, and the guest did not report it in time.
@@ -214,6 +273,54 @@ public struct VMJobRunner: JobRunning {
         try await ssh.copy(file: workerBinary, user: user, host: vm.address, to: Self.guestBinary)
     }
 
+    /// Runs a handed-off archive's export, post-actions, artifact upload and cleanup on this Mac, in the job's own
+    /// directory (deleted with it), with the machine's connection.
+    func hostRunner(_ job: VMJobDirectory) -> JobRunner {
+        JobRunner(
+            connection: connection, runner: host.runner, locator: hostLocator ?? XcodeLocator(runner: host.runner),
+            dataDirectory: job.path + "/host", temporaryRoot: job.path + "/host-tmp", machineName: host.machineName,
+            clock: host.clock, appStoreConnectFactory: appStoreConnectFactory, keychain: hostKeychain)
+    }
+
+    /// Why an archive cannot start: a profile is missing and there is no development key. A macOS app that needs no
+    /// profile signs with the certificate alone, so for macOS a missing one is only logged.
+    static func signingProblem(_ provisioning: JobProvisioning, platform: Platform) -> String? {
+        guard !provisioning.missing.isEmpty, provisioning.developmentKey == nil, platform != .macOS else { return nil }
+        let reasons = provisioning.missing.map { "\($0.bundleID): \($0.reason)" }.joined(separator: "; ")
+        return "Hangar has no development profile for this archive (\(reasons)), and no development key to let Xcode make one: fix that, or add a development key in Settings › App Store Connect"
+    }
+
+    /// Copies the guest's archive, result bundle, TestFlight notes and full log to `layout`. The paths come from the
+    /// guest, so each must look like what it says it is before anything is copied.
+    func collect(
+        _ handOff: ArchiveHandOff, from vm: RunningVM, image: VMImage, user: String, scheme: String,
+        projectDirectory: String, into layout: WorkspaceLayout
+    ) async -> Outcome {
+        func plausible(_ path: String, _ suffix: String) -> Bool {
+            path.hasPrefix("/") && path.hasSuffix(suffix) && !path.split(separator: "/").contains("..")
+        }
+        guard plausible(handOff.archivePath, ".xcarchive"), plausible(handOff.resultBundlePath, ".xcresult"),
+            plausible(handOff.testFlightDirectory, "/TestFlight"), plausible(handOff.fullLogPath, ".txt")
+        else { return .hostFailure("the build VM handed off paths that are not an archive's") }
+        let ssh = host.ssh(for: image.directory)
+        let testFlight = layout.repository + (projectDirectory == "." ? "" : "/" + projectDirectory) + "/TestFlight"
+        do {
+            try FileManager.default.createDirectory(
+                atPath: layout.jobDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            guard try await ssh.fetch(user: user, host: vm.address, remotePath: handOff.archivePath, to: layout.archive(scheme: scheme))
+            else { return .hostFailure("the build VM handed off an archive it does not have") }
+            for (remote, local) in [
+                (handOff.resultBundlePath, layout.resultBundle), (handOff.testFlightDirectory, testFlight),
+                (handOff.fullLogPath, layout.fullLog),
+            ] {
+                _ = try await ssh.fetch(user: user, host: vm.address, remotePath: remote, to: local)
+            }
+        } catch {
+            return .hostFailure("could not copy the archive out of the build VM on \(host.machineName): \(error)")
+        }
+        return .exportOnHost(guestLogAbridged: handOff.fullLogAbridged)
+    }
+
     /// "rurzobuk-max-vm0": a host name, so no spaces.
     static func guestName(machine: String, slot: Int) -> String {
         let base = machine.map { $0.isLetter || $0.isNumber || $0 == "-" ? $0 : "-" }
@@ -224,7 +331,8 @@ public struct VMJobRunner: JobRunning {
     /// and the VM stopping.
     func runGuest(
         _ assignment: JobAssignment, vm: RunningVM, image: VMImage, user: String, relayPort: UInt16, token: String,
-        identity: GuestIdentity?, cancelled: @escaping @Sendable () -> Bool, stopReason: @escaping @Sendable () -> String?
+        identity: GuestIdentity?, signing: JobRunner.GuestSigning? = nil, cancelled: @escaping @Sendable () -> Bool,
+        stopReason: @escaping @Sendable () -> String?
     ) async -> Outcome {
         let jobID = assignment.job.id
         let ssh = host.ssh(for: image.directory)
@@ -232,11 +340,14 @@ public struct VMJobRunner: JobRunning {
             user: user, host: vm.address, "./\(Self.guestBinary) vm run-job",
             extraOptions: ["-R", "127.0.0.1:\(Self.guestServerPort):127.0.0.1:\(relayPort)"])
         let reported = Mutex<JobResult?>(nil)
+        let handedOff = Mutex<ArchiveHandOff?>(nil)
         let session: any GuestSession
         do {
             session = try sessions.launch(command) { [logger] line in
                 if let result = GuestJobRunner.parseResult(line) {
                     reported.withLock { $0 = result }
+                } else if let handOff = GuestJobRunner.parseHandOff(line) {
+                    handedOff.withLock { $0 = handOff }
                 } else {
                     logger.info("guest: \(line)", metadata: ["job": "\(jobID)"])
                 }
@@ -247,7 +358,7 @@ public struct VMJobRunner: JobRunning {
         let bundle = GuestJobBundle(
             assignment: assignment, token: token,
             serverURL: URL(string: "http://127.0.0.1:\(Self.guestServerPort)")!, identity: identity,
-            vmNote: "VM: \(vm.note) on \(host.machineName)", machineName: "\(host.machineName) (VM)")
+            vmNote: "VM: \(vm.note) on \(host.machineName)", machineName: "\(host.machineName) (VM)", signing: signing)
         guard let line = try? JSONCoding.encoder.encode(bundle) else { return .hostFailure("could not encode the job for its VM") }
         session.send(SensitiveText(String(decoding: line, as: UTF8.self)))
 
@@ -285,6 +396,11 @@ public struct VMJobRunner: JobRunning {
         watch.cancel()
         let watchReason = await watch.value
         if let result = reported.withLock({ $0 }) { return .reported(result) }
+        // A hand-off the host cancelled meanwhile is not exported.
+        if let handOff = handedOff.withLock({ $0 }) {
+            if watchReason == nil, !cancelled() { return .handedOff(handOff) }
+            return .cancelled(watchReason ?? stopReason())
+        }
         if let stop = stopped.value {
             switch stop {
             case .guestStopped: return .hostFailure("the build VM shut down before the job finished")

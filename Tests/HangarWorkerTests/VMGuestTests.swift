@@ -189,12 +189,16 @@ import Testing
         let bundle = GuestJobBundle(
             assignment: assignment, token: "hgj_t", serverURL: URL(string: "http://127.0.0.1:8787")!, identity: nil,
             vmNote: "VM: restored slot 0's saved state in 4.5 s on mini", machineName: "mini (VM)")
-        let result = await GuestJobRunner(runner: runner, home: home).run(
+        let outcome = await GuestJobRunner(runner: runner, home: home).run(
             bundle, cancelled: { false }, stopReason: { nil },
             connection: { url, token in
                 made.withLock { $0 = (url, token) }
                 return connection
             })
+        guard case .finished(let result) = outcome else {
+            Issue.record("the guest handed off a job that failed at checkout")
+            return
+        }
         #expect(made.withLock { $0?.0 } == URL(string: "http://127.0.0.1:8787")!)
         #expect(made.withLock { $0?.1 } == "hgj_t")
         #expect(result.status == .failed)

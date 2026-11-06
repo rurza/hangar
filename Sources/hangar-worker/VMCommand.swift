@@ -503,9 +503,9 @@ struct VMCommand: AsyncParsableCommand {
             let control = GuestControlReader()
             let bundle: GuestJobBundle
             do { bundle = try control.readBundle() } catch { throw VMCommand.fail("\(error)") }
-            let result = await GuestJobRunner().run(
+            let outcome = await GuestJobRunner().run(
                 bundle, cancelled: { control.isCancelled }, stopReason: { control.stopReason })
-            print(GuestJobRunner.resultLine(result))
+            print(GuestJobRunner.outcomeLine(outcome))
         }
     }
 }

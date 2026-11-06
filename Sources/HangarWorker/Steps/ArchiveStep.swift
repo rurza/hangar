@@ -48,6 +48,16 @@ public struct AppStoreConnectKeyFile: Sendable {
     }
 }
 
+/// How an archive gets its development signing.
+public enum ArchiveSigning: Sendable, Equatable {
+    /// Automatic signing with `-allowProvisioningUpdates`: Xcode fetches or makes the profiles, with the key's
+    /// arguments when there is one (a host Mac, or a VM guest with the development key).
+    case automatic
+    /// Manual signing with installed profiles, chosen per target by an `-xcconfig` (a VM guest with the profiles
+    /// Hangar provides): no Apple account and no key, so no `-allowProvisioningUpdates`.
+    case profiles(xcconfig: String)
+}
+
 public enum ArchiveError: Error, Equatable, CustomStringConvertible {
     case xcodebuildFailed(exitCode: Int32)
     case packageResolutionFailed(exitCode: Int32)
@@ -98,8 +108,12 @@ public struct ArchiveStep: Sendable {
 
     public static func command(
         workflow: Workflow, action: WorkflowAction, repository: String, layout: WorkspaceLayout, developerDir: String,
-        key: ASCKeyArguments?, environment: [String: String]
+        key: ASCKeyArguments?, environment: [String: String], signing: ArchiveSigning = .automatic
     ) -> ProcessCommand {
+        let signingArguments: [String] = switch signing {
+        case .automatic: ["-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration"]
+        case .profiles(let xcconfig): ["-xcconfig", xcconfig]
+        }
         let arguments =
             ["archive"] + container(workflow, repository: repository) + [
                 "-scheme", action.scheme,
@@ -107,10 +121,10 @@ public struct ArchiveStep: Sendable {
                 "-archivePath", layout.archive(scheme: action.scheme),
                 "-derivedDataPath", layout.derivedData,
                 "-resultBundlePath", layout.resultBundle,
-                "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
+            ] + signingArguments + [
                 "-skipMacroValidation", "-skipPackagePluginValidation",
                 "-disableAutomaticPackageResolution",
-            ] + (key?.xcodebuildArguments ?? [])
+            ] + (signing == .automatic ? key?.xcodebuildArguments ?? [] : [])
         var environment = environment
         environment["DEVELOPER_DIR"] = developerDir
         return ProcessCommand(executable: "/usr/bin/xcodebuild", arguments: arguments, environment: environment)
@@ -157,11 +171,12 @@ public struct ArchiveStep: Sendable {
     /// The second half: `xcodebuild archive` itself.
     public func archive(
         workflow: Workflow, action: WorkflowAction, repository: String, layout: WorkspaceLayout, developerDir: String,
-        key: ASCKeyArguments?, environment: [String: String], log: @escaping @Sendable (String) -> Void
+        key: ASCKeyArguments?, environment: [String: String], signing: ArchiveSigning = .automatic,
+        log: @escaping @Sendable (String) -> Void
     ) async throws {
         let command = Self.command(
             workflow: workflow, action: action, repository: repository, layout: layout, developerDir: developerDir,
-            key: key, environment: environment)
+            key: key, environment: environment, signing: signing)
         let outcome = try await runner.run(command, onLine: log)
         guard outcome.exitCode == 0 else { throw ArchiveError.xcodebuildFailed(exitCode: outcome.exitCode) }
     }

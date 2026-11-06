@@ -20,6 +20,9 @@ public protocol ServerConnection: Sendable {
 public protocol JobTokenIssuing: Sendable {
     func issueJobToken(jobID: UUID) async throws -> String
     func revokeJobToken(jobID: UUID) async throws
+    /// What a VM archive's guest signs with: development profiles, or the optional development key when one is
+    /// missing (`POST jobs/{id}/provisioning`, machine token only).
+    func provisioning(jobID: UUID, _ request: JobProvisioningRequest) async throws -> JobProvisioning
 }
 
 public enum ServerConnectionError: Error, Equatable, CustomStringConvertible {
@@ -98,6 +101,11 @@ public struct HTTPServerConnection: ServerConnection, JobTokenIssuing {
 
     public func revokeJobToken(jobID: UUID) async throws {
         _ = try await send("DELETE", "jobs/\(jobID.uuidString)/token")
+    }
+
+    public func provisioning(jobID: UUID, _ request: JobProvisioningRequest) async throws -> JobProvisioning {
+        let (data, _) = try await send("POST", "jobs/\(jobID.uuidString)/provisioning", body: request)
+        return try JSONCoding.decoder.decode(JobProvisioning.self, from: data)
     }
 
     // MARK: - Plumbing

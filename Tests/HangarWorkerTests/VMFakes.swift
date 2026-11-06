@@ -176,6 +176,18 @@ final class FakeTokenConnection: ServerConnection, JobTokenIssuing {
 
     func revokeJobToken(jobID: UUID) async throws { tokens.withLock { $0.revoked.append(jobID) } }
 
+    /// What `provisioning` answers: by default one profile for the app, nothing missing.
+    let provisioningAnswer = Mutex<Result<JobProvisioning, ServerConnectionError>>(.success(JobProvisioning(profiles: [
+        JobProvisioningProfile(bundleID: "com.acme.demo", name: "Hangar Development com.acme.demo", uuid: "1111-AAAA", isMac: false, content: Data("profile".utf8)),
+    ])))
+    private let provisioningAsked = Mutex<[JobProvisioningRequest]>([])
+    var provisioningRequests: [JobProvisioningRequest] { provisioningAsked.withLock { $0 } }
+
+    func provisioning(jobID: UUID, _ request: JobProvisioningRequest) async throws -> JobProvisioning {
+        provisioningAsked.withLock { $0.append(request) }
+        return try provisioningAnswer.withLock { try $0.get() }
+    }
+
     func heartbeat(_ request: HeartbeatRequest) async throws -> HeartbeatResponse { try await base.heartbeat(request) }
     func nextJob(wait: Int) async throws -> JobAssignment? { nil }
     func start(jobID: UUID) async throws { try await base.start(jobID: jobID) }
