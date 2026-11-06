@@ -96,7 +96,12 @@ function vmChecklist(vm) {
   }
   const first = rows.find((row) => row.required && !row.ok && row.command);
   const command = first?.command ?? null;
-  return { ready, command, rows: rows.map((row) => (row.command === command ? { ...row, command: null } : row)) };
+  // The one command fixes every row, so a detail's own "run `…`" would only repeat a second command.
+  const detail = (text) => (command ? text.replace(/: run `[^`]+`$/, '') : text);
+  return {
+    ready, command,
+    rows: rows.map((row) => ({ ...row, detail: detail(row.detail), command: row.command === command ? null : row.command })),
+  };
 }
 
 /**

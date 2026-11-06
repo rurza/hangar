@@ -50,6 +50,8 @@ import Testing
               return [c.ready, c.command, c.rows.map((r) => `${r.id}:${r.ok}:${r.command}`).join(',')].join(' | '); })()
             """)
         #expect(result == "false | sudo w vm setup | settings:true:null,networkFilter:false:null,image:false:null,storage:false:sudo diskutil enableOwnership /Volumes/SSD")
+        // A detail does not repeat a second command when the one at the top fixes it.
+        #expect(try Self.run(json, "vmChecklist(input).rows[1].detail") == "not installed")
     }
 
     @Test func anOlderWorkersProblemIsOneRow() throws {

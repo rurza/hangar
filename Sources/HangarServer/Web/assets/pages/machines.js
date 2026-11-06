@@ -284,7 +284,8 @@ function reportView(machine, jobInfo, signing) {
         h('p', { class: 'card-detail' }, load.detail))),
     report.vm ? vmView(report.vm) : null,
     driftView(xcodeDrift(report)),
-    vmSigningView(vmSigningLine(report.vm, signing)),
+    // Once VM builds are ready; until then the checklist is the one thing to act on.
+    (report.vm?.slots ?? 0) > 0 ? vmSigningView(vmSigningLine(report.vm, signing)) : null,
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),
@@ -612,8 +613,10 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
 
   if (isLocal) {
     api.get('/setup').then((setup) => {
-      if (!setup?.localHostName || hostInput.value !== location.origin) return;
-      hostInput.value = `${location.protocol}//${setup.localHostName}.local${location.port ? `:${location.port}` : ''}`;
+      // The tailnet name reaches the server from any Mac on the tailnet; the Bonjour name only on this LAN.
+      const host = setup?.tailnetName || (setup?.localHostName ? `${setup.localHostName}.local` : null);
+      if (!host || hostInput.value !== location.origin) return;
+      hostInput.value = `${location.protocol}//${host}${location.port ? `:${location.port}` : ''}`;
       renderCommand();
     }, () => {});
   }
@@ -652,9 +655,8 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
           })),
         commandBlock,
         h('p', { class: 'field-hint' },
-          'Run it in Terminal as an administrator. It checks the Mac, installs the worker (as a macOS user named '
-          + 'hangar that runs it from boot; nobody logs in as it), then sets up VM builds, so every build runs in a '
-          + 'fresh macOS VM: about 15 minutes, one password. Until they are ready the Mac takes no builds. No checkout.')),
+          'Run it in Terminal as an administrator. It installs the worker, then sets up VM builds, so each build '
+          + 'runs in a fresh macOS VM: about 15 minutes and one password. The Mac takes no builds until then.')),
       h('div', { class: 'code-field' },
         h('div', { class: 'field-label-row' },
           h('span', { class: 'field-label' }, 'Pairing code'),

@@ -24,7 +24,8 @@ extension HangarServerApp {
                     localHostName: hostName,
                     workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil,
                     viewerIsLocal: local, installedWorker: local ? await setup.installedWorker() : nil,
-                    dedicatedUserRequired: setup.dedicatedUserRequired))
+                    dedicatedUserRequired: setup.dedicatedUserRequired,
+                    tailnetName: configuration.allowedHosts.first { $0.hasSuffix(".ts.net") && !$0.hasPrefix("*") }))
         }
 
         // MARK: App Store Connect
