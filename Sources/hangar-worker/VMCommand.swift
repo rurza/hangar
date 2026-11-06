@@ -11,7 +11,7 @@ struct VMCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "vm", abstract: "Builds in a fresh macOS VM per job: storage, images, slots, network filter, signing.",
         subcommands: [
-            Enable.self, Disable.self, Status.self, Image.self, Slots.self, Network.self, Identity.self, Smoke.self,
+            Setup.self, Enable.self, Disable.self, Status.self, Image.self, Slots.self, Network.self, Identity.self, Smoke.self,
             RunJob.self, RunAssignment.self,
         ])
 
@@ -300,30 +300,11 @@ struct VMCommand: AsyncParsableCommand {
             var dryRun = false
 
             func run() async throws {
-                let filter = VMNetworkFilter.current()
-                let staging = NSTemporaryDirectory() + "hangar-pf-" + UUID().uuidString
-                try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true)
-                defer { try? FileManager.default.removeItem(atPath: staging) }
-                try filter.rules.write(toFile: staging + "/rules", atomically: true, encoding: .utf8)
-                try VMNetworkFilter.loaderScript.write(toFile: staging + "/loader.sh", atomically: true, encoding: .utf8)
-                try VMNetworkFilter.daemonPlist.write(toFile: staging + "/daemon.plist", atomically: true, encoding: .utf8)
-                let commands = filter.installCommands(staging: staging)
-                if dryRun {
-                    VMCommand.say("# \(VMNetworkFilter.rulesPath)\n\(filter.rules)")
-                    VMCommand.say("# \(VMNetworkFilter.loaderPath)\n\(VMNetworkFilter.loaderScript)")
-                    VMCommand.say("# \(VMNetworkFilter.daemonPath)\n\(VMNetworkFilter.daemonPlist)")
-                    VMCommand.say("# commands (each with sudo):")
-                    for command in commands { VMCommand.say("sudo " + command.map(GuestSSH.quote).joined(separator: " ")) }
-                    return
+                if let problem = try await VMCommand.installNetworkFilter(dryRun: dryRun) {
+                    VMCommand.say("warning: \(problem)")
+                } else if !dryRun {
+                    VMCommand.say("the VM network filter is loaded")
                 }
-                try VMCommand.sudo(commands, tolerateFailure: { $0.contains("bootout") })
-                // launchd runs the loader after bootstrap returns; give it a few seconds to write the marker.
-                var problem = filter.problem()
-                for _ in 0..<20 where problem != nil {
-                    try await Task.sleep(for: .milliseconds(250))
-                    problem = filter.problem()
-                }
-                VMCommand.say(problem.map { "warning: \($0)" } ?? "the VM network filter is loaded")
             }
         }
 
@@ -354,6 +335,35 @@ struct VMCommand: AsyncParsableCommand {
                 VMCommand.say("the VM network filter is loaded")
             }
         }
+    }
+
+    /// Writes the filter's files and loads it (each command with sudo), or prints them. Returns the filter's problem
+    /// once loaded, nil when it is.
+    static func installNetworkFilter(dryRun: Bool) async throws -> String? {
+        let filter = VMNetworkFilter.current()
+        let staging = NSTemporaryDirectory() + "hangar-pf-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: staging) }
+        try filter.rules.write(toFile: staging + "/rules", atomically: true, encoding: .utf8)
+        try VMNetworkFilter.loaderScript.write(toFile: staging + "/loader.sh", atomically: true, encoding: .utf8)
+        try VMNetworkFilter.daemonPlist.write(toFile: staging + "/daemon.plist", atomically: true, encoding: .utf8)
+        let commands = filter.installCommands(staging: staging)
+        if dryRun {
+            say("# \(VMNetworkFilter.rulesPath)\n\(filter.rules)")
+            say("# \(VMNetworkFilter.loaderPath)\n\(VMNetworkFilter.loaderScript)")
+            say("# \(VMNetworkFilter.daemonPath)\n\(VMNetworkFilter.daemonPlist)")
+            say("# commands (each with sudo):")
+            for command in commands { say("sudo " + command.map(GuestSSH.quote).joined(separator: " ")) }
+            return nil
+        }
+        try sudo(commands, tolerateFailure: { $0.contains("bootout") })
+        // launchd runs the loader after bootstrap returns; give it a few seconds to write the marker.
+        var problem = filter.problem()
+        for _ in 0..<20 where problem != nil {
+            try await Task.sleep(for: .milliseconds(250))
+            problem = filter.problem()
+        }
+        return problem
     }
 
     /// Runs each command with sudo in the terminal; sudo asks for the password once.
