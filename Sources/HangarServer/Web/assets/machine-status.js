@@ -112,17 +112,19 @@ function vmChecklist(vm) {
 }
 
 /**
- * The warning a Mac's card shows about who builds there, or null: a VM Mac builds as `builder` in a fresh VM that
- * cannot see the host, and the dedicated hangar user is the other safe case. An older worker that does not say gets
- * none. `{ title, note }`.
+ * The warning a Mac's card shows about who builds there, or null: a local Mac builds as its owner, so a build can
+ * read their files; a VM Mac builds as `builder` in a fresh VM that cannot see the host. On Apple silicon it names
+ * the command that turns VM builds on. An older worker that does not say gets none. `{ title, note, command }`.
  */
 function buildUserWarning(report) {
   const user = report?.runningUser;
-  if (report?.vm || !user || user === 'hangar') return null;
+  if (report?.vm || !user) return null;
+  const appleSilicon = (report.chip ?? '').startsWith('Apple');
   return {
     title: `Builds run as ${user}`,
-    note: `A build on this Mac can read ${user}'s files. Turn on VM builds here (hangar-worker vm enable; see VM `
-      + 'builds in the worker setup guide) so each build runs in a fresh VM that cannot see them.',
+    note: `A build on this Mac can read ${user}'s files.`
+      + (appleSilicon ? ' To build each one in a fresh macOS VM instead, run this in Terminal on this Mac:' : ''),
+    command: appleSilicon ? 'sudo ~/.local/bin/hangar-worker vm setup' : null,
   };
 }
 
