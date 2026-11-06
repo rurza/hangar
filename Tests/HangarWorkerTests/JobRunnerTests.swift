@@ -111,6 +111,7 @@ private final class Shared<Value: Sendable>: Sendable {
         var assignment: JobAssignment
         /// Set by `makeHeadless()`: the worker then runs as a LaunchDaemon would.
         var keychain: CIKeychain?
+        var jobTimeout: Duration?
 
         init(xcode: String = "27.2", connection: FakeServerConnection = FakeServerConnection()) throws {
             self.connection = connection
@@ -173,7 +174,7 @@ private final class Shared<Value: Sendable>: Sendable {
                     credentials.update { $0.append(received) }
                     return appStoreConnect
                 },
-                keychain: keychain)
+                keychain: keychain, jobTimeout: jobTimeout)
             return await jobRunner.run(assignment, cancelled: cancelled, stopReason: stopReason)
         }
 
@@ -757,6 +758,32 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.uploads.isEmpty)
         #expect(fixture.connection.status(of: "cleanup") == .succeeded)
         #expect(fixture.connection.logLines.contains("job stopped: \(reason); stopped archive"))
+    }
+
+    /// A hung xcodebuild, a codesign prompt or a wedged simctl does not hold the Mac for good: the job is stopped at
+    /// its timeout, as a VM job is, and says so.
+    @Test func aJobPastItsTimeoutIsStoppedAndSaysWhy() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        fixture.jobTimeout = .seconds(60)
+        fixture.runner.recording.scriptHang(Self.isArchive)
+        let archiveStarted = Shared(false)
+        fixture.runner.whenRunning { if Self.isArchive($0) { archiveStarted.update { $0 = true } } }
+        // The clock moves only once the archive hangs, so the timeout falls inside it.
+        let ticker = Task { [clock = fixture.clock] in
+            while !Task.isCancelled {
+                if archiveStarted.get() { await clock.advance(by: .seconds(60)) }
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+        defer { ticker.cancel() }
+
+        let result = await fixture.run()
+
+        let reason = "the job ran longer than 1 min, the job timeout on Studio"
+        #expect(result == JobResult(status: .cancelled, failureReason: reason + " during archive"))
+        #expect(fixture.connection.lastUpdate(of: "archive")?.detail == "Stopped: " + reason)
+        #expect(fixture.connection.status(of: "cleanup") == .succeeded)
     }
 
     @Test func failureReasonAndOutputsAreMasked() async throws {

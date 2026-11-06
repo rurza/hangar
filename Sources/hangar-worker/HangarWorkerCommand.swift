@@ -73,7 +73,8 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 ])
             } else {
                 jobRunner = JobRunner(
-                    connection: connection, runner: runner, locator: locator, dataDirectory: work, keychain: keychain)
+                    connection: connection, runner: runner, locator: locator, dataDirectory: work, keychain: keychain,
+                    jobTimeout: configuration.jobTimeout)
             }
             let loop = WorkerLoop(
                 configuration: loopConfiguration, connection: connection,

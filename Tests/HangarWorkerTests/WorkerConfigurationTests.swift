@@ -53,14 +53,14 @@ import Testing
         let vm = VMSettings(storage: "/Volumes/VMs/hangar", slots: 2)
         let existing = WorkerConfiguration(
             serverURL: URL(string: "http://old:8787")!, token: "old", maxConcurrentJobs: 2, dataDirectory: "/var/hangar",
-            workDirectory: "/var/work", vm: vm)
+            workDirectory: "/var/work", vm: vm, jobTimeoutMinutes: 240)
         let server = URL(string: "http://mac-mini:8787")!
         let kept = WorkerConfiguration.setup(
             serverURL: server, token: "new", maxConcurrentJobs: nil, dataDirectory: "/var/hangar", workDirectory: nil,
             existing: existing)
         #expect(kept == WorkerConfiguration(
             serverURL: server, token: "new", maxConcurrentJobs: 2, dataDirectory: "/var/hangar", workDirectory: "/var/work",
-            vm: vm))
+            vm: vm, jobTimeoutMinutes: 240))
 
         let replaced = WorkerConfiguration.setup(
             serverURL: server, token: "new", maxConcurrentJobs: 3, dataDirectory: "/var/hangar", workDirectory: "/w",
@@ -71,6 +71,7 @@ import Testing
             serverURL: server, token: "new", maxConcurrentJobs: nil, dataDirectory: "/var/hangar", workDirectory: nil,
             existing: nil)
         #expect(fresh.maxConcurrentJobs == 1 && fresh.vm == nil && fresh.workDirectory == nil)
+        #expect(fresh.jobTimeout == .seconds(120 * 60) && kept.jobTimeout == .seconds(240 * 60))
     }
 
     @Test func missingAndInvalidFilesThrowClearErrors() throws {

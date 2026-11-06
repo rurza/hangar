@@ -39,6 +39,9 @@ public struct JobRunner: Sendable {
     private let keychain: CIKeychain?
     /// The first line of the `checkout` step's log, before anything else is prepared: how a job's VM came up.
     private let preparationNote: String?
+    /// A job still running after this is stopped, as a worker stop is, with the timeout as its reason. Nil: none (in
+    /// a VM, whose host enforces its own).
+    private let jobTimeout: Duration?
     private let logger = Logger(label: "app.hangar.worker.job")
 
     public init(
@@ -50,8 +53,10 @@ public struct JobRunner: Sendable {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
         },
         keychain: CIKeychain? = nil,
-        preparationNote: String? = nil
+        preparationNote: String? = nil,
+        jobTimeout: Duration? = nil
     ) {
+        self.jobTimeout = jobTimeout
         self.keychain = keychain
         self.preparationNote = preparationNote
         self.connection = connection
@@ -108,9 +113,22 @@ public struct JobRunner: Sendable {
 
         await reportInfo(jobID: jobID, JobRunInfo(workerVersion: Self.workerVersion))
 
+        // The timeout stops the job the way a worker stop does: the step it was in ends, and the job says why.
+        let timedOut = Captured(false)
+        let timer = jobTimeout.map { timeout in
+            Task { [clock] in
+                guard (try? await clock.sleep(for: timeout)) != nil else { return }
+                timedOut.set(true)
+            }
+        }
+        defer { timer?.cancel() }
+        let overdue: @Sendable () -> Bool = { timedOut.get() }
+        let timeoutReason = jobTimeout.map { [machineName] in
+            "the job ran longer than \($0.components.seconds / 60) min, the job timeout on \(machineName)"
+        }
         var pipeline = JobPipeline(
-            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason,
-            masker: masker)
+            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: { cancelled() || overdue() },
+            stopReason: { stopReason() ?? (overdue() ? timeoutReason : nil) }, masker: masker)
         let prepared = await pipeline.step(StepName.checkout) { [self] in
             let prepared = try await prepare(assignment, layout: layout, materializer: materializer, log: log.lines(StepName.checkout))
             try await Checkout(runner: runner, layout: layout).run(
