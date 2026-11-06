@@ -1067,6 +1067,44 @@ extension JobRunnerTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.layout.keyDirectory + "/AuthKey_KEY123.p8"))
     }
 
+    /// Build 259: BatFi's VM archive carried Hangar's development profile, and its Developer ID export asked for a
+    /// Developer ID profile. The host takes the profile out and re-signs ad hoc before it exports.
+    @Test func aDeveloperIDExportFirstTakesHangarsDevelopmentProfileOutOfTheArchive() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let action = WorkflowAction(scheme: "Demo", platform: .macOS, export: .developerID)
+        fixture.assignment.job.action = action
+        fixture.assignment.workflow.actions = [action]
+        fixture.assignment.workflow.postActions = []
+        try handedOffFiles(fixture)
+        let app = fixture.layout.archive(scheme: "Demo") + "/Products/Applications/Demo.app"
+        try FileManager.default.createDirectory(atPath: app + "/Contents", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: app + "/Contents/embedded.provisionprofile", contents: Data())
+        fixture.runner.recording.script(
+            { $0.executable == "/usr/bin/codesign" && $0.arguments.first == "-d" },
+            lines: ["<plist version=\"1.0\"><dict><key>com.apple.application-identifier</key><string>T.demo</string></dict></plist>"])
+
+        let result = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: false, cancelled: { false })
+
+        #expect(result.status == .succeeded)
+        let commands = fixture.runner.commands
+        let resign = try #require(commands.firstIndex { $0.executable == "/usr/bin/codesign" && $0.arguments.first == "--force" })
+        let export = try #require(commands.firstIndex { $0.arguments.contains("-exportArchive") })
+        #expect(resign < export)
+        #expect(commands[resign].arguments.last == app)
+    }
+
+    @Test func anAppStoreExportLeavesTheArchiveAlone() async throws {
+        let fixture = try Fixture()
+        defer { fixture.removeAll() }
+        try handedOffFiles(fixture)
+        let app = fixture.layout.archive(scheme: "Demo") + "/Products/Applications/Demo.app"
+        try FileManager.default.createDirectory(atPath: app + "/Contents", withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: app + "/Contents/embedded.provisionprofile", contents: Data())
+        _ = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: false, cancelled: { false })
+        #expect(!fixture.runner.commands.contains { $0.executable == "/usr/bin/codesign" })
+    }
+
     @Test func aHostWithoutTheWorkflowsXcodeFailsTheExport() async throws {
         let fixture = try Fixture(xcode: "26.4")
         defer { fixture.removeAll() }

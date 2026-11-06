@@ -9,7 +9,8 @@ import HangarCore
 //   itself and hands the archive off instead of exporting it (`ArchiveHandOff`).
 // - The host copies the archive, the result bundle, the TestFlight notes and the full log out of the VM, deletes the
 //   VM, and runs `export`, the post-actions, `upload-artifacts` and `cleanup` with the server's key
-//   (`runHostExport`), then reports the result.
+//   (`runHostExport`), then reports the result. Before a Developer ID export it takes Hangar's development profile
+//   out of the archive when no entitlement needs one (`DevelopmentProfileRemoval`, decision 24).
 //
 // The step names and their order on the build page stay the same; only `post-xcodebuild` now runs before `export`,
 // so `CI_APP_STORE_SIGNED_APP_PATH` and `CI_DEVELOPER_ID_SIGNED_APP_PATH` are not set for it in a VM.
@@ -156,6 +157,11 @@ extension JobRunner {
         var outputs: [String: String] = [:]
         do {
             let prepared = try await prepareHostExport(assignment, layout: layout, log: log.lines(StepName.export))
+            if assignment.job.action.export == .developerID {
+                _ = try await DevelopmentProfileRemoval(runner: runner).run(
+                    archivePath: layout.archive(scheme: assignment.job.action.scheme), scratchDirectory: layout.temporary,
+                    environment: prepared.environment, log: log.lines(StepName.export))
+            }
             let exported = await export(assignment, prepared: prepared, layout: layout, log: log, pipeline: &pipeline)
             outputs = await postActions(
                 assignment, prepared: prepared, layout: layout, exported: exported, log: log, masker: masker, pipeline: &pipeline)

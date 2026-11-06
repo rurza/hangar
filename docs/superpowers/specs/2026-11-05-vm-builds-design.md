@@ -788,6 +788,42 @@ something open, the slice decided as follows.
     environment has it. **What still sees it on a host Mac:** Run Script phases, package plugins and macros run
     as the worker's user during those `xcodebuild` steps and can read the file, and anything running as that user
     can read the worker's memory. VM builds are the boundary; a host Mac is not one.
+24. **A Developer ID export takes Hangar's development profile out of the archive first** *(2026-11-06, BatFi
+    build 259)*. The guest's manual signing (decision 20) gives every bundle with a profile the entitlements a
+    profile brings, `com.apple.application-identifier` and `com.apple.developer.team-identifier`. From those,
+    `-exportArchive -method developer-id` concludes that the app needs a Developer ID profile. With the server's
+    key and `-allowProvisioningUpdates` it then tries cloud signing and fails ("Cloud signing permission error …
+    No profiles for 'software.micropixels.BatFi' were found"). The same app archived on a host signs
+    automatically, and Xcode then embeds no profile, since BatFi's only entitlement is
+    `com.apple.security.personal-information.location`. That export signs with the host's local Developer ID
+    Application identity and needs no profile and no cloud signing. Checked on the MacBook with Xcode 27.2, all
+    with the same export options:
+    - a host archive exports;
+    - the same archive with a development profile and those two entitlements fails with the error above;
+    - removing only `embedded.provisionprofile` still fails, so the entitlements decide;
+    - removing the profile and re-signing with the app's own entitlements exports. An ad hoc re-sign works too.
+      The export's app carries Developer ID, the hardened runtime and only the location entitlement, and passes
+      `codesign --verify --deep --strict`.
+
+    So before a `developer-id` export, the host (`DevelopmentProfileRemoval`) reads the signed entitlements of
+    every bundle under the archive's `Products` that has a `Contents/embedded.provisionprofile`. It drops the
+    profile-derived keys and `com.apple.security.get-task-allow`. If what remains needs no profile, it removes each
+    profile and re-signs that bundle ad hoc, deepest first, keeping its identifier, flags and runtime
+    (`codesign --force --sign - --preserve-metadata=identifier,flags,runtime --entitlements …`). The archive then
+    looks like a host archive, and the export signs everything with Developer ID as before. Only the
+    `com.apple.security.…` family, minus `application-groups`, counts as needing no profile; anything else
+    counts as needing one. If any bundle has such an entitlement, nothing is changed. The log names the bundle
+    and the entitlements, and the export runs as it is; it then succeeds only if the host already has a matching
+    Developer ID profile.
+    - **Not chosen:** archiving every macOS Developer ID job in the guest without profiles. That breaks, at
+      archive time, an app whose entitlements need a development profile. The host knows the signed result, so it
+      can decide per archive. Also not chosen: routing Developer ID archives to host Macs, which would leave them
+      outside the VM boundary.
+    - **Still open:** an app that needs a Developer ID profile, for example for iCloud, push or app groups. Hangar
+      does not create distribution or Developer ID profiles, and a team key cannot use cloud-managed Developer ID
+      certificates. Such an app needs a Developer ID profile installed on the host, or a host-mode Mac.
+    - The re-sign runs Apple's `codesign` on the guest's archive as `hangar`, before the key is written. It adds
+      nothing to decision 19's residual risk, since the export parses the same files.
 
 **Revised 2026-11-05: an image installs only what is necessary.** *(owner's call)* A job image carries macOS and
 Xcode (first launch done), and nothing else: no Homebrew, no Metal toolchain and no simulator runtime by default
@@ -1005,6 +1041,11 @@ and `/Library/LaunchDaemons/app.hangar.pf.plist`, and loads them), the `pfctl` a
 24. **A hostile archive does not reach the host:** on a throwaway branch whose `ci_post_xcodebuild.sh` runs
     `ln -s /Users/hangar/.hangar "$CI_ARCHIVE_PATH/Products/escape"`, the job fails with `… is a link to
     /Users/hangar/.hangar, outside it` and no export runs.
+25. **A Developer ID export after a VM archive** (decision 24): `hangar deploy batfi Beta --ref develop --machine
+    rurzobuk-max`. The export log says `removed Hangar's development profile from
+    Products/Applications/BatFi.app and re-signed ad hoc`, the export succeeds, `ci_post_xcodebuild.sh` uploads
+    the dSYMs to Sentry, and `codesign -dvv` of the exported app names `Developer ID Application: … (YL78V8PY6H)`.
+    A Legilo build in a VM still reaches TestFlight; an App Store export changes nothing in the archive.
 
 20. **Turning it off:** `hw vm disable`, restart: the next job builds on the host as before. `hw vm enable`
     and restart to go back. `sudo /Users/hangar/.local/bin/hangar-worker vm network uninstall` removes the
