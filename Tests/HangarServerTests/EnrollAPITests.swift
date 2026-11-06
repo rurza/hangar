@@ -10,11 +10,11 @@ import Testing
 @Suite(.timeLimit(.minutes(1))) struct EnrollAPITests {
     /// What curl sends: JSON, no Origin, no Sec-Fetch-Site.
     static func enroll(
-        _ client: any TestClientProtocol, code: String, name: String, maxConcurrentJobs: Int? = nil
+        _ client: any TestClientProtocol, code: String, name: String, maxConcurrentJobs: Int? = nil, paused: Bool? = nil
     ) async throws -> TestResponse {
         try await client.execute(
             uri: "/api/v1/enroll", method: .post, headers: jsonHeaders,
-            body: try body(EnrollRequest(code: code, name: name, maxConcurrentJobs: maxConcurrentJobs)))
+            body: try body(EnrollRequest(code: code, name: name, maxConcurrentJobs: maxConcurrentJobs, paused: paused)))
     }
 
     static func newCode(_ client: any TestClientProtocol) async throws -> Pairing {
@@ -54,6 +54,20 @@ import Testing
             return
         }
         #expect(machine.name == "mini-2")
+    }
+
+    /// A Mac meant for VM builds is enrolled paused, so it never builds on the host before they are ready.
+    @Test func aMacCanBeEnrolledWithBuildsPaused() async throws {
+        let fixture = try APIFixture()
+        try await fixture.test { client in
+            let first = try await Self.enroll(client, code: try await Self.newCode(client).code, name: "new-mac", paused: true)
+            #expect(first.status == .created)
+            let paused = try decode(CreateMachineResponse.self, first).machine
+            #expect(paused.paused)
+            #expect(try fixture.server.machines.find(nameOrID: "new-mac")?.paused == true)
+            let second = try await Self.enroll(client, code: try await Self.newCode(client).code, name: "other")
+            #expect(try decode(CreateMachineResponse.self, second).machine.paused == false)
+        }
     }
 
     @Test func maxConcurrentJobsDefaultsToOne() async throws {

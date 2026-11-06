@@ -510,7 +510,9 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
     } else {
       replaceChildren(status,
         checkBadge('pairing-connected-icon'),
-        h('span', { class: 'pairing-connected' }, `${enrolled.name} is connected`));
+        h('span', { class: 'pairing-connected' }, enrolled.paused
+          ? `${enrolled.name} is connected. Its builds are paused until VM builds are ready; its card shows the progress.`
+          : `${enrolled.name} is connected`));
       handle.setActions([{ label: 'Done', kind: 'primary' }]);
       handle.element.querySelector('.sheet-actions .button-primary')?.focus();
     }
@@ -565,9 +567,9 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
           })),
         commandBlock,
         h('p', { class: 'field-hint' },
-          'Run it in Terminal as an administrator. It installs the worker as a separate macOS user named hangar, '
-          + 'which runs it from boot; nobody logs in as it. Then set up VM builds on that Mac (see VM builds in the '
-          + 'worker setup guide), so every build runs in a fresh macOS VM. No checkout.')),
+          'Run it in Terminal as an administrator. It checks the Mac, installs the worker (as a macOS user named '
+          + 'hangar that runs it from boot; nobody logs in as it), then sets up VM builds, so every build runs in a '
+          + 'fresh macOS VM: about 15 minutes, one password. Until they are ready the Mac takes no builds. No checkout.')),
       h('div', { class: 'code-field' },
         h('div', { class: 'field-label-row' },
           h('span', { class: 'field-label' }, 'Pairing code'),

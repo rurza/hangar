@@ -19,7 +19,9 @@ extension HangarServerApp {
             let maxConcurrentJobs = input.maxConcurrentJobs ?? 1
             try validateMachine(name: input.name, maxConcurrentJobs: maxConcurrentJobs)
             let (machine, token) = try pairings.redeem(input.code, from: context.peer) {
-                try createMachine(name: input.name, maxConcurrentJobs: maxConcurrentJobs)
+                let (created, token) = try createMachine(name: input.name, maxConcurrentJobs: maxConcurrentJobs)
+                guard input.paused == true else { return (created, token) }
+                return (try machines.setPaused(id: created.id, true) ?? created, token)
             }
             events.publish(.server(.machine(machine)))
             return try Response.json(CreateMachineResponse(machine: machine, token: token), status: .created)

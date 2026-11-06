@@ -68,11 +68,15 @@ public struct EnrollRequest: Codable, Equatable, Sendable {
     public var name: String
     /// Default 1.
     public var maxConcurrentJobs: Int?
+    /// Enroll with builds paused: the install script's choice for a Mac meant for VM builds, which then takes no
+    /// build until they are set up and someone resumes it. Default false.
+    public var paused: Bool?
 
-    public init(code: String, name: String, maxConcurrentJobs: Int? = nil) {
+    public init(code: String, name: String, maxConcurrentJobs: Int? = nil, paused: Bool? = nil) {
         self.code = code
         self.name = name
         self.maxConcurrentJobs = maxConcurrentJobs
+        self.paused = paused
     }
 }
 

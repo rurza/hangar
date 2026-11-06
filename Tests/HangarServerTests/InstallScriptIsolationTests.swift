@@ -40,7 +40,7 @@ import Testing
                         case $1 in -o) out=$2; shift ;; esac
                         case $1 in
                             */install/hangar-worker) cp "$STUB_WORKER" "$out"; printf 200; exit 0 ;;
-                            */api/v1/enroll) cat >/dev/null; printf '{"token":"tok"}\n201'; exit 0 ;;
+                            */api/v1/enroll) cat >"$STUB_LOG.body"; printf '{"token":"tok"}\n201'; exit 0 ;;
                         esac
                         shift
                     done
@@ -98,6 +98,8 @@ import Testing
                 "HOME": home.path, "TMPDIR": root.appendingPathComponent("tmp").path,
                 "STUB_LOG": log.path, "STUB_WORKER": root.appendingPathComponent("fake-worker").path,
                 "HANGAR_MACHINE_NAME": "mini-2", "HANGAR_PAIRING_CODE": "ABCD-EFGH", "TERM": "dumb",
+                // Never asked here; the tests that run VM setup say so.
+                "HANGAR_VM_SETUP": "0",
             ].merging(environment) { $1 }
             process.standardInput = FileHandle.nullDevice
             let output = Pipe()
@@ -211,5 +213,66 @@ import Testing
         let result = try sandbox.run(Self.admin, workerSHA256: SHA256File.hex(of: worker))
         #expect(result.status == 0, "\(result.output)")
         #expect(result.log.contains { $0.hasPrefix("worker isolate --binary ") })
+    }
+
+    // MARK: VM builds
+
+    var appleSilicon: Bool {
+        #if arch(arm64)
+        true
+        #else
+        false
+        #endif
+    }
+
+    @Test func aNewMacIsCheckedFirstThenEnrolledPausedAndOfferedVMSetup() throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        let result = try sandbox.run(Self.admin.merging(["HANGAR_VM_SETUP": "1"]) { $1 })
+        #expect(result.status == 0, "\(result.output)")
+        #expect(result.output.contains("Checking this Mac:"))
+        #expect(result.output.contains("Free space:"))
+        #expect(result.output.contains("Tailscale:"))
+        let body = try String(contentsOf: sandbox.log.appendingPathExtension("body"), encoding: .utf8)
+        #expect(body.contains(#""paused":\#(appleSilicon)"#), "\(body)")
+        // VM setup runs after isolate, with the hangar user's binary, in the same sudo session.
+        let isolate = try #require(result.log.firstIndex { $0.hasPrefix("worker isolate") })
+        let setup = result.log.firstIndex { $0 == "sudo /Users/hangar/.local/bin/hangar-worker vm setup" }
+        if appleSilicon {
+            #expect(setup.map { $0 > isolate } == true, "\(result.log)")
+        } else {
+            #expect(setup == nil)
+        }
+    }
+
+    @Test func declinedVMSetupLeavesTheCommandToRunLater() throws {
+        guard appleSilicon else { return }
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        let result = try sandbox.run(Self.admin.merging(["HANGAR_AS_CURRENT_USER": "1"]) { $1 })
+        #expect(result.status == 0, "\(result.output)")
+        #expect(!result.log.contains { $0.hasPrefix("sudo") })
+        #expect(!result.output.contains("Keychain Access"), "host signing advice is for host builds")
+        let worker = sandbox.home.appendingPathComponent(".local/bin/hangar-worker").path
+        #expect(result.output.contains("Builds stay paused on mini-2 until VM builds are set up. When you are ready, run: sudo \(worker) vm setup"), "\(result.output)")
+    }
+
+    @Test func hostBuildsEnrollUnpausedAndSkipVMSetup() throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        let result = try sandbox.run(Self.admin.merging(["HANGAR_VM": "0", "HANGAR_VM_SETUP": "1"]) { $1 })
+        #expect(result.status == 0, "\(result.output)")
+        let body = try String(contentsOf: sandbox.log.appendingPathExtension("body"), encoding: .utf8)
+        #expect(body.contains(#""paused":false"#))
+        #expect(!result.log.contains { $0.hasSuffix("vm setup") })
+    }
+
+    @Test func anUpdateIsNotOfferedVMSetup() throws {
+        let sandbox = try Sandbox()
+        defer { sandbox.cleanUp() }
+        try sandbox.writeConfig(server: "http://studio:8787")
+        let result = try sandbox.run(Self.admin.merging(["STUB_CHECK": "0", "HANGAR_VM_SETUP": "1"]) { $1 })
+        #expect(result.status == 0, "\(result.output)")
+        #expect(!result.log.contains { $0.hasSuffix("vm setup") })
     }
 }

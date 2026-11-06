@@ -691,8 +691,9 @@ function machinesStep(getStatus, onChange, context) {
       replaceChildren(local,
         h('p', { class: 'card-detail' },
           `To build on ${status.localHostName}, the Mac Hangar runs on, run this in Terminal on it as an administrator. `
-          + 'It creates a separate macOS user named hangar for builds, so a build cannot read your files or '
-          + "Hangar's data, and runs the worker as that user from boot; nobody needs to log in as it."),
+          + 'It installs the worker as a separate macOS user named hangar, which runs it from boot (nobody logs in '
+          + "as it), and then sets up VM builds, so each build runs in a fresh macOS VM that cannot read your files "
+          + "or Hangar's data."),
         h('pre', { class: 'code-block install-log', tabindex: '0', 'aria-label': 'Install command' },
           h('code', null, `curl -fsSL ${location.origin}/install | sh`)));
       return;
