@@ -198,14 +198,16 @@ private final class StageLog: Sendable {
         #expect(throws: TestFlightError.processingFailed(state: "INVALID")) { try result.get() }
     }
 
-    @Test func timesOutAfterConfiguredMinutes() async throws {
+    /// The upload went through, so a slow App Store Connect is a warning: the build still appears in TestFlight.
+    @Test func stillProcessingAfterTheConfiguredMinutesIsAWarning() async throws {
         let fixture = try Fixture()
         let client = FakeAppStoreConnect(polls: [[build("b1", "PROCESSING")]])
         var settings = TestFlightSettings()
         settings.processingTimeoutMinutes = 1
-        let result = await fixture.run(settings, fixture.context(client: client))
-        #expect(throws: TestFlightError.processingTimedOut(minutes: 1)) { try result.get() }
+        let output = try await fixture.run(settings, fixture.context(client: client)).get()
         #expect(client.pollCount == 3)
+        #expect(output.warnings == ["Processing: The build was still processing after 1 minutes"])
+        #expect(output.stages?.first { $0.name == "Processing" }?.status == .warning)
     }
 
     @Test func notYetListedCountsAsProcessing() async throws {

@@ -112,6 +112,15 @@ public struct TestFlightAction: PostActionModule {
         let build: ASCBuild
         do {
             build = try await waitForProcessing(client, context)
+        } catch TestFlightError.processingTimedOut(let minutes) {
+            // The upload went through; Apple is only slow. The build still turns up in TestFlight, just without what
+            // needs a processed build (groups, What to Test, review).
+            let reason = TestFlightError.processingTimedOut(minutes: minutes).description
+            context.log("warning: \(reason); it will still appear in TestFlight, without groups, What to Test or review")
+            await progress.set(Stage.processing, .warning, reason)
+            return PostActionOutput(
+                summary: "\(label) was uploaded; App Store Connect was still processing it after \(minutes) minutes",
+                warnings: ["Processing: \(reason)"], stages: progress.stages)
         } catch {
             await progress.set(Stage.processing, .failed, Self.reason(error))
             throw error
