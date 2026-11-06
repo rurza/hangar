@@ -1215,6 +1215,7 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 .card-headline { font: var(--headline); }
 .card-detail { color: var(--secondary); font: var(--subhead); letter-spacing: -0.24px; }
 .card-note { color: var(--secondary); font: var(--footnote); }
+.access-logins { margin: 0; padding-left: var(--space-3); font: var(--footnote); }
 .card-actions { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: auto; padding-top: var(--space-1); }
 
 .latest-link { display: grid; gap: 2px; color: inherit; }

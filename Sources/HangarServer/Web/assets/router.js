@@ -182,11 +182,24 @@ function notFound() {
 }
 
 function failed(error) {
+  if (error?.code === 'authentication_required') return notAllowed();
   const message = error instanceof ApiError || error instanceof Error ? error.message : String(error);
   return page({ title: 'Something Went Wrong' },
     emptyState({
       title: 'This page could not be loaded',
       message,
+      action: h('button', { type: 'button', class: 'button button-primary', onClick: () => render() }, 'Try Again'),
+    }));
+}
+
+/** Hangar answers only its owner's tailnet devices (and API tokens, which a browser does not send). */
+function notAllowed() {
+  return page({ title: 'Not Allowed' },
+    emptyState({
+      title: 'This device is not allowed to use Hangar',
+      message: 'Hangar opens only on its owner’s devices: sign in to Tailscale here with the account that owns the '
+        + 'server Mac, then try again. To allow another Tailscale account, add it in Settings › Access from one of '
+        + 'your devices, or run hangar-server access allow <login> on the server Mac.',
       action: h('button', { type: 'button', class: 'button button-primary', onClick: () => render() }, 'Try Again'),
     }));
 }
