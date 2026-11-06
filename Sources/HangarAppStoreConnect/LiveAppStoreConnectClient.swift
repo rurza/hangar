@@ -206,6 +206,95 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         _ = try await request("DELETE", url: try url(path: "/v1/certificates/\(id)"), body: nil)
     }
 
+    // MARK: - Development provisioning
+
+    public func bundleIdentifiers() async throws -> [ASCBundleIdentifier] {
+        let query = [URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "fields[bundleIds]", value: "identifier,platform")]
+        return try await pages(Wire.BundleIDs.self, path: "/v1/bundleIds", query: query).flatMap { page in
+            page.data.map { ASCBundleIdentifier(id: $0.id, identifier: $0.attributes.identifier, platform: $0.attributes.platform ?? "") }
+        }
+    }
+
+    public func developmentProfiles(type: ASCDevelopmentProfileType) async throws -> [ASCProfile] {
+        let query = [
+            URLQueryItem(name: "filter[profileType]", value: type.rawValue),
+            URLQueryItem(name: "filter[profileState]", value: "ACTIVE"),
+            URLQueryItem(name: "include", value: "bundleId,certificates"),
+            URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "limit[certificates]", value: "50"),
+        ]
+        return try await pages(Wire.Profiles.self, path: "/v1/profiles", query: query).flatMap { page in
+            page.data.compactMap { Self.profile($0, expected: type) }
+        }
+    }
+
+    public func enabledDeviceIDs(platform: String) async throws -> [String] {
+        let query = [
+            URLQueryItem(name: "filter[platform]", value: platform), URLQueryItem(name: "filter[status]", value: "ENABLED"),
+            URLQueryItem(name: "limit", value: "200"), URLQueryItem(name: "fields[devices]", value: "udid"),
+        ]
+        return try await pages(Wire.Resources.self, path: "/v1/devices", query: query).flatMap { $0.data.map(\.id) }
+    }
+
+    public func certificateID(serialNumber: String) async throws -> String? {
+        let query = [
+            URLQueryItem(name: "filter[serialNumber]", value: serialNumber), URLQueryItem(name: "limit", value: "1"),
+            URLQueryItem(name: "fields[certificates]", value: "serialNumber"),
+        ]
+        let page = try decode(Wire.Resources.self, from: try await request("GET", url: try url(path: "/v1/certificates", query: query), body: nil))
+        return page.data.first?.id
+    }
+
+    public func canListUsers() async throws -> Bool {
+        do {
+            _ = try await request("GET", url: try url(path: "/v1/users", query: [URLQueryItem(name: "limit", value: "1")]), body: nil)
+            return true
+        } catch ASCError.http(status: 403, _) {
+            return false
+        }
+    }
+
+    public func createDevelopmentProfile(
+        name: String, type: ASCDevelopmentProfileType, bundleIDResourceID: String, certificateIDs: [String],
+        deviceIDs: [String]
+    ) async throws -> ASCProfile {
+        struct One: Decodable { var data: Wire.Profiles.Item }
+        func references(_ type: String, _ ids: [String]) -> JSONNode {
+            .object(["data": .array(ids.map { .object(["type": .string(type), "id": .string($0)]) })])
+        }
+        let body = JSONNode.object(["data": .object([
+            "type": .string("profiles"),
+            "attributes": .object(["name": .string(name), "profileType": .string(type.rawValue)]),
+            "relationships": .object([
+                "bundleId": .object(["data": .object(["type": .string("bundleIds"), "id": .string(bundleIDResourceID)])]),
+                "certificates": references("certificates", certificateIDs),
+                "devices": references("devices", deviceIDs),
+            ]),
+        ])])
+        var one = try decode(One.self, from: try await request("POST", url: try url(path: "/v1/profiles"), body: body))
+        // The answer need not list the relationships; they are the ones just sent.
+        if one.data.relationships == nil {
+            one.data.relationships = .init(
+                bundleId: .init(data: .init(id: bundleIDResourceID)),
+                certificates: .init(data: certificateIDs.map { .init(id: $0) }))
+        }
+        guard let profile = Self.profile(one.data, expected: type) else {
+            throw ASCError.decoding("the new profile has no content")
+        }
+        return profile
+    }
+
+    private static func profile(_ item: Wire.Profiles.Item, expected: ASCDevelopmentProfileType) -> ASCProfile? {
+        guard let type = item.attributes.profileType.flatMap(ASCDevelopmentProfileType.init(rawValue:)), type == expected,
+            let base64 = item.attributes.profileContent, let content = Data(base64Encoded: base64),
+            let uuid = item.attributes.uuid
+        else { return nil }
+        return ASCProfile(
+            id: item.id, name: item.attributes.name ?? "", type: type, uuid: uuid, content: content,
+            expirationDate: item.attributes.expirationDate.flatMap(parseDate),
+            bundleIDResourceID: item.relationships?.bundleId?.data?.id,
+            certificateIDs: item.relationships?.certificates?.data?.map(\.id) ?? [])
+    }
+
     // MARK: - Plumbing
 
     /// Minimal JSON tree for request bodies.
@@ -309,6 +398,46 @@ private protocol Paged {
 /// JSON:API response shapes, only the fields we read.
 private enum Wire {
     struct Links: Decodable { var next: String? }
+
+    struct BundleIDs: Decodable, Paged {
+        struct Item: Decodable {
+            struct Attributes: Decodable {
+                var identifier: String
+                var platform: String?
+            }
+            var id: String
+            var attributes: Attributes
+        }
+        var data: [Item]
+        var links: Links?
+        var nextURL: String? { links?.next }
+    }
+
+    struct Profiles: Decodable, Paged {
+        struct Item: Decodable {
+            struct Attributes: Decodable {
+                var name: String?
+                var profileType: String?
+                var profileState: String?
+                var profileContent: String?
+                var uuid: String?
+                var expirationDate: String?
+            }
+            struct Relationships: Decodable {
+                struct Ref: Decodable { var id: String }
+                struct One: Decodable { var data: Ref? }
+                struct Many: Decodable { var data: [Ref]? }
+                var bundleId: One?
+                var certificates: Many?
+            }
+            var id: String
+            var attributes: Attributes
+            var relationships: Relationships?
+        }
+        var data: [Item]
+        var links: Links?
+        var nextURL: String? { links?.next }
+    }
 
     struct Resources: Decodable, Paged {
         struct Item: Decodable { var id: String }

@@ -144,6 +144,8 @@ extension HangarServerApp {
             return try Response.json(JobTokenResponse(token: token), status: .created)
         }
 
+        addProvisioningRoute(to: worker)
+
         // Revokes the tokens this machine was given for the job, e.g. once its VM is gone. Idempotent, and allowed
         // after the job ended or moved to another machine (whose own tokens it leaves alone).
         worker.delete("jobs/:id/token") { _, context in

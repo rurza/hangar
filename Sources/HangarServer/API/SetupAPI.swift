@@ -55,6 +55,17 @@ extension HangarServerApp {
                 try await testAndSaveASCKey(keyID: keyID, issuerID: input.issuerID, privateKey: input.privateKey))
         }
 
+        // The optional development key: a second team key, Developer role, for VM archives whose development
+        // profiles the server could not provide. Never the Admin key: one that can list users is refused.
+        api.post("settings/development-key") { request, context in
+            let input = try await request.decode(as: SaveASCKeyRequest.self, context: context)
+            return try Response.json(try await testAndSaveDevelopmentKey(input))
+        }
+        api.delete("settings/development-key") { _, _ in
+            try ascKeys.remove(.development)
+            return Response(status: .noContent)
+        }
+
         // MARK: GitHub
 
         api.get("setup/github") { _, context in
@@ -147,6 +158,48 @@ extension HangarServerApp {
         }
         try ascKeys.set(.main, AppStoreConnectKey(keyID: keyID, issuerID: issuerID, privateKey: privateKey))
         return ASCKeyTestResult(kind: issuerID == nil ? .individual : .team, keyID: keyID, appCount: apps.count)
+    }
+
+    /// Checks the development key before it is stored: a team key, not the server's own key, one that can read the
+    /// team's bundle IDs (provisioning access) and cannot list users (not Admin).
+    func testAndSaveDevelopmentKey(_ input: SaveASCKeyRequest) async throws -> ASCKeyTestResult {
+        let keyID = input.keyID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard keyID.wholeMatch(of: /[A-Za-z0-9]{1,32}/) != nil else {
+            throw APIError(code: "invalid_key_id", message: "Enter the key ID: the letters and digits after AuthKey_ in the file name.")
+        }
+        guard let issuerID = input.issuerID?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty else {
+            throw APIError(
+                code: "team_key_required",
+                message: "The development key must be a team key with its Issuer ID: xcodebuild accepts only team keys.")
+        }
+        guard input.privateKey.contains("PRIVATE KEY") else { throw Self.invalidASCKey }
+        if try ascKeys.key(.main)?.keyID == keyID {
+            throw APIError(
+                code: "development_key_is_main_key",
+                message: "That is Hangar’s own App Store Connect key, which never enters a VM. Make a separate key with the Developer role.")
+        }
+        let client = appStoreConnectFactory(ASCCredentials(keyID: keyID, issuerID: issuerID, privateKeyPEM: input.privateKey))
+        let count: Int
+        do {
+            count = try await client.bundleIdentifiers().count
+            if try await client.canListUsers() {
+                throw APIError(
+                    code: "development_key_too_powerful",
+                    message: "Key \(keyID) can manage the team’s users, so it has the Admin role. A VM’s build gets this key: make one with the Developer role and access to Certificates, Identifiers & Profiles.")
+            }
+        } catch ASCError.invalidPrivateKey {
+            throw Self.invalidASCKey
+        } catch ASCError.http(let status, _) where status == 401 {
+            throw APIError(code: "asc_key_rejected", message: "App Store Connect did not accept key \(keyID) with this Issuer ID.")
+        } catch ASCError.http(let status, _) where status == 403 {
+            throw APIError(
+                code: "asc_key_forbidden",
+                message: "Key \(keyID) cannot read the team’s identifiers. Give it access to Certificates, Identifiers & Profiles.")
+        } catch let error as ASCError {
+            throw APIError(code: "asc_unavailable", message: "App Store Connect could not be asked: \(Self.appStoreConnectReason(error)).")
+        }
+        try ascKeys.set(.development, AppStoreConnectKey(keyID: keyID, issuerID: issuerID, privateKey: input.privateKey))
+        return ASCKeyTestResult(kind: .team, keyID: keyID, appCount: count)
     }
 
     static let invalidASCKey = APIError(

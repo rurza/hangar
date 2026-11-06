@@ -33,6 +33,26 @@ public protocol AppStoreConnectClient: Sendable {
     func createCertificate(type: ASCCertificateType, csrPEM: String) async throws -> ASCCertificate
     /// Revokes one certificate by its App Store Connect ID (`DELETE /v1/certificates/{id}`).
     func revokeCertificate(id: String) async throws
+
+    // Development provisioning for VM archives (VM builds design, *Signing*). Team keys only.
+
+    /// The team's registered bundle IDs (`GET /v1/bundleIds`, read-only).
+    func bundleIdentifiers() async throws -> [ASCBundleIdentifier]
+    /// The team's active development profiles of `type`, with their bundle ID and certificates (read-only).
+    func developmentProfiles(type: ASCDevelopmentProfileType) async throws -> [ASCProfile]
+    /// The IDs of the team's enabled devices of a `/v1/devices` platform (`IOS`, `MAC_OS`; read-only).
+    func enabledDeviceIDs(platform: String) async throws -> [String]
+    /// The App Store Connect ID of the certificate with this serial number; nil when there is none.
+    func certificateID(serialNumber: String) async throws -> String?
+    /// Whether the key may list the team's users (`GET /v1/users`), which only an Admin key may: the development key
+    /// must not be one.
+    func canListUsers() async throws -> Bool
+    /// Creates a development profile (`POST /v1/profiles`). Only the server's development-profile service calls it,
+    /// for a bundle ID of the app being archived that has none with Hangar's certificate.
+    func createDevelopmentProfile(
+        name: String, type: ASCDevelopmentProfileType, bundleIDResourceID: String, certificateIDs: [String],
+        deviceIDs: [String]
+    ) async throws -> ASCProfile
 }
 
 extension AppStoreConnectClient {
@@ -43,6 +63,31 @@ extension AppStoreConnectClient {
 
     public func revokeCertificate(id: String) async throws {
         throw ASCError.decoding("revoking certificates is not available from this client")
+    }
+
+    public func bundleIdentifiers() async throws -> [ASCBundleIdentifier] {
+        throw ASCError.decoding("bundle IDs are not available from this client")
+    }
+
+    public func developmentProfiles(type: ASCDevelopmentProfileType) async throws -> [ASCProfile] {
+        throw ASCError.decoding("profiles are not available from this client")
+    }
+
+    public func enabledDeviceIDs(platform: String) async throws -> [String] {
+        throw ASCError.decoding("devices are not available from this client")
+    }
+
+    public func certificateID(serialNumber: String) async throws -> String? {
+        throw ASCError.decoding("certificates are not available from this client")
+    }
+
+    public func canListUsers() async throws -> Bool { false }
+
+    public func createDevelopmentProfile(
+        name: String, type: ASCDevelopmentProfileType, bundleIDResourceID: String, certificateIDs: [String],
+        deviceIDs: [String]
+    ) async throws -> ASCProfile {
+        throw ASCError.decoding("creating profiles is not available from this client")
     }
 
     /// Clients that cannot read it say so; the deploy check then says nothing about it.

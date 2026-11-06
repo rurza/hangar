@@ -139,3 +139,68 @@ public struct ASCCertificate: Sendable, Equatable {
         self.content = content
     }
 }
+
+/// The development profile types Hangar reads and creates. Distribution types are deliberately absent: Hangar never
+/// reads, creates or changes a distribution profile (exports are signed by Apple's cloud-managed signing).
+public enum ASCDevelopmentProfileType: String, Sendable, Codable, CaseIterable {
+    case iOS = "IOS_APP_DEVELOPMENT"
+    case macOS = "MAC_APP_DEVELOPMENT"
+    case tvOS = "TVOS_APP_DEVELOPMENT"
+
+    /// The device platform (`/v1/devices` `filter[platform]`) whose devices a profile of this type lists.
+    public var devicePlatform: String {
+        switch self {
+        case .iOS, .tvOS: "IOS"
+        case .macOS: "MAC_OS"
+        }
+    }
+
+    /// The bundle ID platforms (`IOS`, `MAC_OS`, `UNIVERSAL`) a profile of this type can be made for.
+    public var bundleIDPlatforms: Set<String> {
+        switch self {
+        case .iOS, .tvOS: ["IOS", "UNIVERSAL"]
+        case .macOS: ["MAC_OS", "UNIVERSAL"]
+        }
+    }
+}
+
+/// A registered bundle ID (`/v1/bundleIds`): `id` is App Store Connect's resource ID, `identifier` the bundle ID.
+public struct ASCBundleIdentifier: Sendable, Equatable {
+    public var id: String
+    public var identifier: String
+    public var platform: String
+
+    public init(id: String, identifier: String, platform: String) {
+        self.id = id
+        self.identifier = identifier
+        self.platform = platform
+    }
+}
+
+/// A development provisioning profile and what it is for. `content` is the signed `.mobileprovision` or
+/// `.provisionprofile` file; it holds no private key.
+public struct ASCProfile: Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var type: ASCDevelopmentProfileType
+    public var uuid: String
+    public var content: Data
+    public var expirationDate: Date?
+    /// The bundle ID's resource ID.
+    public var bundleIDResourceID: String?
+    public var certificateIDs: [String]
+
+    public init(
+        id: String, name: String, type: ASCDevelopmentProfileType, uuid: String, content: Data, expirationDate: Date?,
+        bundleIDResourceID: String?, certificateIDs: [String]
+    ) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.uuid = uuid
+        self.content = content
+        self.expirationDate = expirationDate
+        self.bundleIDResourceID = bundleIDResourceID
+        self.certificateIDs = certificateIDs
+    }
+}

@@ -25,6 +25,8 @@ public struct HangarServerApp: Sendable {
     public let variables: VariableRepository
     /// The one Apple Development identity VM archives sign with; created or imported only on the owner's request.
     public let signing: SigningIdentityService
+    /// The development profiles VM archives sign with in their guests.
+    public let profiles: DevelopmentProfileService
     public let workflowFiles: WorkflowFileRepository
     public let numbers: BuildNumberService
     public let events: EventBus
@@ -99,6 +101,10 @@ public struct HangarServerApp: Sendable {
             credentials: { try Self.appStoreConnectCredentials(keys: ascKeys) }, factory: appStoreConnectFactory,
             now: now)
         self.signing = signing
+        profiles = DevelopmentProfileService(
+            credentials: { try Self.appStoreConnectCredentials(keys: ascKeys) },
+            developmentKey: { try ascKeys.key(.development) },
+            identity: { [repository = signing.repository] in try repository.info() }, factory: appStoreConnectFactory, now: now)
         numbers = BuildNumberService(
             repository: builds,
             sources: numberSources ?? { try Self.defaultNumberSources(keys: ascKeys, factory: appStoreConnectFactory) })

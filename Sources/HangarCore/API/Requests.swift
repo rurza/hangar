@@ -199,11 +199,14 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
     public var workerInstallAvailable: Bool
     /// The GitHub token's account and where it came from; nil without a token.
     public var github: GitHubStatus?
+    /// The optional development key (Developer role) for VM archives whose profiles the server cannot provide.
+    public var developmentKey: ASCKeyStatus?
 
     public init(
         version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool, workerInstallAvailable: Bool = false,
-        github: GitHubStatus? = nil
+        github: GitHubStatus? = nil, developmentKey: ASCKeyStatus? = nil
     ) {
+        self.developmentKey = developmentKey
         self.version = version
         self.appStoreConnect = appStoreConnect
         self.githubTokenSet = githubTokenSet
@@ -211,7 +214,9 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
         self.github = github
     }
 
-    private enum CodingKeys: String, CodingKey { case version, appStoreConnect, githubTokenSet, workerInstallAvailable, github }
+    private enum CodingKeys: String, CodingKey {
+        case version, appStoreConnect, githubTokenSet, workerInstallAvailable, github, developmentKey
+    }
 
     /// An older server sends no `workerInstallAvailable` (read as false) and no `github`.
     public init(from decoder: any Decoder) throws {
@@ -221,6 +226,7 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
         githubTokenSet = try container.decode(Bool.self, forKey: .githubTokenSet)
         workerInstallAvailable = try container.decodeIfPresent(Bool.self, forKey: .workerInstallAvailable) ?? false
         github = try container.decodeIfPresent(GitHubStatus.self, forKey: .github)
+        developmentKey = try container.decodeIfPresent(ASCKeyStatus.self, forKey: .developmentKey)
     }
 }
 

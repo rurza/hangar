@@ -22,6 +22,7 @@ export async function settingsPage(params, context) {
   const asc = ascCard(() => status, (options) => refresh(asc, options));
   const github = githubCard(() => status, (options) => refresh(github, options));
   const signing = signingCard(() => status, { signal });
+  const developmentKey = developmentKeyCard(() => status, (options) => refresh(developmentKey, options));
 
   /**
    * Reloads the status and redraws only `changed` (unless `redraw` is false), so a form open in the other card
@@ -47,6 +48,7 @@ export async function settingsPage(params, context) {
   }
 
   asc.render();
+  developmentKey.render();
   github.render();
   renderAbout();
 
@@ -56,13 +58,20 @@ export async function settingsPage(params, context) {
   },
     section({
       title: 'App Store Connect',
-      footer: 'Hangar uses the API key for build numbers and TestFlight.',
+      footer: 'Hangar uses the API key for build numbers, TestFlight, its signing certificate and development '
+        + 'profiles. It is never a variable: workers use it for xcodebuild themselves, and no VM ever gets it.',
     }, asc.element),
     section({
       title: 'Signing',
       footer: 'VM builds sign development archives with this one certificate. Exports and TestFlight uploads stay '
         + 'signed by App Store Connect.',
     }, signing.element),
+    section({
+      title: 'Development Key',
+      footer: 'Optional. VM builds never get the key above. A VM archive signs with development profiles Hangar '
+        + 'provides; only when one is missing does its VM get this key, to let Xcode fetch it. Give it the Developer '
+        + 'role: whoever controls a build’s code can copy it during that build.',
+    }, developmentKey.element),
     section({
       title: 'GitHub',
       footer: 'Hangar reads your app repositories and their private Swift packages with it. Jobs of an app without its '
@@ -261,6 +270,114 @@ function ascCard(getStatus, refresh) {
           cancel,
           save));
       (keyID ? save : keyInput).focus();
+    }
+
+    showDrop();
+    return slot;
+  }
+
+  return { element, render };
+}
+
+// MARK: Development key
+
+/**
+ * The optional second team key for VM archives whose development profiles Hangar could not provide. The server
+ * tests it and refuses an individual key, an Admin key and its own key.
+ */
+function developmentKeyCard(getStatus, refresh) {
+  const element = card({ class: 'settings-card' });
+  let editing = false;
+
+  function render() {
+    const key = getStatus().developmentKey;
+    if (!key || editing) {
+      replaceChildren(element, form(key));
+      return;
+    }
+    const remove = button('Remove', {
+      kind: 'plain-destructive',
+      onClick: async () => {
+        const confirmed = await confirm({
+          title: 'Remove the development key?',
+          message: 'VM archives then sign only with the profiles Hangar provides; an iOS archive whose profile is '
+            + 'missing fails before its VM starts. The key stays valid in App Store Connect until you revoke it there.',
+          confirmLabel: 'Remove',
+          destructive: true,
+        });
+        if (!confirmed) return;
+        if (await busy([remove], () => api.del('/settings/development-key'))) {
+          toast('Removed the development key', 'success');
+          await refresh();
+        }
+      },
+    });
+    replaceChildren(element,
+      h('p', { class: 'card-headline settings-state' },
+        h('span', { class: 'online-dot online', 'aria-hidden': 'true' }), 'Team key, Developer role'),
+      h('dl', { class: 'facts' }, fact('Key ID', key.keyID), key.issuerID ? fact('Issuer ID', key.issuerID) : null),
+      h('div', { class: 'card-actions' },
+        button('Replace Key', {
+          onClick: () => {
+            editing = true;
+            render();
+            focusFirst(element);
+          },
+        }),
+        remove));
+  }
+
+  function form(existing) {
+    const slot = h('div', { class: 'form' });
+    const cancel = existing
+      ? button('Cancel', { kind: 'plain', class: 'button button-plain', onClick: () => { editing = false; render(); } })
+      : null;
+
+    function showDrop() {
+      replaceChildren(slot,
+        existing ? null : h('p', { class: 'card-headline settings-state' },
+          h('span', { class: 'online-dot', 'aria-hidden': 'true' }), 'Not set'),
+        h('p', { class: 'card-detail' },
+          'Create a team key with the Developer role and access to Certificates, Identifiers & Profiles in ',
+          externalLink(ASC_KEYS_URL, 'App Store Connect › Users and Access › Integrations'), ', then add its .p8 file.'),
+        keyDropZone(onKey),
+        cancel ? h('div', { class: 'card-actions' }, cancel) : null);
+    }
+
+    function onKey({ keyID, text, name }) {
+      const keyInput = h('input', {
+        class: 'input mono', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'characters',
+        autocorrect: 'off', placeholder: 'ABC123DEFG', value: keyID ?? '',
+      });
+      const extra = h('div', { class: 'found-key-extra' });
+      const issuer = issuerField(async (issuerID, control) => {
+        const id = keyInput.value.trim().toUpperCase();
+        if (!id) {
+          keyInput.setAttribute('aria-invalid', 'true');
+          keyInput.focus();
+          return;
+        }
+        replaceChildren(extra);
+        try {
+          await withBusy(control, 'Testing…', () => api.post('/settings/development-key', { keyID: id, issuerID, privateKey: text }));
+        } catch (error) {
+          replaceChildren(extra, problem(error.message));
+          return;
+        }
+        toast('Saved the development key', 'success');
+        editing = false;
+        await refresh();
+        focusFirst(element);
+      });
+      replaceChildren(slot,
+        h('p', { class: 'card-headline' }, name),
+        field({ label: 'Key ID', control: keyInput }),
+        issuer.element,
+        extra,
+        h('div', { class: 'card-actions' },
+          button('Choose Another', { kind: 'plain', class: 'button button-plain', onClick: showDrop }),
+          cancel));
+      (keyID ? issuer : { focus: () => keyInput.focus() }).focus();
     }
 
     showDrop();
