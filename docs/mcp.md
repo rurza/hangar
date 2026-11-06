@@ -28,7 +28,13 @@
 
    It asks for the token without showing it and saves it readable only by you. Use a file of its own: `~/.config/hangar/token` is the CLI's, which `hangar mcp` never reads.
 
-3. **Register the server with Claude Code**, with `hangar` on its `PATH`:
+3. **Register the server with Claude Code**, with `hangar` on its `PATH`. On a Mac that has no `hangar` yet, the server hands it out:
+
+   ```sh
+   mkdir -p ~/.local/bin && curl -fsSL http://<server>:8787/install/hangar -o ~/.local/bin/hangar && chmod +x ~/.local/bin/hangar
+   ```
+
+   Then:
 
    ```sh
    claude mcp add hangar --scope user \

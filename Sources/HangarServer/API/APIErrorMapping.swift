@@ -46,7 +46,7 @@ enum APIErrorMapping {
         if code == "token_scope" || code == "job_token_scope" || code == "owner_only" { return .forbidden }
         if code == "cross_site_request" || code == "invalid_pairing_code" || code == "local_only" { return .forbidden }
         if code == "too_many_attempts" || code == "signing_rate_limited" { return .tooManyRequests }
-        if ["worker_binary_missing", "host_name_unknown", "server_address_unusable"].contains(code) { return .serviceUnavailable }
+        if ["worker_binary_missing", "cli_binary_missing", "host_name_unknown", "server_address_unusable"].contains(code) { return .serviceUnavailable }
         if code == "host_not_allowed" { return .misdirectedRequest }
         if code == "unsupported_media_type" { return .unsupportedMediaType }
         if code == "github_unauthorized" { return .badGateway }

@@ -67,7 +67,7 @@ import Testing
     @Test func installRefusesAForeignHost() async throws {
         let fixture = try APIFixture(boundHost: "100.71.242.42")
         try await fixture.test { client in
-            for uri in ["/install", "/install/hangar-worker"] {
+            for uri in ["/install", "/install/hangar-worker", "/install/hangar"] {
                 try await client.execute(uri: uri, method: .get) { response throws in
                     #expect(response.status == .misdirectedRequest)
                     #expect(try decode(APIError.self, response).code == "host_not_allowed")
@@ -98,6 +98,27 @@ import Testing
         try await fixture.test { client in
             try await client.execute(uri: "/install/hangar-worker", method: .get) { response throws in
                 #expect(response.status == .serviceUnavailable)
+            }
+        }
+    }
+
+    @Test func theCLIIsServedFromBesideTheWorker() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("cli-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let worker = directory.appendingPathComponent("hangar-worker")
+        try Data("worker".utf8).write(to: worker)
+        let fixture = try APIFixture(workerBinaryPath: worker.path)
+        try await fixture.test { client in
+            try await client.execute(uri: "/install/hangar", method: .get) { response throws in
+                #expect(response.status == .serviceUnavailable)
+                #expect(try decode(APIError.self, response).code == "cli_binary_missing")
+            }
+            try Data("cli".utf8).write(to: directory.appendingPathComponent("hangar"))
+            try await client.execute(uri: "/install/hangar", method: .get) { response throws in
+                #expect(response.status == .ok)
+                #expect(response.headers[InstallRoutes.versionHeader] == HangarVersion.current)
+                #expect(Data(response.body.readableBytesView) == Data("cli".utf8))
             }
         }
     }

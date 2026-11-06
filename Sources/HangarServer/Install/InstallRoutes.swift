@@ -3,7 +3,8 @@ import HangarCore
 import Hummingbird
 
 /// The one-command worker install: `GET /install` is the shell script (`curl -fsSL <server>/install | sh`) and
-/// `GET /install/hangar-worker` the worker binary it downloads. Both sit outside `/api/v1` and are GET-only, so the
+/// `GET /install/hangar-worker` the worker binary it downloads. `GET /install/hangar` is the CLI, for Macs where
+/// agents work. Both sit outside `/api/v1` and are GET-only, so the
 /// cross-site guard does not apply; the Host check does, and the script's server address comes from that Host.
 struct InstallRoutes: Sendable {
     static let versionHeader = HTTPFields.Element.Name("X-Hangar-Version")!
@@ -25,6 +26,21 @@ struct InstallRoutes: Sendable {
                 ],
                 body: ResponseBody(byteBuffer: ByteBuffer(string: script)))
         }
+        router.get("install/hangar") { _, context in
+            guard let binary = Self.workerBinary(at: cliBinaryPath) else {
+                throw APIError(
+                    code: "cli_binary_missing",
+                    message: "This server has no hangar CLI to hand out. Reinstall the server with the latest scripts/server/install-server.sh.")
+            }
+            let body = try await FileIO().loadFile(path: binary.path, context: context)
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: "application/octet-stream", .contentLength: "\(binary.size)",
+                    .cacheControl: "no-store", Self.versionHeader: HangarVersion.current,
+                ],
+                body: body)
+        }
         router.get("install/hangar-worker") { _, context in
             guard let binary = Self.workerBinary(at: workerBinaryPath) else {
                 throw APIError(
@@ -40,6 +56,11 @@ struct InstallRoutes: Sendable {
                 ],
                 body: body)
         }
+    }
+
+    /// The `hangar` CLI the server hands to a Mac where agents work: installed next to `hangar-worker`.
+    var cliBinaryPath: String? {
+        workerBinaryPath.map { (($0 as NSString).deletingLastPathComponent as NSString).appendingPathComponent("hangar") }
     }
 
     /// The binary at `path` and its size, nil when there is no path or it is not a non-empty regular file.
