@@ -51,6 +51,10 @@ public struct HangarServerApp: Sendable {
     let setup: SetupEnvironment
     /// Server-wide settings that are not variables.
     let serverSettings: ServerSettingsRepository
+    /// Which tailnet devices are the owner's; every public route but `health` and `enroll` needs the owner or a token.
+    public let owners: OwnerAccess
+    /// What the authentication asks whether a peer is the owner's: `owners`, unless a test replaced it.
+    let ownerCheck: any OwnerIdentifying
     /// Whose the GitHub token is.
     let githubAccounts: GitHubAccounts
     let localHostName = LocalHostName()
@@ -63,16 +67,18 @@ public struct HangarServerApp: Sendable {
     /// read the `HANGAR_ASC_*` globals on every use so credentials set after start-up take effect. `iconTransport`
     /// carries the public iTunes lookup that finds icons App Store Connect has none for; `githubTransport` the
     /// repository list and the token's account. `setup` is this Mac as the first-run setup sees it. `signingRunner`
-    /// runs `/usr/bin/openssl` for the signing identity.
+    /// runs `/usr/bin/openssl` for the signing identity. `tailnet` says whose a peer's tailnet device is: the owner
+    /// check. It has no default, so nothing builds a server that trusts every peer by accident. `ownerCheck` replaces
+    /// the check built on it (tests).
     public init(
-        configuration: ServerConfiguration, database: Database,
+        configuration: ServerConfiguration, database: Database, tailnet: any TailnetIdentifying,
         appStoreConnectFactory: @escaping @Sendable (ASCCredentials) -> any AppStoreConnectClient,
         sourceHost: any SourceHost = GitHubSourceHost(), clock: any Clock<Duration> = ContinuousClock(),
         numberSources: (@Sendable () async throws -> [any KnownNumberSource])? = nil,
         iconTransport: any HTTPTransport = URLSessionTransport(),
         githubTransport: any HTTPTransport = URLSessionTransport(),
         now: @escaping @Sendable () -> Date = Date.init, setup: SetupEnvironment = .live(),
-        signingRunner: any ProcessRunner = LiveProcessRunner()
+        signingRunner: any ProcessRunner = LiveProcessRunner(), ownerCheck: (any OwnerIdentifying)? = nil
     ) throws {
         self.configuration = configuration
         self.database = database
@@ -125,6 +131,8 @@ public struct HangarServerApp: Sendable {
         repositoryBranches = RepositoryBranchesCache(now: now)
         self.setup = setup
         serverSettings = ServerSettingsRepository(database: database)
+        owners = OwnerAccess(tailnet: tailnet, settings: serverSettings, now: now)
+        self.ownerCheck = ownerCheck ?? owners
         githubAccounts = GitHubAccounts(transport: githubTransport, now: now)
         preflight = DeployPreflight(sourceHost: sourceHost, now: now)
     }

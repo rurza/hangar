@@ -15,7 +15,7 @@ enum APIErrorMapping {
         "asc_not_configured", "github_not_configured", "issuer_required", "worker_already_installed",
         "dedicated_user_required",
         "token_exists", "variable_workflows_overlap", "variable_exists", "variable_group_exists",
-        "signing_identity_exists", "signing_busy", "team_key_required",
+        "signing_identity_exists", "signing_busy", "team_key_required", "access_lockout",
     ]
 
     static func map(_ error: any Error) -> (HTTPResponse.Status, APIError) {
@@ -41,8 +41,10 @@ enum APIErrorMapping {
     }
 
     static func status(code: String) -> HTTPResponse.Status {
-        if code == "unauthorized" || code == "invalid_api_token" || code == "invalid_job_token" { return .unauthorized }
-        if code == "token_scope" || code == "job_token_scope" { return .forbidden }
+        if ["unauthorized", "invalid_api_token", "invalid_job_token", "authentication_required"].contains(code) {
+            return .unauthorized
+        }
+        if code == "token_scope" || code == "job_token_scope" || code == "owner_only" { return .forbidden }
         if code == "cross_site_request" || code == "invalid_pairing_code" || code == "local_only" { return .forbidden }
         if code == "too_many_attempts" || code == "signing_rate_limited" { return .tooManyRequests }
         if ["worker_binary_missing", "host_name_unknown", "server_address_unusable"].contains(code) { return .serviceUnavailable }

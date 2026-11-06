@@ -9,7 +9,26 @@ import Logging
 @main
 struct HangarServerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "hangar-server", abstract: "The Hangar build server.", subcommands: [Run.self])
+        commandName: "hangar-server", abstract: "The Hangar build server.",
+        subcommands: [Run.self, Token.self, Access.self])
+
+    /// The data directory: the flag, then HANGAR_DATA_DIR, then the default.
+    static func dataDirectory(_ flag: String?) -> String {
+        flag ?? ProcessInfo.processInfo.environment["HANGAR_DATA_DIR"]
+            ?? NSHomeDirectory() + "/Library/Application Support/Hangar/server"
+    }
+
+    /// The server's database, opened directly: the recovery commands run on the server Mac, as the user that owns
+    /// the data directory, and work whether or not the server is running.
+    static func openDatabase(_ flag: String?) throws -> Database {
+        let directory = dataDirectory(flag)
+        guard FileManager.default.fileExists(atPath: directory + "/hangar.sqlite") else {
+            throw ValidationError("No Hangar database in \(directory). Pass --data-dir, or run this as the user the server runs as.")
+        }
+        let database = try Database(path: directory + "/hangar.sqlite")
+        try database.migrate()
+        return database
+    }
 
     struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -43,8 +62,7 @@ struct HangarServerCommand: AsyncParsableCommand {
                 }
                 return parsed
             } ?? 8787
-            let resolvedDirectory = dataDir ?? environment["HANGAR_DATA_DIR"]
-                ?? NSHomeDirectory() + "/Library/Application Support/Hangar/server"
+            let resolvedDirectory = HangarServerCommand.dataDirectory(dataDir)
             var resolvedHost = host ?? environment["HANGAR_HOST"]
             if resolvedHost == nil {
                 // No loopback fallback: it would stick after a login-time race. Exit so launchd KeepAlive retries.
@@ -69,13 +87,20 @@ struct HangarServerCommand: AsyncParsableCommand {
                 retentionDays: retentionDays, minFreeDiskGB: minFreeDiskGb, allowedHosts: localNames + extraHosts,
                 workerBinaryPath: WorkerBinary.locate())
             let server = try HangarServerApp(
-                configuration: configuration, database: database,
+                configuration: configuration, database: database, tailnet: TailscaleCLI(),
                 appStoreConnectFactory: { LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport()) })
 
             try server.backfillAppIcons()
 
             logger.info("data directory \(resolvedDirectory)")
             logger.info("allowed host names: \(configuration.hostPolicy.description)")
+            let owners = await server.owners.allowedLogins()
+            if owners.isEmpty {
+                logger.warning(
+                    "no owner login: this Mac's tailnet node is tagged or Tailscale is not running; allow one with hangar-server access allow <login>, or use an API token")
+            } else {
+                logger.info("owner logins (Tailscale): \(owners.joined(separator: ", "))")
+            }
             if let worker = configuration.workerBinaryPath {
                 logger.info("one-command worker install: serving \(worker) at /install")
             } else {

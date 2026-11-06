@@ -2,8 +2,8 @@ import Foundation
 import HangarCore
 import Hummingbird
 
-/// Creating, listing and revoking API tokens. A request made with an API token may only ask which token it is:
-/// a token can never mint, list or revoke tokens (`APITokenPolicy`).
+/// Creating, listing and revoking API tokens. A request made with a scoped API token may only ask which token it is:
+/// it can never mint, list or revoke tokens (`APITokenPolicy`). No request mints an `owner` token.
 extension HangarServerApp {
     func addAPITokenRoutes(to api: APIGroup) {
         api.get("api-tokens") { _, _ in try Response.json(apiTokens.all()) }
@@ -15,6 +15,12 @@ extension HangarServerApp {
         }
         api.post("api-tokens") { request, context in
             let input = try await request.decode(as: CreateAPITokenRequest.self, context: context)
+            // An owner token is made where the data directory is, so no request (and no stolen session) can mint one.
+            guard input.scope != .owner else {
+                throw APIError(
+                    code: "invalid_scope",
+                    message: "Owner tokens are made on the server Mac only: hangar-server token create <name> --scope owner.")
+            }
             let (token, secret) = try apiTokens.create(name: input.name, scope: input.scope, now: now())
             return try Response.json(CreateAPITokenResponse(token: token, secret: secret), status: .created)
         }
