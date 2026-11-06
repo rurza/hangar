@@ -6,8 +6,8 @@ public struct ServerConfiguration: Sendable {
     public var port: Int
     /// Holds `hangar.sqlite`, `master.key` and `jobs/<jobID>/`.
     public var dataDirectory: String
-    /// Job logs and artifacts of builds finished longer ago than this are deleted.
-    public var retentionDays: Int
+    /// Which builds keep their logs and artifacts.
+    public var retention: RetentionPolicy
     /// Machines with less free disk get no new jobs.
     public var minFreeDiskGB: Double
     /// A job running this long that its machine's heartbeat no longer lists fails: the worker lost track of it
@@ -21,13 +21,13 @@ public struct ServerConfiguration: Sendable {
     public var workerBinaryPath: String?
 
     public init(
-        host: String, port: Int = 8787, dataDirectory: String, retentionDays: Int = 30, minFreeDiskGB: Double = 20,
+        host: String, port: Int = 8787, dataDirectory: String, retention: RetentionPolicy = .standard, minFreeDiskGB: Double = 20,
         untrackedJobGrace: TimeInterval = 60, allowedHosts: [String] = [], workerBinaryPath: String? = nil
     ) {
         self.host = host
         self.port = port
         self.dataDirectory = dataDirectory
-        self.retentionDays = retentionDays
+        self.retention = retention
         self.minFreeDiskGB = minFreeDiskGB
         self.untrackedJobGrace = untrackedJobGrace
         self.allowedHosts = allowedHosts

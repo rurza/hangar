@@ -14,7 +14,8 @@ public enum XcodeVersion {
             .max { components($0.version).lexicographicallyPrecedes(components($1.version)) }
     }
 
-    private static func components(_ version: String) -> [Int] {
+    /// "27.2.1" → [27, 2, 1], for ordering versions.
+    public static func components(_ version: String) -> [Int] {
         version.split(separator: ".").map { Int($0) ?? 0 }
     }
 }

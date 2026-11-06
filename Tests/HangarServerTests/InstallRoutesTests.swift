@@ -84,7 +84,10 @@ import Testing
                 #expect(try decode(APIError.self, response).code == "worker_binary_missing")
             }
             try await client.execute(uri: "/api/v1/settings", method: .get) { response throws in
-                #expect(try decode(SettingsStatus.self, response).workerInstallAvailable == false)
+                let status = try decode(SettingsStatus.self, response)
+                #expect(status.workerInstallAvailable == false)
+                // How long build files stay, for Settings › Storage.
+                #expect(status.storage?.keepBuildsPerApp == 5 && status.storage?.keepDays == 7 && status.storage?.maxGB == 10)
             }
         }
     }

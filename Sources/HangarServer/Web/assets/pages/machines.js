@@ -10,6 +10,7 @@ import {
   buildUserWarning, isOnline, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift,
 } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
+import { diskUsageText } from '../disk-usage.js';
 
 /** How often the online dots and "last seen" times are re-evaluated without a heartbeat event. */
 const TICK_MS = 15_000;
@@ -303,6 +304,8 @@ function reportView(machine, jobInfo, signing) {
   const xcodes = [...(report.xcodes ?? [])].sort((a, b) => b.version.localeCompare(a.version, 'en', { numeric: true }));
   const tools = Object.entries(report.tools ?? {}).sort(([a], [b]) => a.localeCompare(b));
   const identities = Array.isArray(report.signingIdentities) ? report.signingIdentities : [];
+  // What the worker's own files take, clone-aware; the pieces are a tooltip.
+  const usage = diskUsageText(report.diskUsage);
 
   return [
     h('div', { class: 'machine-load' },
@@ -319,6 +322,9 @@ function reportView(machine, jobInfo, signing) {
       fact('Performance cores', String(report.performanceCores)),
       fact('Memory', `${report.memoryGB} GB`),
       fact('Free disk', `${formatGB(report.freeDiskGB)} GB`),
+      usage ? h('div', { class: 'fact', title: usage.detail || null },
+        h('dt', { class: 'fact-label' }, 'Hangar uses'),
+        h('dd', { class: 'fact-value' }, usage.value)) : null,
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
       fact('macOS', report.macOSVersion || '–'),
       // A VM Mac signs in its VMs; its own Xcode account plays no part.

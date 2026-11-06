@@ -99,6 +99,42 @@ public struct BuildRepository: Sendable {
         }
     }
 
+    // MARK: Retention
+
+    /// Each job with what retention decides by: its build, app and whether and when the build finished.
+    public func retentionRecords() throws -> [RetentionRecord] {
+        try database.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT j.id AS job_id, j.status AS job_status, b.id AS build_id, b.app_id, b.build_number,
+                           b.status AS build_status, b.finished_at, a.slug
+                    FROM jobs j JOIN builds b ON b.id = j.build_id LEFT JOIN apps a ON a.id = b.app_id
+                    """
+            ).map { row in
+                RetentionRecord(
+                    jobID: UUID(uuidString: row["job_id"])!, buildID: UUID(uuidString: row["build_id"])!,
+                    appID: UUID(uuidString: row["app_id"])!, appSlug: row["slug"] ?? "", buildNumber: row["build_number"],
+                    finished: ["succeeded", "failed", "cancelled"].contains(row["build_status"] as String)
+                        && JobStatus(rawValue: row["job_status"])?.isTerminal == true,
+                    finishedAt: dbDate(row["finished_at"] as Double?))
+            }
+        }
+    }
+
+    /// The Xcode versions the workflows of queued, assigned and running jobs ask for, sorted.
+    public func xcodesNeeded() throws -> [String] {
+        try database.read { db in
+            let workflows = try String.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT b.workflow_json FROM builds b JOIN jobs j ON j.build_id = b.id
+                    WHERE j.status IN ('queued', 'assigned', 'running') AND b.workflow_json IS NOT NULL
+                    """)
+            return Set(workflows.compactMap { try? Self.decode(Workflow.self, $0).xcode }).sorted()
+        }
+    }
+
     // MARK: Jobs
 
     public func jobs(status: Set<JobStatus>) throws -> [Job] {
@@ -333,4 +369,16 @@ public struct BuildRepository: Sendable {
             startedAt: dbDate(row["started_at"] as Double?), finishedAt: dbDate(row["finished_at"] as Double?),
             runInfo: try (row["run_info_json"] as String?).map { try decode(JobRunInfo.self, $0) })
     }
+}
+
+/// A job as retention sees it.
+public struct RetentionRecord: Sendable, Equatable {
+    public var jobID: UUID
+    public var buildID: UUID
+    public var appID: UUID
+    public var appSlug: String
+    public var buildNumber: Int
+    /// The build and the job both ended; anything else keeps its files.
+    public var finished: Bool
+    public var finishedAt: Date?
 }

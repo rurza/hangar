@@ -38,6 +38,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             let work = configuration.resolvedWorkDirectory
             var loopConfiguration = configuration
             var vmDoctor: VMDoctor?
+            var slotPool: VMSlotPool?
             let jobRunner: any JobRunning
             if let settings = configuration.vm {
                 // VM builds: every job in a fresh VM, as many at once as there are slots.
@@ -49,6 +50,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 let identity = VMIdentityStore(dataDirectory: configuration.dataDirectory)
                 let doctor = VMDoctor(host: host, identity: identity)
                 let pool = VMSlotPool(count: settings.slots)
+                slotPool = pool
                 vmDoctor = doctor
                 loopConfiguration.maxConcurrentJobs = settings.slots
                 jobRunner = VMJobRunner(
@@ -68,11 +70,17 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                     connection: connection, runner: runner, locator: locator, dataDirectory: work,
                     jobTimeout: configuration.jobTimeout)
             }
+            // Removes what Hangar no longer needs on this Mac, and measures what it uses for the heartbeat.
+            let sweeper = DiskSweeper(
+                locations: DiskSweeper.Locations(
+                    workDirectory: work, dataDirectory: configuration.dataDirectory, vm: configuration.vm),
+                pool: slotPool, hostXcodes: { try? await locator.installed() })
             let loop = WorkerLoop(
                 configuration: loopConfiguration, connection: connection,
                 doctor: HangarWorker.Doctor(
-                    runner: runner, locator: locator, dataDirectory: work, vm: vmDoctor),
-                jobRunner: jobRunner)
+                    runner: runner, locator: locator, dataDirectory: work, vm: vmDoctor,
+                    diskUsage: { sweeper.usage }),
+                jobRunner: jobRunner, sweeper: sweeper)
             logger.info("worker started", metadata: [
                 "server": "\(configuration.serverURL)", "version": "\(JobRunner.workerVersion)", "work": "\(work)",
                 "builds": "\(configuration.vm == nil ? "local" : "vm")",

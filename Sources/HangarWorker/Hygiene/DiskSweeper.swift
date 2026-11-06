@@ -1,0 +1,165 @@
+import Foundation
+import HangarCore
+import Logging
+import Synchronization
+
+/// Keeps the worker's disk clean without anyone asking: on start and every hour it removes what `DiskSweepPlan`
+/// finds, each removal confined to the Hangar directory it belongs in (`SafeRemoval`), logs one line saying what went
+/// and how much that freed, and measures what Hangar still uses for the heartbeat.
+public final class DiskSweeper: Sendable {
+    public struct Locations: Sendable, Equatable {
+        public var workDirectory: String
+        public var dataDirectory: String
+        public var systemTemporary: String
+        /// Set with VM builds on.
+        public var vm: VMSettings?
+
+        public init(workDirectory: String, dataDirectory: String, systemTemporary: String = NSTemporaryDirectory(), vm: VMSettings? = nil) {
+            self.workDirectory = DiskSweepPlan.standardized(workDirectory)
+            self.dataDirectory = DiskSweepPlan.standardized(dataDirectory)
+            self.systemTemporary = DiskSweepPlan.standardized(systemTemporary)
+            self.vm = vm
+        }
+
+        var storage: VMStorage? { vm.map { VMStorage(root: $0.storage) } }
+        var workspaceDirectories: [String] { Array(Set([workDirectory + "/workspaces", dataDirectory + "/workspaces"])).sorted() }
+        var jobTemporaryRoot: String { WorkspaceLayout.temporaryRoot(dataDirectory: workDirectory) }
+    }
+
+    /// What one sweep did.
+    public struct Summary: Sendable, Equatable {
+        public var removed: [String] = []
+        public var failures: [String] = []
+        public var freedBytes: UInt64 = 0
+        public var usage: HangarDiskUsage?
+
+        /// The one line logged; nil when the sweep found nothing to remove.
+        public var line: String? {
+            guard !removed.isEmpty || !failures.isEmpty else { return nil }
+            var line = "disk sweep"
+            if !removed.isEmpty {
+                line += " removed \(removed.joined(separator: ", ")) and freed \(DiskUsage.text(freedBytes))"
+            }
+            if !failures.isEmpty { line += (removed.isEmpty ? " " : "; ") + "could not remove \(failures.joined(separator: "; "))" }
+            if let usage { line += "; Hangar uses \(DiskUsage.text(UInt64(usage.totalGB * 1_000_000_000))) on this Mac" }
+            return line
+        }
+    }
+
+    public static let interval: Duration = .seconds(3600)
+
+    let locations: Locations
+    private let workspaces: WorkspaceUse
+    private let pool: VMSlotPool?
+    private let hostXcodes: @Sendable () async -> [InstalledXcode]?
+    private let now: @Sendable () -> Date
+    private let latest = Mutex<HangarDiskUsage?>(nil)
+    private let logger = Logger(label: "app.hangar.worker.disk")
+
+    /// `pool` is the VM slot pool: an image or slot is removed only while every slot is held by the sweep, so no job
+    /// and no state being saved uses it. `hostXcodes` lists this Mac's Xcodes (nil when it cannot tell).
+    public init(
+        locations: Locations, workspaces: WorkspaceUse = .shared, pool: VMSlotPool? = nil,
+        hostXcodes: @escaping @Sendable () async -> [InstalledXcode]? = { nil },
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
+        self.locations = locations
+        self.workspaces = workspaces
+        self.pool = pool
+        self.hostXcodes = hostXcodes
+        self.now = now
+    }
+
+    /// The last measurement, for the heartbeat; nil until the first sweep.
+    public var usage: HangarDiskUsage? { latest.withLock { $0 } }
+
+    /// Sweeps once and logs the line. `xcodesNeeded` comes from the last heartbeat (nil before one).
+    @discardableResult
+    public func sweep(runningJobIDs: Set<UUID>, xcodesNeeded: [String]?) async -> Summary {
+        let summary = await sweepQuietly(runningJobIDs: runningJobIDs, xcodesNeeded: xcodesNeeded)
+        if let line = summary.line { logger.notice("\(line)") }
+        return summary
+    }
+
+    func sweepQuietly(runningJobIDs: Set<UUID>, xcodesNeeded: [String]?) async -> Summary {
+        var context = SweepContext(now: now(), runningJobIDs: runningJobIDs, xcodesNeeded: xcodesNeeded)
+        if xcodesNeeded != nil, locations.vm != nil { context.hostXcodes = await hostXcodes() }
+        var removals = DiskSweepPlan.temporary(
+            systemTemporary: locations.systemTemporary, jobTemporaryRoot: locations.jobTemporaryRoot, context: context)
+        removals += DiskSweepPlan.workspaces(
+            in: locations.workspaceDirectories, vmBuilds: locations.vm != nil, context: context)
+        // Images and slots go only while the sweep holds every slot: no job runs and no state is being saved.
+        var held: (pool: VMSlotPool, slots: [Int])?
+        defer { held.map { held in held.slots.forEach(held.pool.release) } }
+        if let storage = locations.storage, let settings = locations.vm {
+            var vm = DiskSweepPlan.vmStorage(storage, settings: settings, context: context)
+            let partials = storage.images + "/" + VMStorage.partialPrefix
+            let inUseByJobs: (SweepRemoval) -> Bool = { removal in
+                (removal.root == storage.images && !removal.path.hasPrefix(partials)) || removal.root.hasSuffix("/slots")
+            }
+            if vm.contains(where: inUseByJobs) {
+                let pool = pool ?? VMSlotPool(count: settings.slots)
+                let slots = (0..<settings.slots).filter { pool.acquire($0) }
+                held = (pool, slots)
+                if slots.count < settings.slots || !runningJobIDs.isEmpty { vm.removeAll(where: inUseByJobs) }
+            }
+            removals += vm
+        }
+        var summary = Summary()
+        if !removals.isEmpty {
+            let before = measure()
+            for removal in removals {
+                do {
+                    let removed: Bool
+                    if removal.workspace {
+                        removed = try workspaces.whileIdle(removal.path) {
+                            try SafeRemoval.removeItem(atPath: removal.path, within: removal.root)
+                        }
+                    } else {
+                        try SafeRemoval.removeItem(atPath: removal.path, within: removal.root)
+                        removed = true
+                    }
+                    if removed { summary.removed.append(removal.label) }
+                } catch {
+                    summary.failures.append("\(removal.label): \(error)")
+                }
+            }
+            let after = measure()
+            summary.freedBytes = before.total > after.total ? before.total - after.total : 0
+            summary.usage = after.report(at: context.now)
+        } else {
+            summary.usage = measure().report(at: context.now)
+        }
+        latest.withLock { $0 = summary.usage }
+        return summary
+    }
+
+    // MARK: Measuring
+
+    struct Measurement {
+        var total: UInt64
+        var images: UInt64
+        var workspaces: UInt64
+
+        func report(at date: Date) -> HangarDiskUsage {
+            let other = total > images + workspaces ? total - images - workspaces : 0
+            let parts = [("VM images", images), ("Workspaces", workspaces), ("Other", other)]
+                .filter { $0.1 >= 1_000_000 }
+                .sorted { $0.1 > $1.1 }
+                .map { HangarDiskUsage.Part(label: $0.0, gb: DiskUsage.gigabytes($0.1)) }
+            return HangarDiskUsage(totalGB: DiskUsage.gigabytes(total), parts: parts, measuredAt: date)
+        }
+    }
+
+    /// Everything of Hangar's this worker knows about: VM storage, the work and data directories and its
+    /// `hangar-*` temporary directories.
+    func measure() -> Measurement {
+        let temporary = DiskSweepPlan.entries(locations.systemTemporary).filter { $0.hasPrefix("hangar-") }
+            .map { locations.systemTemporary + "/" + $0 }
+        let roots = [locations.storage?.root, locations.workDirectory, locations.dataDirectory].compactMap { $0 } + temporary
+        return Measurement(
+            total: DiskUsage.bytes(of: roots),
+            images: locations.storage.map { DiskUsage.bytes(of: $0.images) } ?? 0,
+            workspaces: DiskUsage.bytes(of: locations.workspaceDirectories))
+    }
+}

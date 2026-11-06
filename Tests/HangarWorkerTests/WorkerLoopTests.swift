@@ -254,6 +254,41 @@ private final class FakeUpdater: WorkerUpdating {
         await task.value
     }
 
+    @Test func sweepsTheDiskOnStartAndAgainOnceTheServerSaysWhatJobsNeed() async throws {
+        let directory = Self.dataDirectory()
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let storage = VMStorage(root: directory + "/vm")
+        for (name, xcode) in [("xcode-27.1", "27.1"), ("xcode-27.3", "27.3")] {
+            let image = storage.image(name)
+            try FileManager.default.createDirectory(atPath: image.path, withIntermediateDirectories: true)
+            try VMBundleFile.write(
+                TartConfig(cpuCountMin: 2, cpuCount: 4, memorySizeMin: 1, memorySize: 1, macAddress: "m", hardwareModel: "", ecid: ""),
+                to: image.config)
+            try VMBundleFile.write(
+                VMImageMetadata(name: name, xcode: xcode, source: "t", createdAt: Date(), buildUser: "builder"), to: image.metadata)
+        }
+        let connection = ScriptedConnection(heartbeatResponses: [HeartbeatResponse(xcodesNeeded: ["27.3"])])
+        let clock = ManualClock()
+        let sweeper = DiskSweeper(
+            locations: DiskSweeper.Locations(
+                workDirectory: directory + "/work", dataDirectory: directory, systemTemporary: directory + "/T",
+                vm: VMSettings(storage: storage.root)),
+            workspaces: WorkspaceUse(),
+            hostXcodes: { [InstalledXcode(version: "27.3", build: "", path: "/Applications/Xcode.app")] })
+        let loop = WorkerLoop(
+            configuration: WorkerConfiguration(
+                serverURL: URL(string: "http://hangar.test")!, token: "t", dataDirectory: directory),
+            connection: connection, doctor: DoctorTests.doctor(DoctorTests.scriptedRunner()), jobRunner: BlockingJobRunner(),
+            clock: clock, temporaryRoot: directory + "-tmp", updater: FakeUpdater(), sweeper: sweeper)
+        let task = Task { await loop.run() }
+        await Self.eventually { sweeper.usage != nil && !connection.heartbeats.isEmpty }
+        clock.advance(by: .seconds(30))
+        await Self.eventually { !FileManager.default.fileExists(atPath: storage.image("xcode-27.1").path) }
+        #expect(FileManager.default.fileExists(atPath: storage.image("xcode-27.3").path))
+        task.cancel()
+        await task.value
+    }
+
     @Test func backsOffOnTransportErrors() async throws {
         let answers: [ScriptedConnection.Answer] =
             [.failure, .failure, .failure, .failure, .failure, .failure, .nothing, .failure]

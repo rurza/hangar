@@ -24,7 +24,7 @@ public enum SafeRemoval {
         }
     }
 
-    static func isStrictlyInside(_ path: String, root: String) -> Bool {
+    public static func isStrictlyInside(_ path: String, root: String) -> Bool {
         func standard(_ value: String) -> Bool {
             value.hasPrefix("/") && URL(fileURLWithPath: value).standardizedFileURL.path == value
         }

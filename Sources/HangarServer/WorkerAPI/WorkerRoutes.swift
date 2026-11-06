@@ -41,7 +41,8 @@ extension HangarServerApp {
             scheduler.poke()
             return try Response.json(HeartbeatResponse(
                 cancelJobIDs: cancel.sorted { $0.uuidString < $1.uuidString },
-                workerUpdate: workerUpdate(reportedSHA256: input.report.binarySHA256)))
+                workerUpdate: workerUpdate(reportedSHA256: input.report.binarySHA256),
+                xcodesNeeded: try builds.xcodesNeeded()))
         }
 
         worker.get("jobs/next") { request, context in

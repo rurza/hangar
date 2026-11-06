@@ -205,11 +205,14 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
     public var github: GitHubStatus?
     /// The optional development key (Developer role) for VM archives whose profiles the server cannot provide.
     public var developmentKey: ASCKeyStatus?
+    /// What the server's files take and how long it keeps build files; nil from an older server.
+    public var storage: ServerStorageStatus?
 
     public init(
         version: String, appStoreConnect: ASCKeyStatus?, githubTokenSet: Bool, workerInstallAvailable: Bool = false,
-        github: GitHubStatus? = nil, developmentKey: ASCKeyStatus? = nil
+        github: GitHubStatus? = nil, developmentKey: ASCKeyStatus? = nil, storage: ServerStorageStatus? = nil
     ) {
+        self.storage = storage
         self.developmentKey = developmentKey
         self.version = version
         self.appStoreConnect = appStoreConnect
@@ -219,7 +222,7 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, appStoreConnect, githubTokenSet, workerInstallAvailable, github, developmentKey
+        case version, appStoreConnect, githubTokenSet, workerInstallAvailable, github, developmentKey, storage
     }
 
     /// An older server sends no `workerInstallAvailable` (read as false) and no `github`.
@@ -231,6 +234,23 @@ public struct SettingsStatus: Codable, Equatable, Sendable {
         workerInstallAvailable = try container.decodeIfPresent(Bool.self, forKey: .workerInstallAvailable) ?? false
         github = try container.decodeIfPresent(GitHubStatus.self, forKey: .github)
         developmentKey = try container.decodeIfPresent(ASCKeyStatus.self, forKey: .developmentKey)
+        storage = try container.decodeIfPresent(ServerStorageStatus.self, forKey: .storage)
+    }
+}
+
+/// The server's disk: what its files take on its Mac (nil until the first retention sweep measured them) and the
+/// retention policy that keeps them in check.
+public struct ServerStorageStatus: Codable, Equatable, Sendable {
+    public var usage: HangarDiskUsage?
+    public var keepBuildsPerApp: Int
+    public var keepDays: Int
+    public var maxGB: Double
+
+    public init(usage: HangarDiskUsage?, keepBuildsPerApp: Int, keepDays: Int, maxGB: Double) {
+        self.usage = usage
+        self.keepBuildsPerApp = keepBuildsPerApp
+        self.keepDays = keepDays
+        self.maxGB = maxGB
     }
 }
 

@@ -81,12 +81,20 @@ public actor WorkerLoop {
     /// Who waits for the poll in flight to end, or for an update to be over.
     private var pollWaiters: [CheckedContinuation<Void, Never>] = []
     private var updateWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Cleans the disk on start and every `DiskSweeper.interval`; nil in tests that do not need it.
+    private let sweeper: DiskSweeper?
+    /// What the last heartbeat said queued and running jobs need; nil before one answered.
+    private var xcodesNeeded: [String]?
+    /// Whether a sweep has run since the server first said what it needs: the first one after start-up cannot
+    /// remove an image yet.
+    private var sweptWithNeeds = false
 
     public init(
         configuration: WorkerConfiguration, connection: any ServerConnection, doctor: Doctor, jobRunner: any JobRunning,
         clock: any Clock<Duration> = ContinuousClock(), temporaryRoot: String? = nil,
-        updater: any WorkerUpdating = LiveWorkerUpdater()
+        updater: any WorkerUpdating = LiveWorkerUpdater(), sweeper: DiskSweeper? = nil
     ) {
+        self.sweeper = sweeper
         self.updater = updater
         self.temporaryRoot = temporaryRoot ?? WorkspaceLayout.temporaryRoot(dataDirectory: configuration.resolvedWorkDirectory)
         self.configuration = configuration
@@ -103,6 +111,7 @@ public actor WorkerLoop {
         await withTaskGroup(of: Void.self) { group in
             // The heartbeat keeps reporting the jobs that are winding down; it ends with the pull loop.
             group.addTask { await self.heartbeatLoop() }
+            if sweeper != nil { group.addTask { await self.sweepLoop() } }
             await pullLoop()
             group.cancelAll()
         }
@@ -203,6 +212,7 @@ public actor WorkerLoop {
                 let response = try await connection.heartbeat(HeartbeatRequest(report: report))
                 backoff.reset()
                 jobs.cancel(response.cancelJobIDs)
+                if let needed = response.xcodesNeeded { xcodesNeeded = needed }
                 if let update = response.workerUpdate { Task { await self.applyUpdate(update) } }
                 await sleep(Self.heartbeatInterval)
             } catch {
@@ -211,6 +221,21 @@ public actor WorkerLoop {
                 logger.error("heartbeat failed: \(error); retrying in \(delay)")
                 await sleep(delay)
             }
+        }
+    }
+
+    /// Sweeps at once, again as soon as a heartbeat has said which Xcodes jobs need, then every interval.
+    private func sweepLoop() async {
+        guard let sweeper else { return }
+        var last: ContinuousClock.Instant?
+        while !Task.isCancelled, stopReason == nil {
+            let due = last.map { ContinuousClock.now - $0 >= DiskSweeper.interval } ?? true
+            if due || (xcodesNeeded != nil && !sweptWithNeeds) {
+                sweptWithNeeds = xcodesNeeded != nil
+                await sweeper.sweep(runningJobIDs: Set(jobs.runningIDs), xcodesNeeded: xcodesNeeded)
+                last = .now
+            }
+            do { try await clock.sleep(for: Self.heartbeatInterval) } catch { return }
         }
     }
 

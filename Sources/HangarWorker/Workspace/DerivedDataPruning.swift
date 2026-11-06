@@ -1,4 +1,5 @@
 import Foundation
+import HangarCore
 
 /// Empties a workspace's DerivedData after a job: build products, intermediates, the compilation and module caches,
 /// logs and package checkouts take tens of GB per app and grow with every build. Only the package git mirrors

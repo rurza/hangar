@@ -129,7 +129,7 @@ public struct HangarServerApp: Sendable {
         logStore = LogStore(jobsDirectory: configuration.jobsDirectory)
         artifactStore = ArtifactStore(jobsDirectory: configuration.jobsDirectory)
         sweeper = RetentionSweeper(
-            jobsDirectory: configuration.jobsDirectory, builds: builds, retentionDays: configuration.retentionDays)
+            jobsDirectory: configuration.jobsDirectory, builds: builds, policy: configuration.retention)
         appIcons = AppIconResolver(
             client: { try Self.appStoreConnectClient(keys: ascKeys, factory: appStoreConnectFactory) },
             transport: iconTransport, clock: clock, now: now)

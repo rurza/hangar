@@ -49,7 +49,9 @@ private let gitHubToken = "ghp_supersecrettokenvalue"
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/settings", method: .get) { response throws in
                 #expect(response.status == .ok)
-                let status = try decode(SettingsStatus.self, response)
+                var status = try decode(SettingsStatus.self, response)
+                #expect(status.storage?.keepBuildsPerApp == RetentionPolicy.standard.keepBuildsPerApp)
+                status.storage = nil
                 #expect(status == SettingsStatus(version: HangarVersion.current, appStoreConnect: nil, githubTokenSet: false))
             }
         }

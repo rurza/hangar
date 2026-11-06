@@ -61,7 +61,7 @@ The server answers its owner and API tokens, nobody else ([details](api.md#who-m
 ## Options
 
 ```sh
-hangar-server run [--host <addr>] [--port 8787] [--data-dir <path>] [--retention-days 30] [--min-free-disk-gb 20] [--allowed-host <name> ...]
+hangar-server run [--host <addr>] [--port 8787] [--data-dir <path>] [--retention-days 7] [--keep-builds-per-app 5] [--max-build-files-gb 10] [--min-free-disk-gb 20] [--allowed-host <name> ...]
 ```
 
 Each of host, port and data directory is taken from the flag first, then from the environment (`HANGAR_HOST`, `HANGAR_PORT`, `HANGAR_DATA_DIR`), then the default.
@@ -88,7 +88,7 @@ master.key             the key that encrypts variables in hangar.sqlite
 jobs/<jobID>/          log.jsonl and artifacts/ of each job
 ```
 
-Logs and artifacts of builds finished more than 30 days ago (`--retention-days`) are deleted hourly. Build history in the database is kept.
+Build logs and artifacts are kept for each app's last 5 builds (`--keep-builds-per-app`) and for every build that finished in the last 7 days (`--retention-days`), and all of them together stay under 10 GB (`--max-build-files-gb`): past that, the oldest builds' files go first, each app's latest finished build last of all. A build that has not finished keeps its files. The files of a deleted app's jobs go within the hour. The sweep runs at start and hourly, and logs one line when it removes something; Settings › Storage shows what the server's files take. Build history in the database is kept.
 
 ## Backups
 
