@@ -61,6 +61,8 @@ import Testing
                     echo "launchctl $*" >>"$STUB_LOG"
                     [ "$1" != print ] || { [ "${STUB_DAEMON:-}" = 1 ] && [ "$2" = system/app.hangar.worker ]; }
                     """#,
+                // The preflight's license check; the real one is slow.
+                "xcodebuild": "#!/bin/sh\nexit 0\n",
                 "id": #"""
                     #!/bin/sh
                     case $1 in

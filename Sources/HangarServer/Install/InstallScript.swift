@@ -296,7 +296,7 @@ enum InstallScript {
             if [ -n "$xcode" ]; then
                 version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - "$xcode/Contents/version.plist" 2>/dev/null || true)
                 check_line ✓ Xcode "${version:-?} at $xcode"
-                if "$xcode/Contents/Developer/usr/bin/xcodebuild" -license check >/dev/null 2>&1; then
+                if DEVELOPER_DIR="$xcode/Contents/Developer" xcodebuild -license check >/dev/null 2>&1; then
                     check_line ✓ "Xcode license" accepted
                 else
                     check_line ! "Xcode license" "not accepted yet (VM setup accepts it)"
