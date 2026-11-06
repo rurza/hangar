@@ -109,7 +109,8 @@ public struct JobRunner: Sendable {
         await reportInfo(jobID: jobID, JobRunInfo(workerVersion: Self.workerVersion))
 
         var pipeline = JobPipeline(
-            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason)
+            jobID: jobID, connection: connection, log: log, clock: clock, cancelled: cancelled, stopReason: stopReason,
+            masker: masker)
         let prepared = await pipeline.step(StepName.checkout) { [self] in
             let prepared = try await prepare(assignment, layout: layout, materializer: materializer, log: log.lines(StepName.checkout))
             try await Checkout(runner: runner, layout: layout).run(
