@@ -27,9 +27,12 @@ import Testing
 
     @Test func warnsOnlyWhenNotTheDedicatedAccount() throws {
         #expect(WorkerPrivacy.startupWarning(user: "hangar", home: "/Users/hangar") == nil)
-        let warning = try #require(WorkerPrivacy.startupWarning(user: "adam", home: "/Users/adam"))
+        let warning = try #require(WorkerPrivacy.startupWarning(
+            user: "adam", home: "/Users/adam", setupCommand: "sudo /Users/adam/.local/bin/hangar-worker vm setup"))
         #expect(warning.contains("running as adam"))
-        #expect(warning.contains("hangar-worker isolate"))
+        #expect(warning.hasSuffix("sudo /Users/adam/.local/bin/hangar-worker vm setup"))
+        // With VM builds on, builds cannot read adam's files.
+        #expect(WorkerPrivacy.startupWarning(user: "adam", home: "/Users/adam", vmBuilds: true) == nil)
     }
 
     @Test func lockDownSetsAnOpenDirectoryToOwnerOnly() throws {

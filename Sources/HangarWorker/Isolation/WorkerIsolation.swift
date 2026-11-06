@@ -699,13 +699,13 @@ public struct WorkerIsolation: Sendable {
             say("End of the dry run. Run without --dry-run to do this.")
             return
         }
+        let setup = WorkerCommandLine(binary: layout.binary, user: layout.user).vmSetup
         say("""
-            Done. This Mac's builds run as \(layout.user), from boot, with no login; nobody needs to log in as \(layout.user).
-            Good to know:
-              - Signing needs a team App Store Connect key (Settings, with its issuer ID): \(layout.user) has no Xcode account. \
-            With an individual key, archives wait for another Mac and say why.
-              - The first archive creates \(layout.user)'s signing identity in its CI keychain; the worker lets codesign use it.
-              - If a workflow's tool (xcodegen, rclone...) is missing as \(layout.user), make the Homebrew prefix readable to it; do not install a second Homebrew.
+            Done. This Mac's worker runs as \(layout.user), from boot, with no login; nobody needs to log in as \(layout.user).
+            Next, turn on VM builds, so each build runs in a fresh macOS VM that cannot see this Mac (about 15 minutes):
+              \(setup)
+            Until then this Mac builds on the host as \(layout.user) (the older setup): that needs a team App Store Connect key \
+            to sign, and the first archive creates a signing identity in \(layout.user)'s CI keychain.
             """)
     }
 

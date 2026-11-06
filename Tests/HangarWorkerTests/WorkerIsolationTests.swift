@@ -233,6 +233,10 @@ fileprivate final class Lines: Sendable {
         #expect(output.text.contains("security find-generic-password -s app.hangar.worker-account -a hangar -w"))
         #expect(!output.text.contains("log in as hangar once"), "nobody logs in as hangar")
         #expect(output.text.contains("nobody needs to log in as hangar"))
+        // The next step is VM builds, as a command an administrator can paste.
+        #expect(output.text.contains("Next, turn on VM builds"))
+        #expect(output.text.contains("  sudo /Users/hangar/.local/bin/hangar-worker vm setup"))
+        #expect(!output.text.contains("Homebrew prefix"))
         // The keychain's own password (the third generated: account, throwaway, keychain) reaches security on stdin only.
         let create = try #require(runner.commands.first { $0.input?.value.hasPrefix("create-keychain") == true })
         #expect(create.input?.value == "create-keychain -p pass-word-3 \"\(keychain)\"\n")

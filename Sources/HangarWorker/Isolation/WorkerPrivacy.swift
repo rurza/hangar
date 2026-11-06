@@ -43,10 +43,13 @@ public enum WorkerPrivacy {
         }
     }
 
-    /// The warning `run` logs when the worker is not the dedicated account; nil when it is.
-    public static func startupWarning(user: String, home: String) -> String? {
-        if isDedicatedAccount(user: user, home: home) { return nil }
-        return "the worker is running as \(user), so a build can read \(user)'s files. Run `hangar-worker isolate` "
-            + "as an administrator to move it to the dedicated \(dedicatedUser) user."
+    /// The warning `run` logs when builds run on the host as someone other than the dedicated account; nil with VM
+    /// builds on (a build then runs in a VM that cannot see the host) or as the dedicated account.
+    public static func startupWarning(
+        user: String, home: String, vmBuilds: Bool = false, setupCommand: String = WorkerCommandLine.current().vmSetup
+    ) -> String? {
+        if vmBuilds || isDedicatedAccount(user: user, home: home) { return nil }
+        return "the worker is running as \(user), so a build can read \(user)'s files. Turn on VM builds, so each "
+            + "build runs in a fresh macOS VM that cannot see them: \(setupCommand)"
     }
 }

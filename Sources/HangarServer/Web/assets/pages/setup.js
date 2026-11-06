@@ -763,13 +763,15 @@ function machinesStep(getStatus, onChange, context) {
     const status = getStatus();
     const reported = machines.filter((machine) => machine.report);
     const individual = status.appStoreConnect?.kind === 'individual';
-    const noAccount = reported.filter((machine) => machine.report.xcodeAccountSignedIn === false);
+    // Only a Mac that builds on the host (the older setup) signs with an Xcode account.
+    const noAccount = reported.filter((machine) => !machine.report.vm && machine.report.xcodeAccountSignedIn === false);
     replaceChildren(signing,
       h('h3', { class: 'machine-group-title' }, 'Signing'),
       h('p', { class: 'card-note' },
-        'Distribution certificates are created and managed by Xcode automatically (cloud-managed signing). With an '
-        + 'individual API key, Xcode uses the Apple account signed in to Xcode on each Mac; with a team key it uses '
-        + 'the key.'),
+        'VM builds sign archives with Hangar’s own Apple Development certificate, and wait until it has one. '
+        + 'Create it once in ',
+        h('a', { href: '/settings', 'data-link': true }, 'Settings › Signing'),
+        '. Distribution signing for exports and TestFlight stays with App Store Connect.'),
       individual && noAccount.length
         ? h('div', { class: 'signing signing-warning', role: 'note' },
           h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),

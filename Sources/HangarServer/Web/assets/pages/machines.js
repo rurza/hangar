@@ -565,9 +565,9 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
           })),
         commandBlock,
         h('p', { class: 'field-hint' },
-          'Run it in Terminal as an administrator. It creates a separate macOS user named hangar for builds '
-          + '(the password is generated and kept in your keychain), sets up the worker there and asks you to log '
-          + 'in as hangar once. No checkout.')),
+          'Run it in Terminal as an administrator. It installs the worker as a separate macOS user named hangar, '
+          + 'which runs it from boot; nobody logs in as it. Then set up VM builds on that Mac (see VM builds in the '
+          + 'worker setup guide), so every build runs in a fresh macOS VM. No checkout.')),
       h('div', { class: 'code-field' },
         h('div', { class: 'field-label-row' },
           h('span', { class: 'field-label' }, 'Pairing code'),

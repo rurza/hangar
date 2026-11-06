@@ -30,14 +30,15 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 do { try WorkerPrivacy.lockDown(home: home) } catch {
                     logger.warning("could not set \(home) to mode 0700: \(error)")
                 }
-            } else if let warning = WorkerPrivacy.startupWarning(user: user, home: home) {
-                logger.warning("\(warning)")
             }
             let configuration: WorkerConfiguration
             do {
                 configuration = try WorkerConfiguration.load(from: config)
             } catch {
                 throw ValidationError("\(error)")
+            }
+            if let warning = WorkerPrivacy.startupWarning(user: user, home: home, vmBuilds: configuration.vm != nil) {
+                logger.warning("\(warning)")
             }
             let runner = LiveProcessRunner()
             let locator = XcodeLocator(runner: runner)
