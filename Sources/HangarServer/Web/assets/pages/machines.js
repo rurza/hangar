@@ -1,9 +1,7 @@
 // The Machines page: a widget per build Mac with its latest heartbeat report, the Add Mac sheet (the one-line
-// install command and a pairing code; it waits for the new Mac to connect), the manual Add Machine sheet (which
-// shows the new machine's token once, with the install commands), Pause/Resume Builds and Remove.
+// install command and a pairing code; it waits for the new Mac to connect), Pause/Resume Builds and Remove.
 
 import { api, events, seg } from '../api.js';
-import { addLeaveGuard } from '../router.js';
 import {
   button, card, checkBadge, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring,
   plusIcon, selectContents, sheet, spinner, toast,
@@ -92,7 +90,6 @@ export async function machinesPage(params, context) {
         machineListeners.add(listener);
         return () => machineListeners.delete(listener);
       },
-      onManual: () => openAddMachineSheet({ onAdded: upsert }),
     });
   }
 
@@ -540,9 +537,9 @@ function minutesAndSeconds(seconds) {
 /**
  * The one-command install: the `curl … | sh` line and a pairing code with its countdown. Waits for a machine that
  * was not in `knownIDs` to enroll and then to send its first heartbeat. `listen(fn)` delivers machine events and
- * returns the function that stops them; `onManual` opens the token flow instead.
+ * returns the function that stops them.
  */
-export function openAddMacSheet({ knownIDs, listen, onManual }) {
+export function openAddMacSheet({ knownIDs, listen }) {
   const isLocal = LOCAL_HOSTS.has(location.hostname);
   // Other Macs cannot reach localhost: the command then names the server by an address they can, which the
   // user can correct (filled in with this Mac's network name once the server says it).
@@ -571,14 +568,6 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
   });
   const notices = h('div', { class: 'pairing-notices' });
   const status = h('div', { class: 'pairing-status', role: 'status', 'aria-live': 'polite' });
-  const manualAction = {
-    label: 'Add Manually…',
-    kind: 'plain',
-    onClick: () => {
-      // Opened after this sheet has closed, so focus returns to the page when it is dismissed.
-      setTimeout(onManual);
-    },
-  };
 
   let pairing = null;
   let deadline = 0; // performance.now() when the code expires, from the server's expiresIn
@@ -665,7 +654,7 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
     if (settings && settings.workerInstallAvailable === false) {
       notices.append(h('p', { class: 'token-warning', role: 'note' },
         'This server has no hangar-worker to hand out, so the command cannot install it. Reinstall the server '
-        + 'with the latest install-server.sh to enable one-command install, or add the Mac manually.'));
+        + 'with the latest install-server.sh to enable it.'));
     }
   }, () => {});
 
@@ -705,136 +694,10 @@ export function openAddMacSheet({ knownIDs, listen, onManual }) {
         h('div', { class: 'pairing-code-box' }, codeText),
         h('div', { class: 'pairing-expiry-row' }, expiry, newCodeButton)),
       status),
-    actions: [manualAction, { label: 'Close', kind: 'secondary' }],
+    actions: [{ label: 'Close', kind: 'secondary' }],
   });
 
   showStatus();
   timer = setInterval(tick, 1000);
   newCode();
-}
-
-// MARK: Add Machine
-
-export function openAddMachineSheet({ onAdded }) {
-  const nameInput = h('input', {
-    class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', autocorrect: 'off',
-    placeholder: 'mac-mini-1', autofocus: true,
-    onInput: () => nameInput.removeAttribute('aria-invalid'),
-  });
-  const maxInput = h('input', {
-    class: 'input', type: 'number', inputmode: 'numeric', min: 1, max: 16, step: 1, value: '1',
-    onInput: () => maxInput.removeAttribute('aria-invalid'),
-  });
-  sheet({
-    title: 'Add Machine',
-    submitOnEnter: true,
-    body: h('div', { class: 'form' },
-      field({ label: 'Name', hint: 'How the Mac appears in Hangar, e.g. its host name.', control: nameInput }),
-      field({
-        label: 'Concurrent jobs',
-        hint: 'How many builds this Mac runs at once. 1 is safest; archives are heavy.',
-        control: maxInput,
-      })),
-    actions: [
-      { label: 'Cancel', kind: 'cancel' },
-      {
-        label: 'Add',
-        kind: 'primary',
-        onClick: async () => {
-          const name = nameInput.value.trim();
-          if (name === '') {
-            nameInput.setAttribute('aria-invalid', 'true');
-            nameInput.focus();
-            throw new Error('Enter a name.');
-          }
-          const max = /^\d+$/.test(maxInput.value.trim()) ? Number(maxInput.value.trim()) : NaN;
-          if (!Number.isSafeInteger(max) || max < 1) {
-            maxInput.setAttribute('aria-invalid', 'true');
-            maxInput.focus();
-            throw new Error('Concurrent jobs must be a whole number of at least 1.');
-          }
-          let created;
-          try {
-            created = await api.post('/machines', { name, maxConcurrentJobs: max });
-          } catch (error) {
-            if (error.code === 'machine_exists') {
-              nameInput.setAttribute('aria-invalid', 'true');
-              nameInput.focus();
-              throw new Error(`There is already a machine named “${name}”.`);
-            }
-            throw error;
-          }
-          onAdded(created.machine);
-          // Opened after this sheet has closed, so focus returns to the page when it is dismissed.
-          setTimeout(() => openTokenSheet(created.machine, created.token));
-        },
-      },
-    ],
-  });
-}
-
-/** Shows the new machine's token, once, with the commands that install the worker. */
-function openTokenSheet(machine, token) {
-  const origin = location.origin;
-  const commands = [
-    'read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN',
-    `scripts/worker/install-worker.sh --server ${origin}`,
-  ].join('\n');
-
-  const tokenBlock = h('pre', { class: 'code-block token-block', tabindex: '0', 'aria-label': 'Machine token' },
-    h('code', null, token));
-  const commandBlock = h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'Install commands' },
-    h('code', null, commands));
-
-  let tokenCopied = false;
-
-  async function copy(text, block, what) {
-    if (await copyText(text)) {
-      if (text === token) tokenCopied = true;
-      toast(`Copied the ${what}`, 'success');
-      return;
-    }
-    selectContents(block);
-    toast(`The ${what} is selected. Press ⌘C to copy it.`, 'info');
-  }
-
-  // The token cannot be shown again, so Esc, the backdrop, the close button and Back ask first unless it was
-  // copied; Done closes at once.
-  const mayDismiss = () => tokenCopied || confirm({
-    title: 'Close Without the Token?',
-    message: 'You haven’t copied the token. It is not shown again; without it you must remove this machine '
-      + 'and add it again.',
-    confirmLabel: 'Close',
-    destructive: true,
-  });
-  const removeGuard = addLeaveGuard(mayDismiss);
-
-  const isLocal = LOCAL_HOSTS.has(location.hostname);
-  sheet({
-    beforeDismiss: mayDismiss,
-    onClose: removeGuard,
-    title: `${machine.name} Added`,
-    body: h('div', { class: 'form token-sheet' },
-      h('p', { class: 'token-warning', role: 'note' }, 'Save this token now; it is not shown again.'),
-      h('div', { class: 'code-field' },
-        h('div', { class: 'field-label-row' },
-          h('span', { class: 'field-label' }, 'Token'),
-          button('Copy Token', { kind: 'plain', class: 'button button-plain button-small', onClick: () => copy(token, tokenBlock, 'token') })),
-        tokenBlock),
-      h('div', { class: 'code-field' },
-        h('div', { class: 'field-label-row' },
-          h('span', { class: 'field-label' }, 'Install the worker'),
-          button('Copy Commands', { kind: 'plain', class: 'button button-plain button-small', onClick: () => copy(commands, commandBlock, 'commands') })),
-        h('p', { class: 'field-hint' },
-          `On ${machine.name}, as the hangar user, in a checkout of the Hangar repository. The first line waits `
-          + 'for the token: paste it and press Return. Nothing is shown while you paste. To install without sudo, '
-          + 'add --bin-dir ~/.local/bin to the second command.'),
-        commandBlock,
-        isLocal
-          ? h('p', { class: 'field-hint field-error' },
-            `This page is open on ${location.host}, which other Macs cannot reach. Replace it with the server’s `
-            + 'tailnet address, e.g. http://hangar-server:8787.')
-          : null)),
-    actions: [{ label: 'Done', kind: 'primary' }],
-  });
 }

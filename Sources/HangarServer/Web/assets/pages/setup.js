@@ -8,7 +8,7 @@ import { navigate } from '../router.js';
 import {
   button, card, checkBadge, field, h, page, relativeTime, replaceChildren, spinner, toast,
 } from '../ui.js';
-import { machineWidget, openAddMacSheet, openAddMachineSheet, removeMachine } from './machines.js';
+import { machineWidget, openAddMacSheet, removeMachine } from './machines.js';
 
 export const ASC_KEYS_URL = 'https://appstoreconnect.apple.com/access/integrations/api';
 export const GITHUB_TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new?name=Hangar&description=Hangar%20builds&contents=read';
@@ -804,7 +804,6 @@ function machinesStep(getStatus, onChange, context) {
         machineListeners.add(listener);
         return () => machineListeners.delete(listener);
       },
-      onManual: () => openAddMachineSheet({ onAdded: () => { loadMachines(); onChange(); } }),
     });
   }
 

@@ -139,25 +139,12 @@ Before VM builds, a Mac built on the host as the `hangar` user (or as its owner)
    `hangar-worker check [--config <file>]` exits 0 when the token is accepted (it prints the machine's name), 3 when the server refuses it, 4 when the server cannot be reached and 2 when the configuration cannot be read.
 
    The worker the server hands out is universal (Apple silicon and Intel). Before enrolling, the script checks that it can write the configuration, so a permissions problem never leaves a machine in Hangar without a worker.
-5. **Install from source instead** (the old way, which also works without the server handing out a binary). Create the machine on the server, on any Mac on the tailnet (or with **Add Manually…** in the Add Mac sheet):
-   ```sh
-   hangar machines add <name>
-   ```
-   It prints the machine's token once. Then, logged in as `hangar` (create it in System Settings › Users & Groups, a standard account), from a checkout of this repository, enter the token without echo, so it reaches neither shell history nor the process list:
-   ```sh
-   read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
-   scripts/worker/install-worker.sh --server http://<tailnet-host>:8787
-   ```
-   (If the variable is unset and you are at a terminal, the script prompts for the token itself.) `--token <token>` also works, but the token is then visible in `ps` for the whole release build and stays in your shell history.
-   Pass `--bin-dir ~/.local/bin`: the default, `/usr/local/bin`, needs `sudo` and leaves a binary the idle self-update cannot replace. The script builds in release mode, installs `hangar-worker` into `/usr/local/bin` unless told otherwise (using `sudo` only if needed), runs `hangar-worker setup` (the configuration is written to `~/Library/Application Support/Hangar/worker/config.json` with mode 0600; the token is never printed), renders `~/Library/LaunchAgents/app.hangar.worker.plist` and loads it with `launchctl bootstrap gui/$(id -u)`. Run it again to upgrade. Logs go to `~/Library/Logs/Hangar/worker.log`.
-   This worker is a launch agent: it runs only while `hangar` is logged in, and signs with its login keychain. To make it the LaunchDaemon that needs no login, run `hangar-worker isolate` afterwards as an administrator.
-   To install without `sudo`, add `--bin-dir ~/.local/bin` (any directory you own; it is created if missing and the launchd plist points at the binary there). `--render-only <file>` just writes the plist, for testing. The `INSTALL_DIR` environment variable is no longer read; use `--bin-dir`.
-6. **Run the doctor** as `hangar`, from an administrator's Terminal:
+5. **Run the doctor** as `hangar`, from an administrator's Terminal:
    ```sh
    sudo -u hangar -H /Users/hangar/.local/bin/hangar-worker doctor
    ```
    Confirm `"canSignWithoutPrompt" : true` and `"headless" : true`. If it cannot sign, `keychainProblem` says why ("the CI keychain does not unlock with its stored password; run hangar-worker isolate again"), and the Machines page shows the same. Until then the scheduler gives this machine no jobs. For a worker installed as yourself (`HANGAR_AS_CURRENT_USER=1`), run `hangar-worker doctor`; if it cannot sign, open Keychain Access, find the Apple Development private key, and under Access Control allow `codesign`.
-7. **Check from the server** that the machine is online:
+6. **Check from the server** that the machine is online:
    ```sh
    hangar machines list
    ```

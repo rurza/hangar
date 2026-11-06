@@ -14,7 +14,7 @@ Phase 1: the TestFlight path (archive, export, upload to App Store Connect, wait
 ## Architecture
 
 - `hangar-server`: control plane on one always-on Mac. Stores apps, builds and encrypted secrets, schedules jobs, serves the HTTP API.
-- `hangar-worker`: runs on each build Mac as a launchd agent. Heartbeats, long-polls for jobs, runs them with Xcode.
+- `hangar-worker`: runs on each build Mac, as a LaunchDaemon of a dedicated `hangar` user (or a launch agent of the Mac's owner). Heartbeats, long-polls for jobs and runs each one in a fresh macOS VM (or, the legacy setup, on the Mac itself).
 - `hangar`: command-line client for the server API.
 - `hangar mcp`: an MCP server for AI agents, with scoped API tokens; see [MCP access](docs/mcp.md).
 - `plugins/hangar`: Claude Code plugin that registers `hangar mcp`, with deploy and status skills over the CLI.
@@ -30,20 +30,18 @@ Requires macOS 15+, Xcode and [Tailscale](https://tailscale.com) on every Mac. D
    ```
 
 2. **Open the web UI** at `http://<server>:8787` (the server's tailnet address) and follow it through:
-   - **Settings**: add the App Store Connect key and a GitHub token. (An individual API key has no issuer ID; leave it empty. xcodebuild only accepts team keys, so builds then sign and upload with the Apple account signed in to Xcode on each build Mac, see the [worker setup](docs/worker-setup.md). Hangar still uses the individual key for build numbers and TestFlight.)
+   - **Settings**: add the App Store Connect key and a GitHub token. (An individual API key has no issuer ID; leave it empty. xcodebuild only accepts team keys, so archives then need a Mac whose worker runs as a logged-in user with an Apple account signed in to Xcode, see the [worker setup](docs/worker-setup.md). Hangar still uses the individual key for build numbers and TestFlight.)
    - **Apps → Add app**: name, repository and App Store Connect app.
    - **Workflow**: define the workflow for the app (the editor writes the same configuration as [`.hangar.yml`](docs/hangar-yml.md), which you can also keep in the repo).
-   - **Machines → Add machine**: it shows a one-time token and the install commands. Run them on the build Mac, as the dedicated `hangar` user (prepared as described in the worker setup), from a checkout of this repository:
+   - **Machines → Add Mac**: it shows a command and a pairing code. Run the command on the build Mac, as an administrator, and type the code; it installs the worker and sets up VM builds (see the [worker setup](docs/worker-setup.md)):
 
      ```sh
-     read -rs HANGAR_WORKER_TOKEN; export HANGAR_WORKER_TOKEN
-     scripts/worker/install-worker.sh --server http://<server>:8787    # add --bin-dir ~/.local/bin to skip sudo
-     hangar-worker doctor
+     curl -fsSL http://<server>:8787/install | sh
      ```
 
    - **Deploy**: pick the app, workflow and ref, and watch the build live.
 
-The same steps are available from the command line (`hangar settings`, `hangar apps add`, `hangar machines add`, `hangar deploy`, `hangar status`, `hangar logs --follow`, with `HANGAR_SERVER=http://<server>:8787` set); see the [HTTP API](docs/api.md) and the [`.hangar.yml` reference](docs/hangar-yml.md).
+The same steps are available from the command line (`hangar settings`, `hangar apps add`, `hangar deploy`, `hangar status`, `hangar logs --follow`, with `HANGAR_SERVER=http://<server>:8787` set); see the [HTTP API](docs/api.md) and the [`.hangar.yml` reference](docs/hangar-yml.md).
 
 ## Documentation
 

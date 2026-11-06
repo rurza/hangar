@@ -15,7 +15,7 @@ struct Machines: AsyncParsableCommand {
         func run(_ cli: CLI) async throws {
             let machines = try await cli.api.machines()
             if cli.json { return try cli.printJSON(machines) }
-            guard !machines.isEmpty else { return cli.print("No machines. Add one with: hangar machines add <name>") }
+            guard !machines.isEmpty else { return cli.print("No machines. Add one in Hangar › Machines › Add Mac.") }
             cli.print(Self.render(machines, now: Date(), timeZone: cli.timeZone, bold: cli.console.isTTY))
         }
 
