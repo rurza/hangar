@@ -96,9 +96,25 @@ if [ ! -x "$WORKER_BIN_DIR/hangar-worker" ]; then
     echo "error: $WORKER_BIN_DIR/hangar-worker is missing from the build output" >&2
     exit 1
 fi
-# VM builds need the virtualization entitlement; an ad hoc signature carries it. Signed before it is hashed
-# or copied, so the SHA-256 the server announces and the self-update compares is the signed binary's.
-codesign --force --sign - --entitlements "$ROOT/scripts/worker/hangar-worker.entitlements" "$WORKER_BIN_DIR/hangar-worker"
+# VM builds need the virtualization entitlement, which any signature carries. Signed before it is hashed or
+# copied, so the SHA-256 the server announces and the self-update compares is the signed binary's.
+# A Developer ID identity, when this Mac has one, keeps the worker's identity the same across updates, so macOS
+# asks once for its Local Network access (the VMs' SSH) instead of after every update, as it does for an ad hoc
+# signature. HANGAR_WORKER_SIGNING_IDENTITY picks another identity; "-" forces ad hoc.
+WORKER_SIGNING_IDENTITY="${HANGAR_WORKER_SIGNING_IDENTITY:-}"
+if [ -z "$WORKER_SIGNING_IDENTITY" ]; then
+    WORKER_SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
+        | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -n 1)
+fi
+if [ -n "$WORKER_SIGNING_IDENTITY" ] && [ "$WORKER_SIGNING_IDENTITY" != "-" ] \
+    && codesign --force --sign "$WORKER_SIGNING_IDENTITY" --identifier app.hangar.worker --timestamp=none \
+        --entitlements "$ROOT/scripts/worker/hangar-worker.entitlements" "$WORKER_BIN_DIR/hangar-worker"; then
+    echo "Signed hangar-worker with $WORKER_SIGNING_IDENTITY"
+else
+    codesign --force --sign - --identifier app.hangar.worker \
+        --entitlements "$ROOT/scripts/worker/hangar-worker.entitlements" "$WORKER_BIN_DIR/hangar-worker"
+    echo "Signed hangar-worker ad hoc (macOS asks again for Local Network access after each update)"
+fi
 as_installer install -S -m 755 "$WORKER_BIN_DIR/hangar-worker" "$INSTALL_DIR/hangar-worker"
 if [ -x "$BIN_DIR/hangar" ]; then
     as_installer install -m 755 "$BIN_DIR/hangar" "$INSTALL_DIR/hangar"
