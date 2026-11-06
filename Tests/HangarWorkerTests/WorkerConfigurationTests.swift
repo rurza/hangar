@@ -47,6 +47,32 @@ import Testing
         #expect(try WorkerConfiguration.load(from: old).resolvedWorkDirectory == "/var/hangar")
     }
 
+    /// Re-running setup (the installer's re-enroll) takes the new server and token and keeps what this Mac set up:
+    /// VM builds, the job limit and the work directory, unless they are given again.
+    @Test func setupKeepsVMBuildsTheJobLimitAndTheWorkDirectory() {
+        let vm = VMSettings(storage: "/Volumes/VMs/hangar", slots: 2)
+        let existing = WorkerConfiguration(
+            serverURL: URL(string: "http://old:8787")!, token: "old", maxConcurrentJobs: 2, dataDirectory: "/var/hangar",
+            workDirectory: "/var/work", vm: vm)
+        let server = URL(string: "http://mac-mini:8787")!
+        let kept = WorkerConfiguration.setup(
+            serverURL: server, token: "new", maxConcurrentJobs: nil, dataDirectory: "/var/hangar", workDirectory: nil,
+            existing: existing)
+        #expect(kept == WorkerConfiguration(
+            serverURL: server, token: "new", maxConcurrentJobs: 2, dataDirectory: "/var/hangar", workDirectory: "/var/work",
+            vm: vm))
+
+        let replaced = WorkerConfiguration.setup(
+            serverURL: server, token: "new", maxConcurrentJobs: 3, dataDirectory: "/var/hangar", workDirectory: "/w",
+            existing: existing)
+        #expect(replaced.maxConcurrentJobs == 3 && replaced.workDirectory == "/w" && replaced.vm == vm)
+
+        let fresh = WorkerConfiguration.setup(
+            serverURL: server, token: "new", maxConcurrentJobs: nil, dataDirectory: "/var/hangar", workDirectory: nil,
+            existing: nil)
+        #expect(fresh.maxConcurrentJobs == 1 && fresh.vm == nil && fresh.workDirectory == nil)
+    }
+
     @Test func missingAndInvalidFilesThrowClearErrors() throws {
         #expect(throws: WorkerConfiguration.LoadError.self) { try WorkerConfiguration.load(from: "/nonexistent/w.json") }
         let path = try Self.write("{not json")

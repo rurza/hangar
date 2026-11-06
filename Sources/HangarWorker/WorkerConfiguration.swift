@@ -24,6 +24,18 @@ public struct WorkerConfiguration: Codable, Equatable, Sendable {
         self.workDirectory = workDirectory
     }
 
+    /// What `hangar-worker setup` writes: the server, token and data directory given, over what `existing` set up on
+    /// this Mac. Its work directory, job limit and VM builds stay unless replaced: re-running setup (the installer's
+    /// re-enroll) must not quietly turn VM builds off and put the Mac back to building on the host.
+    public static func setup(
+        serverURL: URL, token: String, maxConcurrentJobs: Int?, dataDirectory: String, workDirectory: String?,
+        existing: WorkerConfiguration?
+    ) -> WorkerConfiguration {
+        WorkerConfiguration(
+            serverURL: serverURL, token: token, maxConcurrentJobs: maxConcurrentJobs ?? existing?.maxConcurrentJobs ?? 1,
+            dataDirectory: dataDirectory, workDirectory: workDirectory ?? existing?.workDirectory, vm: existing?.vm)
+    }
+
     /// The work directory in use: the configured one, else `defaultWorkDirectory(for:home:)`.
     public var resolvedWorkDirectory: String {
         if let workDirectory, !workDirectory.isEmpty { return Self.standardized(workDirectory) }

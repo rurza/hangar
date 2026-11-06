@@ -169,8 +169,8 @@ struct HangarWorkerCommand: AsyncParsableCommand {
         var dataDir: String = defaultSupportDirectory
         @Option(help: "Where checkouts, DerivedData and job files go; no spaces. Default: the data directory when its path has no spaces, else ~/.hangar/<name>.")
         var workDir: String?
-        @Option(help: "Jobs to run at once.")
-        var maxJobs: Int = 1
+        @Option(help: "Jobs to run at once on the host. Default: the existing configuration's, else 1.")
+        var maxJobs: Int?
         @Option(help: "Configuration file to write.")
         var config: String = defaultConfigPath
 
@@ -181,15 +181,15 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             guard let token = token ?? ProcessInfo.processInfo.environment["HANGAR_WORKER_TOKEN"], !token.isEmpty else {
                 throw ValidationError("pass --token or set HANGAR_WORKER_TOKEN")
             }
-            guard maxJobs >= 1 else { throw ValidationError("--max-jobs must be at least 1") }
+            guard (maxJobs ?? 1) >= 1 else { throw ValidationError("--max-jobs must be at least 1") }
             if let workDir, workDir.contains(where: \.isWhitespace) {
                 throw ValidationError("--work-dir must not contain spaces: scripts written for Xcode Cloud assume none")
             }
-            // An existing configuration keeps its work directory when none is given.
+            // An existing configuration keeps its work directory, job limit and VM builds unless replaced.
             let existing = try? WorkerConfiguration.load(from: config)
-            try WorkerConfiguration(
+            try WorkerConfiguration.setup(
                 serverURL: url, token: token, maxConcurrentJobs: maxJobs, dataDirectory: dataDir,
-                workDirectory: workDir ?? existing?.workDirectory
+                workDirectory: workDir, existing: existing
             ).write(to: config)
             print("Wrote \(config)")
         }
