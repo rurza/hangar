@@ -28,7 +28,7 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 
 | Method and path | Request | Response |
 | --- | --- | --- |
-| `GET /health` | | `200` `{"ok": true, "version": "0.13.0"}` |
+| `GET /health` | | `200` `{"ok": true, "version": "0.13.1"}` |
 | `GET /apps` | | `200` `[App]`; apps without `iconURL` get one resolved in the background (at most one attempt per app per hour), shown on a later request |
 | `POST /apps` | `CreateAppRequest` | `201` `App`; `400` `invalid_input` when `iconURL` is not an https URL with a host; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
 | `GET /apps/{id}` | | `200` `App` |
