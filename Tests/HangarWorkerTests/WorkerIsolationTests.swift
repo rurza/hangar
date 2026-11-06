@@ -785,6 +785,7 @@ fileprivate final class Lines: Sendable {
         #expect(plist["LimitLoadToSessionType"] as? String == "Aqua")
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["KeepAlive"] as? Bool == true)
+        #expect(plist["ExitTimeOut"] as? Int == 120)
         #expect(plist["UserName"] == nil)
         #expect(plist["StandardOutPath"] as? String == "/Users/hangar/Library/Logs/Hangar/worker.log")
     }
@@ -803,6 +804,8 @@ fileprivate final class Lines: Sendable {
         #expect(plist["SessionCreate"] as? Bool == true)
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["KeepAlive"] as? Bool == true, "the idle self-update and a crash rely on launchd starting it again")
+        // Room for the VM guest's cancel grace and the result reports before launchd's SIGKILL.
+        #expect(plist["ExitTimeOut"] as? Int == 120)
         #expect(plist["LimitLoadToSessionType"] == nil)
         #expect(plist["EnvironmentVariables"] as? [String: String] == [
             "HOME": "/Users/hangar", "USER": "hangar", "LOGNAME": "hangar", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
