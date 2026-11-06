@@ -2,7 +2,8 @@ import Foundation
 
 /// The worker install script `GET /install` serves, with the server's address baked in.
 ///
-/// The launchd plist of a worker run as the Mac's owner is embedded in the script (a heredoc) rather than served
+/// The worker runs as whoever runs the script, the Mac's owner, as a launch agent in their login session. Its launchd
+/// plist is embedded in the script (a heredoc) rather than served
 /// separately: one download fewer, and nothing on the server to keep in sync with it.
 enum InstallScript {
     static let originPlaceholder = "__HANGAR_ORIGIN__"
@@ -42,35 +43,34 @@ enum InstallScript {
         #
         #   curl -fsSL __HANGAR_ORIGIN__/install | sh
         #
-        # Run it in Terminal as an administrator. It checks this Mac first (Apple silicon, Xcode, free space,
-        # Tailscale), downloads hangar-worker, asks for the pairing code shown in Hangar under Machines > Add Mac and
-        # enrolls this Mac. The worker runs as a separate, unprivileged macOS user named hangar: `hangar-worker
-        # isolate` creates it with a generated password (shown once and saved in your login keychain as
-        # app.hangar.worker-account; sudo asks for your password) and runs the worker as a LaunchDaemon, from boot,
-        # with nobody logged in as hangar. An enrolled worker running as you moves with its enrollment and build
-        # cache. With HANGAR_AS_CURRENT_USER=1, or as a standard (non-admin) account, it installs for the current
-        # user instead, as a launch agent. No checkout, no Swift build.
+        # Run it in Terminal on the Mac, as the user whose login session the worker should run in. It checks this Mac
+        # first (Apple silicon, Xcode, free space, Tailscale), downloads hangar-worker into ~/.local/bin, asks for the
+        # pairing code shown in Hangar under Machines > Add Mac, enrolls this Mac and starts the worker as your launch
+        # agent. No checkout, no Swift build.
         #
-        # Builds run in VMs: on Apple silicon a new Mac is enrolled with its builds paused, and the script then offers
-        # `sudo hangar-worker vm setup`, which sets up VM builds (a fresh macOS VM per build) in the same sudo
-        # session, in about 15 minutes. Resume builds on the Mac's card once it says VM builds are ready.
+        # A Mac builds in one of two ways, asked once for a new Mac on Apple silicon:
+        #   VM     a fresh macOS VM per build, which cannot see this Mac (the default). The Mac is enrolled with its
+        #          builds paused, and the script then runs `sudo hangar-worker vm setup`, which sets up VM builds in
+        #          about 15 minutes; it resumes nothing itself: resume builds on the Mac's card once it says VM builds
+        #          are ready. Setting them up needs an administrator.
+        #   local  directly on this Mac, as you, signing with your login keychain: a build can read your files.
+        # An Intel Mac builds locally.
         #
         # Run it again to update: when this Mac is already enrolled with this server (`hangar-worker check`), it
         # replaces the binary and restarts the agent without asking for a code.
         #
         # Settings, all optional, as environment variables (put them after the pipe: ... | HANGAR_MAX_JOBS=2 sh):
-        #   HANGAR_AS_CURRENT_USER=1  install for the user running this, not for the hangar user
-        #   HANGAR_VM=0           build on this Mac itself (the older setup): enroll with builds on and skip VM setup
+        #   HANGAR_VM             1 builds in VMs, 0 builds locally (enrolled with builds on, no VM setup); asked when
+        #                         unset, and VMs without a terminal to ask on
         #   HANGAR_VM_SETUP       1 runs `vm setup` without asking, 0 skips it (it prints the command); asked when unset
         #   HANGAR_PAIRING_CODE   the pairing code; asked for on the terminal when unset
         #   HANGAR_MACHINE_NAME   how this Mac appears in Hangar (default: its local host name)
-        #   HANGAR_BIN_DIR        where hangar-worker goes when installing for the current user (default:
-        #                         ~/.local/bin; must be writable by you). The hangar user's is always its ~/.local/bin.
+        #   HANGAR_BIN_DIR        where hangar-worker goes (default: ~/.local/bin; must be writable by you)
         #   HANGAR_MAX_JOBS       builds this Mac runs at once, 1 to 99 (default: 1)
         #   HANGAR_WORKER_CONFIG  the worker configuration file (default: hangar-worker's own,
         #                         ~/Library/Application Support/Hangar/worker/config.json)
-        #   HANGAR_NO_LAUNCHD=1   for testing: install for the current user, download, enroll and write the
-        #                         configuration, but neither write nor load the launchd agent, and skip the doctor
+        #   HANGAR_NO_LAUNCHD=1   for testing: download, enroll and write the configuration, but neither write nor
+        #                         load the launchd agent, and skip the doctor
         #
         # The machine token never appears in a command line or in the output: it goes from the server's answer to
         # `hangar-worker setup` in the environment.
@@ -111,8 +111,8 @@ enum InstallScript {
             [ "$actual" = "$2" ]
         }
 
-        # Writes the launchd agent and (re)loads it. ExitTimeOut matches the LaunchDaemon's (WorkerLaunchDaemon.exitTimeout):
-        # a stopping worker cancels its jobs and reports their results before launchd's SIGKILL.
+        # Writes the launchd agent and (re)loads it. ExitTimeOut (two minutes; launchd's default is 20 s) lets a stopping
+        # worker cancel its jobs and report their results before launchd's SIGKILL.
         install_agent() {
             plist="$HOME/Library/LaunchAgents/$LABEL.plist"
             logs="$HOME/Library/Logs/Hangar"
@@ -213,7 +213,7 @@ enum InstallScript {
                 *) die "Downloading hangar-worker failed: HTTP $status." ;;
             esac
             # The script and the binary come from the same server; a binary that differs from the one the server
-            # described (cut off, altered on the way, or replaced since) is never run, by this user or by hangar.
+            # described (cut off, altered on the way, or replaced since) is never run.
             verify_sha256 "$download" "$HANGAR_WORKER_SHA256" \
                 || die "The downloaded hangar-worker is not the one the server announced (SHA-256 mismatch). Run this again; if it keeps failing, reinstall the server."
             chmod 755 "$download"
@@ -271,10 +271,42 @@ enum InstallScript {
             enrolled_now=1
         }
 
-        # Whether this Mac is meant for VM builds: Apple silicon, unless HANGAR_VM=0.
-        vm_planned() {
-            [ "${HANGAR_VM:-1}" != 0 ] && [ "$(uname -m)" = arm64 ]
+        # How a new Mac builds: build_mode=vm (a fresh macOS VM per build) or local (on this Mac, as this user). Only
+        # Apple silicon runs VMs. HANGAR_VM answers it; otherwise it is asked on the terminal, and without one it is
+        # VM builds. Answering the question sets mode_chosen, which also answers whether to run VM setup now.
+        choose_mode() {
+            build_mode=vm
+            if [ "$(uname -m)" != arm64 ]; then
+                build_mode=local
+                return 0
+            fi
+            case ${HANGAR_VM:-} in
+                0) build_mode=local; return 0 ;;
+                1) return 0 ;;
+            esac
+            (: </dev/tty) 2>/dev/null || return 0
+            me=$(id -un)
+            {
+                printf '\nHow should %s build?\n' "$name"
+                printf '  1) In a fresh macOS VM per build (recommended): a build cannot see this Mac or your files.\n'
+                printf '     Set up next with sudo, in about 15 minutes (a 26 GB download).\n'
+                printf '  2) Directly on this Mac, as %s: nothing more to set up, but a build can read your files.\n' "$me"
+                printf 'Choose 1 or 2 [1]: '
+            } >/dev/tty
+            IFS= read -r answer </dev/tty || answer=none
+            case $answer in
+                2) build_mode=local ;;
+                '' | 1) mode_chosen=1 ;;
+            esac
+            if [ "$build_mode" = local ]; then
+                say "$name builds on this Mac, as $me."
+            else
+                say "$name builds in VMs."
+            fi
         }
+
+        # Whether this Mac is being enrolled for VM builds.
+        vm_planned() { [ "${build_mode:-}" = vm ]; }
 
         is_admin() { id -Gn | tr ' ' '\n' | grep -qx admin; }
 
@@ -342,6 +374,8 @@ enum InstallScript {
                 return 0
             fi
             answer=${HANGAR_VM_SETUP:-}
+            # Picking VM builds a moment ago was the answer.
+            [ -n "$answer" ] || [ "${mode_chosen:-}" != 1 ] || answer=y
             if [ -z "$answer" ]; then
                 if (: </dev/tty) 2>/dev/null; then
                     printf 'Set up VM builds now? It takes about 15 minutes (a 26 GB download). [Y/n] ' >/dev/tty
@@ -354,64 +388,19 @@ enum InstallScript {
                 '' | [Yy]* | 1) ;;
                 *)
                     say "Builds stay paused on $name until VM builds are set up. When you are ready, run: $command"
+                    say "To build directly on this Mac instead, resume builds on its card in Hangar."
                     return 0
                     ;;
             esac
             sudo "$1" vm setup </dev/tty || die "VM setup did not finish. Run it again to pick up where it stopped: $command"
         }
 
-        # Whether builds should run as the dedicated hangar user, set up by `hangar-worker isolate`: yes for an
-        # administrator, unless HANGAR_AS_CURRENT_USER=1. The hangar user itself, and any other standard account,
-        # installs for itself.
-        wants_isolation() {
-            [ "$(id -un)" != hangar ] || return 1
-            [ "${HANGAR_AS_CURRENT_USER:-}" != 1 ] || return 1
-            [ "${HANGAR_NO_LAUNCHD:-}" != 1 ] || return 1
-            id -Gn | tr ' ' '\n' | grep -qx admin
-        }
-
-        # The install as an administrator: hangar-worker isolate creates the hangar user (with a generated password
-        # it shows once and keeps in your login keychain), moves or installs the worker there and starts it as a
-        # LaunchDaemon, which needs no login.
-        install_isolated() {
-            me=$(id -un)
-            say "The worker runs as a separate, unprivileged macOS user named hangar, from boot, with nobody logged in."
-            say "To run it as $me instead (a launch agent): curl -fsSL $HANGAR_SERVER/install | HANGAR_AS_CURRENT_USER=1 sh"
-            (: </dev/tty) 2>/dev/null \
-                || die "Setting up the hangar user needs a terminal (sudo asks for your password). Run this in Terminal, or set HANGAR_AS_CURRENT_USER=1."
-            work=$(mktemp -d "${TMPDIR:-/tmp}/hangar-install.XXXXXX") || die "Cannot create a temporary directory."
-            chmod 700 "$work"
-            trap 'rm -rf "$work"' EXIT
-            trap 'exit 130' INT TERM HUP
-            worker="$work/hangar-worker"
-            download_worker "$worker"
-
-            hangar_config="/Users/hangar/Library/Application Support/Hangar/worker/config.json"
-            config_file=${config:-"$HOME/Library/Application Support/Hangar/worker/config.json"}
-            set -- isolate --binary "$worker"
-            configured=''
-            [ ! -f "$config_file" ] || configured=$(/usr/bin/plutil -extract serverURL raw -o - "$config_file" 2>/dev/null || true)
-            if [ "$configured" = "$HANGAR_SERVER" ] && "$worker" check --config "$config_file" >/dev/null 2>&1; then
-                # isolate finds this user's agent and configuration itself, and removes them once hangar runs.
-                say "This Mac's worker runs as $me; it moves to the hangar user with the same enrollment."
-            else
-                say "Checking for a hangar user that is already set up (macOS asks for your password)..."
-                if sudo /bin/test -f "$hangar_config" \
-                    && [ "$(sudo /usr/bin/plutil -extract serverURL raw -o - "$hangar_config" 2>/dev/null)" = "$HANGAR_SERVER" ]; then
-                    say "The hangar user's worker is already enrolled with $HANGAR_SERVER; it is updated."
-                else
-                    enroll --config "$work/config.json"
-                    set -- "$@" --config "$work/config.json"
-                fi
-            fi
-            "$worker" "$@" </dev/tty || die "hangar-worker isolate did not finish. Run this command again to pick up where it stopped."
-            offer_vm_setup /Users/hangar/.local/bin/hangar-worker
-        }
-
         main() {
             [ "$(uname -s)" = Darwin ] || die "The Hangar worker runs on macOS only."
             say "Installing the Hangar worker from $HANGAR_SERVER"
             enrolled_now=''
+            build_mode=''
+            mode_chosen=''
             preflight
 
             bin_dir=$(absolute "${HANGAR_BIN_DIR:-$HOME/.local/bin}")
@@ -433,18 +422,6 @@ enum InstallScript {
 
             config=''
             [ -z "${HANGAR_WORKER_CONFIG:-}" ] || config=$(absolute "$HANGAR_WORKER_CONFIG")
-
-            if wants_isolation; then
-                install_isolated
-                return 0
-            fi
-            # hangar's worker is a LaunchDaemon (set up by isolate); a launch agent beside it would be a second worker
-            # with the same token.
-            if [ "$(id -un)" = hangar ] && launchctl print system/app.hangar.worker >/dev/null 2>&1; then
-                die "hangar's worker runs as a LaunchDaemon. Run this command as an administrator to update it."
-            fi
-            [ "$(id -un)" = hangar ] || [ "${HANGAR_AS_CURRENT_USER:-}" = 1 ] || [ "${HANGAR_NO_LAUNCHD:-}" = 1 ] \
-                || say "$(id -un) is not an administrator, so the worker is installed for $(id -un) and builds run as $(id -un)."
 
             # 1. The binary.
             mkdir -p "$bin_dir" 2>/dev/null || die "Cannot create $bin_dir. Set HANGAR_BIN_DIR to a directory you own."
@@ -482,7 +459,8 @@ enum InstallScript {
                 die "Cannot write the worker configuration $config_file. Fix its permissions (or set HANGAR_WORKER_CONFIG), then run this again."
             fi
 
-            # 3. The pairing code, the enrollment and the configuration.
+            # 3. How this Mac builds, then the pairing code, the enrollment and the configuration.
+            choose_mode
             if [ -n "$config" ]; then enroll --config "$config"; else enroll; fi
 
             finish "$name" "Done — $name should appear in Hangar within a few seconds."

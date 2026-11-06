@@ -656,7 +656,9 @@ function machinesStep(getStatus, onChange, context) {
         : install.state === 'succeeded'
           ? doneLine(`${install.machine?.name ?? 'This Mac'} is installed. It shows up below once the worker starts.`)
           : problem(install.message ?? 'The install failed.');
-      replaceChildren(local, head, log,
+      replaceChildren(local, head,
+        install.state === 'succeeded' && install.vmSetupCommand ? vmSetupNext(install.vmSetupCommand) : null,
+        log,
         install.state === 'failed' ? h('div', { class: 'card-actions' }, useThisMacButton('Try Again')) : null);
       queueMicrotask(() => { log.scrollTop = log.scrollHeight; });
       return;
@@ -686,18 +688,6 @@ function machinesStep(getStatus, onChange, context) {
       replaceChildren(local);
       return;
     }
-    if (status.dedicatedUserRequired) {
-      // Builds run as their own macOS user; creating it needs an administrator in Terminal, not the server.
-      replaceChildren(local,
-        h('p', { class: 'card-detail' },
-          `To build on ${status.localHostName}, the Mac Hangar runs on, run this in Terminal on it as an administrator. `
-          + 'It installs the worker as a separate macOS user named hangar, which runs it from boot (nobody logs in '
-          + "as it), and then sets up VM builds, so each build runs in a fresh macOS VM that cannot read your files "
-          + "or Hangar's data."),
-        h('pre', { class: 'code-block install-log', tabindex: '0', 'aria-label': 'Install command' },
-          h('code', null, `curl -fsSL ${location.origin}/install | sh`)));
-      return;
-    }
     if (!status.workerInstallAvailable) {
       replaceChildren(local, h('p', { class: 'card-note' },
         'This server has no hangar-worker to install, so it cannot build on this Mac by itself. Reinstall the '
@@ -707,8 +697,24 @@ function machinesStep(getStatus, onChange, context) {
     replaceChildren(local,
       h('p', { class: 'card-detail' },
         `Build on ${status.localHostName}, the Mac Hangar runs on: Hangar installs its worker for your user `
-        + '(into ~/.local/bin, started at login) and enrolls it.'),
+        + '(into ~/.local/bin, started at login) and enrolls it. On Apple silicon it is set up for VM builds, so each '
+        + 'build runs in a fresh macOS VM that cannot read your files or Hangar’s data; that last step takes one '
+        + 'command in Terminal.'),
       h('div', { class: 'card-actions' }, useThisMacButton('Use This Mac for Builds')));
+  }
+
+  /**
+   * After a one-click install on Apple silicon: builds stay paused until VM builds are set up, which needs sudo in
+   * Terminal; resuming them instead builds directly on this Mac.
+   */
+  function vmSetupNext(command) {
+    return h('div', { class: 'local-next' },
+      h('p', { class: 'card-detail' },
+        'Builds are paused until VM builds are set up. In Terminal on this Mac, run this (it asks for your password '
+        + 'and takes about 15 minutes):'),
+      h('pre', { class: 'code-block', tabindex: '0', 'aria-label': 'VM setup command' }, h('code', null, command)),
+      h('p', { class: 'card-note' },
+        'To build directly on this Mac instead, as your user, resume builds on its card below.'));
   }
 
   /** `serverURL` when it is another server than the one this page came from (another port: both run on this Mac). */

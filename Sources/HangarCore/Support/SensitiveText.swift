@@ -1,4 +1,4 @@
-/// A value that must never be printed: the `hangar` account's password, the CI keychain's. Its descriptions are
+/// A value that must never be printed: a VM guest's password, a job keychain's. Its descriptions are
 /// redacted.
 public struct SensitiveText: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     public let value: String

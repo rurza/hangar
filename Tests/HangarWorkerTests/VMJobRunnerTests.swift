@@ -522,25 +522,21 @@ struct ImmediateClock: Clock {
         #expect(doctor.report(runningJobs: 0).ownIdentity)
     }
 
-    /// With VM builds on, the host's keychain signs nothing: the heartbeat neither unlocks it nor runs codesign, and
-    /// reports no signing problem.
+    /// With VM builds on, the host's keychain signs nothing: the heartbeat neither lists its identities nor runs
+    /// codesign.
     @Test func aVMHostSkipsTheKeychainProbes() async throws {
         let fixture = try VMFixture()
         defer { fixture.cleanUp() }
-        let keychain = try CIKeychainTests.Fixture()
-        defer { keychain.cleanUp() }
         let runner = DoctorTests.scriptedRunner()
         runner.script(DoctorTests.isFindIdentity, lines: [DoctorTests.identityLine])
         let vm = VMDoctor(host: fixture.host(FakeEngine()), identity: VMIdentityStore(dataDirectory: fixture.root),
             networkFilterProblem: { nil })
         let report = await Doctor(
             runner: runner, locator: XcodeLocator(runner: RecordingProcessRunner(), applicationsDirectory: "/nonexistent"),
-            dataDirectory: NSTemporaryDirectory(), keychain: keychain.keychain, vm: vm
+            dataDirectory: NSTemporaryDirectory(), vm: vm
         ).report(runningJobIDs: [])
         #expect(report.vm?.slots == 1)
-        #expect(report.headless == true)
-        #expect(report.keychainProblem == nil && report.signingIdentities.isEmpty)
-        #expect(!runner.commands.contains { $0.standardInput != nil })
+        #expect(report.signingIdentities.isEmpty && !report.canSignWithoutPrompt)
         #expect(!runner.commands.contains { DoctorTests.isFindIdentity($0) || $0.executable.hasSuffix("codesign") })
     }
 
@@ -558,7 +554,7 @@ struct ImmediateClock: Clock {
     @Test func theChecklistShowsEveryMissingPieceAtOnceWithItsCommand() throws {
         let fixture = try VMFixture(buildUser: nil, xcode: nil)
         defer { fixture.cleanUp() }
-        let commands = WorkerCommandLine(binary: "/Users/hangar/.local/bin/hangar-worker", user: "hangar")
+        let commands = WorkerCommandLine(binary: "/Users/adam/.local/bin/hangar-worker")
         let report = VMDoctor(
             host: fixture.host(FakeEngine(unavailable: VMError.entitlementMissing.description)),
             identity: VMIdentityStore(dataDirectory: fixture.root),
@@ -571,8 +567,8 @@ struct ImmediateClock: Clock {
         #expect(report.problem?.contains("com.apple.security.virtualization") == true)
         #expect(report.problem?.contains("install-server.sh") == true)
         let image = try #require(report.checks.last)
-        #expect(image.command == "sudo /Users/hangar/.local/bin/hangar-worker vm setup")
-        #expect(report.setupCommand == "sudo /Users/hangar/.local/bin/hangar-worker vm setup")
+        #expect(image.command == "sudo /Users/adam/.local/bin/hangar-worker vm setup")
+        #expect(report.setupCommand == "sudo /Users/adam/.local/bin/hangar-worker vm setup")
     }
 
     @Test func slotStatesAreAnOptionalRow() throws {

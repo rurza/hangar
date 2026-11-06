@@ -149,8 +149,13 @@ import Testing
         }
         #expect(try warning(#"{"runningUser": "adam"}"#) == "Builds run as adam")
         #expect(try warning(#"{"runningUser": "adam", "vm": {"slots": 1}}"#) == "none")
-        #expect(try warning(#"{"runningUser": "hangar"}"#) == "none")
+        #expect(try warning(#"{"runningUser": "hangar"}"#) == "Builds run as hangar")
         #expect(try warning("{}") == "none")
+        func command(_ json: String) throws -> String {
+            try Self.run(json, "(() => buildUserWarning(input).command ?? 'none')()")
+        }
+        #expect(try command(#"{"runningUser": "adam", "chip": "Apple M2"}"#) == "sudo ~/.local/bin/hangar-worker vm setup")
+        #expect(try command(#"{"runningUser": "adam", "chip": "Intel(R) Core(TM) i7"}"#) == "none")
     }
 
     @Test func aVMMacSaysItsSlotsImagesAndFilterOnOneShortLine() throws {

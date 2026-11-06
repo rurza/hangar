@@ -322,7 +322,7 @@ function reportView(machine, jobInfo, signing) {
       fact('Power', report.onACPower ? 'Power adapter' : 'Battery'),
       fact('macOS', report.macOSVersion || '–'),
       // A VM Mac signs in its VMs; its own Xcode account plays no part.
-      report.vm ? null : fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn, report.headless)),
+      report.vm ? null : fact('Xcode account', xcodeAccountText(report.xcodeAccountSignedIn)),
       report.vm
         ? fact('Builds run as', 'builder, in a fresh VM')
         : fact('Runs as', report.runningUser || '–')),
@@ -337,28 +337,20 @@ function reportView(machine, jobInfo, signing) {
     report.vm ? null : report.canSignWithoutPrompt
       ? h('p', { class: 'signing signing-ok' },
         checkBadge('signing-icon'),
-        report.headless ? 'Can sign with its CI keychain' : 'Can sign without a prompt')
+        'Can sign without a prompt')
       : h('div', { class: 'signing signing-warning' },
         h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
         h('div', null,
           h('p', { class: 'signing-title' }, 'Cannot sign without a prompt'),
           h('p', { class: 'card-note' }, cannotSignAdvice(report)))),
-    !report.vm && report.headless
-      ? h('p', { class: 'card-note' },
-        'Runs without a login, so it has no Xcode account: archives here need a team App Store Connect key '
-        + '(with an issuer ID).')
-      : null,
   ];
 }
 
-/** What to do about a machine that cannot sign: headless, the keychain's own problem; otherwise Keychain Access. */
+/** What to do about a local Mac that cannot sign: allow codesign in its owner's login keychain. */
 function cannotSignAdvice(report) {
-  if (report.headless) {
-    return `Signing jobs skip this Mac until it can sign: ${report.keychainProblem || 'its CI keychain is not ready'}. `
-      + 'In Terminal on this Mac, as an administrator, run hangar-worker isolate again.';
-  }
-  return 'Signing jobs skip this Mac until it can sign. As the hangar user, open Keychain Access, find the '
-    + 'Apple Development private key and allow codesign under Access Control; then run hangar-worker doctor.';
+  const user = report.runningUser ? `As ${report.runningUser}, open` : 'Open';
+  return `Signing jobs skip this Mac until it can sign. ${user} Keychain Access, find the Apple Development private `
+    + 'key and allow codesign under Access Control; then run hangar-worker doctor.';
 }
 
 /**
@@ -454,12 +446,12 @@ function buildUserWarningView(warning) {
     h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
     h('div', null,
       h('p', { class: 'signing-title' }, warning.title),
-      h('p', { class: 'card-note' }, warning.note)));
+      h('p', { class: 'card-note' }, warning.note),
+      warning.command ? commandBlock(warning.command) : null));
 }
 
-/** "Signed in", "Not signed in", "None (no login)" for a headless worker, or "–" (an older worker does not say). */
-export function xcodeAccountText(signedIn, headless = false) {
-  if (headless) return 'None (no login)';
+/** "Signed in", "Not signed in", or "–" (an older worker does not say). */
+export function xcodeAccountText(signedIn) {
   if (signedIn === true) return 'Signed in';
   if (signedIn === false) return 'Not signed in';
   return '–';
@@ -667,6 +659,7 @@ export function openAddMacSheet({ knownIDs, listen }) {
       notices,
       h('ol', { class: 'pairing-steps' },
         h('li', null, 'On the new Mac, open Terminal and run the command.'),
+        h('li', null, 'Choose how it builds: in a fresh macOS VM per build (recommended), or directly on the Mac.'),
         h('li', null, 'Type the code when asked.')),
       hostInput ? field({
         label: 'Server address',
@@ -684,8 +677,8 @@ export function openAddMacSheet({ knownIDs, listen }) {
           })),
         commandBlock,
         h('p', { class: 'field-hint' },
-          'Run it in Terminal as an administrator. It installs the worker, then sets up VM builds, so each build '
-          + 'runs in a fresh macOS VM: about 15 minutes and one password. The Mac takes no builds until then.')),
+          'Run it as the user the worker should run as. VM builds need Apple silicon and take about 15 minutes and an '
+          + 'administrator’s password to set up; the Mac takes no builds until then.')),
       h('div', { class: 'code-field' },
         h('div', { class: 'field-label-row' },
           h('span', { class: 'field-label' }, 'Pairing code'),

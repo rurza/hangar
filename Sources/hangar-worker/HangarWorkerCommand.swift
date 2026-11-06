@@ -11,7 +11,7 @@ let defaultConfigPath = defaultSupportDirectory + "/config.json"
 struct HangarWorkerCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "hangar-worker", abstract: "The Hangar build worker.",
-        subcommands: [Run.self, Doctor.self, Setup.self, Check.self, Isolate.self, VMCommand.self])
+        subcommands: [Run.self, Doctor.self, Setup.self, Check.self, VMCommand.self])
 
     struct Run: AsyncParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Runs the worker: heartbeats and builds assigned jobs.")
@@ -22,30 +22,20 @@ struct HangarWorkerCommand: AsyncParsableCommand {
         func run() async throws {
             LoggingSystem.bootstrap { StreamLogHandler.standardError(label: $0) }
             let logger = Logger(label: "app.hangar.worker")
-            // Everything the worker and its jobs create is private to this user (worker isolation design).
             WorkerPrivacy.standardUmask()
-            let user = NSUserName()
-            let home = NSHomeDirectory()
-            if WorkerPrivacy.isDedicatedAccount(user: user, home: home) {
-                do { try WorkerPrivacy.lockDown(home: home) } catch {
-                    logger.warning("could not set \(home) to mode 0700: \(error)")
-                }
-            }
             let configuration: WorkerConfiguration
             do {
                 configuration = try WorkerConfiguration.load(from: config)
             } catch {
                 throw ValidationError("\(error)")
             }
-            if let warning = WorkerPrivacy.startupWarning(user: user, home: home, vmBuilds: configuration.vm != nil) {
+            if let warning = WorkerPrivacy.startupWarning(user: NSUserName(), vmBuilds: configuration.vm != nil) {
                 logger.warning("\(warning)")
             }
             let runner = LiveProcessRunner()
             let locator = XcodeLocator(runner: runner)
             let connection = HTTPServerConnection(baseURL: configuration.serverURL, token: configuration.token)
             let work = configuration.resolvedWorkDirectory
-            // Headless (the hangar user's LaunchDaemon, set up by isolate): signs with its own CI keychain.
-            let keychain = CIKeychain.installed()
             var loopConfiguration = configuration
             var vmDoctor: VMDoctor?
             let jobRunner: any JobRunning
@@ -64,7 +54,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 jobRunner = VMJobRunner(
                     host: host, connection: connection, serverURL: configuration.serverURL, identity: identity, slots: pool,
                     workerBinary: Bundle.main.executablePath ?? CommandLine.arguments[0],
-                    readiness: { doctor.readinessProblem() }, hostKeychain: keychain)
+                    readiness: { doctor.readinessProblem() })
                 if doctor.readinessProblem() == nil {
                     Task { await VMMaintenance.prepareSlots(host: host, pool: pool) { logger.info("\($0)") } }
                 }
@@ -73,18 +63,19 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                     "ready": "\(doctor.readinessProblem() ?? "yes")",
                 ])
             } else {
+                // Local builds: on this Mac, as this user, signing with the login keychain.
                 jobRunner = JobRunner(
-                    connection: connection, runner: runner, locator: locator, dataDirectory: work, keychain: keychain,
+                    connection: connection, runner: runner, locator: locator, dataDirectory: work,
                     jobTimeout: configuration.jobTimeout)
             }
             let loop = WorkerLoop(
                 configuration: loopConfiguration, connection: connection,
                 doctor: HangarWorker.Doctor(
-                    runner: runner, locator: locator, dataDirectory: work, keychain: keychain, vm: vmDoctor),
+                    runner: runner, locator: locator, dataDirectory: work, vm: vmDoctor),
                 jobRunner: jobRunner)
             logger.info("worker started", metadata: [
                 "server": "\(configuration.serverURL)", "version": "\(JobRunner.workerVersion)", "work": "\(work)",
-                "keychain": "\(keychain?.path ?? "login")",
+                "builds": "\(configuration.vm == nil ? "local" : "vm")",
             ])
             let signals = Self.stopOnSignals(loop)
             await loop.run()
@@ -123,7 +114,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                     identity: VMIdentityStore(dataDirectory: configuration!.dataDirectory))
             }
             let doctor = HangarWorker.Doctor(
-                runner: runner, locator: XcodeLocator(runner: runner), keychain: CIKeychain.installed(), vm: vm)
+                runner: runner, locator: XcodeLocator(runner: runner), vm: vm)
             let encoder = JSONCoding.encoder
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(await doctor.report(runningJobIDs: []))
@@ -194,62 +185,6 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 workDirectory: workDir, existing: existing
             ).write(to: config)
             print("Wrote \(config)")
-        }
-    }
-
-    struct Isolate: AsyncParsableCommand {
-        static let configuration = CommandConfiguration(
-            abstract: "Moves this Mac's worker onto the dedicated, unprivileged hangar user.",
-            discussion: """
-                Run it in Terminal as an administrator, without sudo; it asks for your password when it needs sudo. \
-                It creates the hangar user with a generated password (shown once and saved in your login keychain \
-                as app.hangar.worker-account; nobody logs in as hangar, so it is only for emergencies), copies the \
-                worker, its configuration (the same machine token) and its build cache into that user, locks the \
-                user's home to 0700, creates hangar's CI keychain (its password in a 0600 file in that home) and \
-                installs the worker as a LaunchDaemon that runs as hangar from boot, with no login. It confirms the \
-                worker runs and reaches the server as hangar, then removes this user's agent and configuration. \
-                Running it again picks up where it stopped.
-                """)
-
-        @Flag(help: "Print the steps instead of doing them. Nothing runs with sudo.")
-        var dryRun = false
-        @Option(help: "The worker configuration to move. Default: this user's worker configuration.")
-        var config: String?
-        @Option(help: "The hangar-worker binary to install for hangar. Default: this executable.")
-        var binary: String?
-        @Option(help: "The Hangar server's data directory on this Mac, checked to be unreadable by hangar; empty skips it. Default: this user's, when it exists.")
-        var serverData: String?
-        @Flag(help: "Give an existing hangar user a new generated password.")
-        var resetPassword = false
-
-        func run() async throws {
-            let probe = TerminalRunner()
-            let groups = (try? probe.run(.probe("/usr/bin/id", "-Gn")))?.output.split(separator: " ") ?? []
-            let invoker = IsolationInvoker(
-                name: NSUserName(), uid: getuid(), home: NSHomeDirectory(), isAdmin: groups.contains("admin"))
-            let staging = NSTemporaryDirectory() + "hangar-isolate-" + UUID().uuidString
-            defer { try? FileManager.default.removeItem(atPath: staging) }
-            let say: @Sendable (String) -> Void = { line in
-                FileHandle.standardOutput.write(Data((line + "\n").utf8))
-            }
-            let isolation = WorkerIsolation(
-                invoker: invoker,
-                options: IsolationOptions(
-                    dryRun: dryRun, sourceConfig: config, binary: binary, serverData: serverData,
-                    resetPassword: resetPassword),
-                dependencies: .init(
-                    runner: dryRun ? DryRunRunner(print: say) : TerminalRunner(),
-                    passwords: LoginKeychainPasswordStore(), verifier: OpenDirectoryPasswordVerifier(),
-                    generator: RandomPasswordGenerator(),
-                    check: { await WorkerCheck.run(configuration: $0, transport: URLSessionTransport()) },
-                    sleep: { try? await Task.sleep(for: $0) }, now: Date.init, say: say,
-                    stagingDirectory: staging, ownExecutable: Bundle.main.executablePath))
-            do {
-                _ = try await isolation.run()
-            } catch let error as IsolationError {
-                FileHandle.standardError.write(Data("error: \(error.description)\n".utf8))
-                throw ExitCode(1)
-            }
         }
     }
 }

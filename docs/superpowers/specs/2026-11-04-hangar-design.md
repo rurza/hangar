@@ -3,9 +3,10 @@
 Date: 2026-11-04
 Status: approved by the author 2026-11-04
 
-**Current state (2026-11-06).** Two decisions here were changed by later designs: the worker runs as a
-LaunchDaemon of the `hangar` user, with no login (2026-11-05-worker-isolation-design.md), and builds run in a
-fresh macOS VM per job (2026-11-05-vm-builds-design.md). The text below is the original design.
+**Current state (2026-11-06).** The worker runs as the Mac's owner, as a launch agent, and builds in one of two
+ways: in a fresh macOS VM per job (2026-11-05-vm-builds-design.md, the default on Apple silicon) or locally on the
+Mac as the owner. The dedicated `hangar` user this design called for (and the worker isolation design built) was
+removed on 2026-11-06. The text below is the original design.
 
 ## Intent
 

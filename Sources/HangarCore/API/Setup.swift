@@ -19,9 +19,6 @@ public struct SetupStatus: Codable, Equatable, Sendable {
     /// A worker already set up on this Mac (a worker configuration or a loaded launchd agent), whether or not
     /// Hangar knows its machine; "Use This Mac" never replaces it. Nil for a remote viewer.
     public var installedWorker: InstalledWorker?
-    /// The server does not run as the dedicated `hangar` user, so "Use This Mac for Builds" is refused: the worker
-    /// is set up with the install command in Terminal, which creates that user (worker isolation design).
-    public var dedicatedUserRequired: Bool
     /// The server's MagicDNS name ("mini.tail1234.ts.net"), which every Mac on the tailnet can reach; nil when it is
     /// not known. The Add Mac sheet names the server by it when the page is open on localhost.
     public var tailnetName: String?
@@ -29,9 +26,8 @@ public struct SetupStatus: Codable, Equatable, Sendable {
     public init(
         appStoreConnect: ASCKeyStatus?, github: GitHubStatus?, machines: Int, apps: Int, localWorker: Bool,
         localHostName: String? = nil, workerInstallAvailable: Bool = false, viewerIsLocal: Bool = false,
-        installedWorker: InstalledWorker? = nil, dedicatedUserRequired: Bool = false, tailnetName: String? = nil
+        installedWorker: InstalledWorker? = nil, tailnetName: String? = nil
     ) {
-        self.dedicatedUserRequired = dedicatedUserRequired
         self.tailnetName = tailnetName
         self.appStoreConnect = appStoreConnect
         self.github = github
@@ -49,7 +45,7 @@ public struct SetupStatus: Codable, Equatable, Sendable {
 public struct InstalledWorker: Codable, Equatable, Sendable {
     /// From the worker configuration; nil when there is none or it cannot be read.
     public var serverURL: String?
-    /// `app.hangar.worker` is loaded: this user's agent, or the `hangar` user's LaunchDaemon.
+    /// `app.hangar.worker` is loaded: this user's launch agent.
     public var agentLoaded: Bool
 
     public init(serverURL: String?, agentLoaded: Bool) {
@@ -162,8 +158,14 @@ public struct LocalWorkerInstall: Codable, Equatable, Sendable {
     public var machine: Machine?
     /// Why it failed.
     public var message: String?
+    /// Set when the Mac was enrolled for VM builds (Apple silicon) and so with its builds paused: the command that
+    /// sets them up, which needs sudo in Terminal (`sudo …/hangar-worker vm setup`).
+    public var vmSetupCommand: String?
 
-    public init(state: State, lines: [String] = [], machine: Machine? = nil, message: String? = nil) {
+    public init(
+        state: State, lines: [String] = [], machine: Machine? = nil, message: String? = nil, vmSetupCommand: String? = nil
+    ) {
+        self.vmSetupCommand = vmSetupCommand
         self.state = state
         self.lines = lines
         self.machine = machine

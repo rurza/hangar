@@ -16,16 +16,11 @@ public struct SetupEnvironment: Sendable {
     /// with the bound address and this Mac's interface addresses. The router test client has no peer, so tests
     /// decide here.
     public var isLocalPeer: (@Sendable (String?) -> Bool)?
-    /// The macOS user the server runs as. "Use This Mac for Builds" installs a worker only when it is the dedicated
-    /// `hangar` user: otherwise builds would run as the user that holds `master.key` (worker isolation design).
-    public var processUser: String
 
     public init(
         homeDirectory: String, currentDirectory: String, environment: [String: String], runner: any ProcessRunner,
-        installer: any LocalWorkerInstaller, isLocalPeer: (@Sendable (String?) -> Bool)? = nil,
-        processUser: String = NSUserName()
+        installer: any LocalWorkerInstaller, isLocalPeer: (@Sendable (String?) -> Bool)? = nil
     ) {
-        self.processUser = processUser
         self.homeDirectory = homeDirectory
         self.currentDirectory = currentDirectory
         self.environment = environment
@@ -56,13 +51,6 @@ public struct SetupEnvironment: Sendable {
         return environment
     }
 
-    /// The dedicated build user the one-click install requires the server to run as.
-    static let dedicatedUser = "hangar"
-
-    /// Whether "Use This Mac for Builds" must be refused: the server is not the dedicated user, so the worker would
-    /// run as the user whose home holds the server's data.
-    var dedicatedUserRequired: Bool { processUser != Self.dedicatedUser }
-
     /// The variables of the server's environment the install script may see: the basics, and the documented
     /// overrides of where the worker goes (`HANGAR_BIN_DIR`, `HANGAR_WORKER_CONFIG`) and `HANGAR_NO_LAUNCHD`
     /// (testing). Nothing else of the server's environment reaches it.
@@ -84,9 +72,8 @@ public struct SetupEnvironment: Sendable {
             .appendingPathComponent("Library/Application Support/Hangar/worker/config.json").path
     }
 
-    /// A worker already set up here: its configuration file exists, or its launchd job is loaded, as this user's
-    /// agent or as the isolated `hangar` user's LaunchDaemon (not asked under `HANGAR_NO_LAUNCHD=1`, where the script
-    /// leaves launchd alone). Nil when none. A `launchctl print` that does not answer within `probeTimeout` counts as
+    /// A worker already set up here: its configuration file exists, or this user's launch agent is loaded (not asked
+    /// under `HANGAR_NO_LAUNCHD=1`, where the script leaves launchd alone). Nil when none. A `launchctl print` that does not answer within `probeTimeout` counts as
     /// no job, so the page never hangs.
     func installedWorker(probeTimeout: Duration = .seconds(5)) async -> InstalledWorker? {
         var serverURL: String?
@@ -98,9 +85,7 @@ public struct SetupEnvironment: Sendable {
         }
         var loaded = false
         if environment["HANGAR_NO_LAUNCHD"] != "1" {
-            for domain in ["gui/\(getuid())", "system"] where !loaded {
-                loaded = await output("/bin/launchctl", ["print", "\(domain)/app.hangar.worker"], timeout: probeTimeout) != nil
-            }
+            loaded = await output("/bin/launchctl", ["print", "gui/\(getuid())/app.hangar.worker"], timeout: probeTimeout) != nil
         }
         guard hasConfig || loaded else { return nil }
         return InstalledWorker(serverURL: serverURL, agentLoaded: loaded)

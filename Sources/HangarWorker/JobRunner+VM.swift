@@ -195,16 +195,10 @@ extension JobRunner {
         return result
     }
 
-    /// This Mac's Xcode for the workflow, its CI keychain unlocked when it has one, and an environment of its own:
-    /// none of the job's variables.
+    /// This Mac's Xcode for the workflow and an environment of its own: none of the job's variables.
     private func prepareHostExport(
         _ assignment: JobAssignment, layout: WorkspaceLayout, log: @escaping @Sendable (String) -> Void
     ) async throws -> Prepared {
-        if let keychain {
-            do { try await keychain.prepare(runner: runner) } catch {
-                throw PreparationError.keychainNotReady(reason: String(describing: error), machine: machineName)
-            }
-        }
         guard let xcode = XcodeVersion.best(try await locator.installed(), requested: assignment.workflow.xcode) else {
             throw PreparationError.xcodeNotInstalled(assignment.workflow.xcode)
         }

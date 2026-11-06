@@ -13,7 +13,6 @@ enum APIErrorMapping {
     static let conflictCodes: Set<String> = [
         "app_exists", "machine_exists", "bump_not_higher", "job_not_assigned_to_machine", "job_state_conflict",
         "asc_not_configured", "github_not_configured", "issuer_required", "worker_already_installed",
-        "dedicated_user_required",
         "token_exists", "variable_workflows_overlap", "variable_exists", "variable_group_exists",
         "signing_identity_exists", "signing_busy", "team_key_required", "access_lockout",
     ]

@@ -39,25 +39,6 @@ public struct VMIdentityStore: Sendable, Equatable {
         try? FileManager.default.removeItem(atPath: passwordFile)
     }
 
-    /// Exports every identity in the CI keychain (the Apple Development identity the host's archives created) as a
-    /// `.p12` with a generated password, through `security -i` so the password stays off the command line.
-    public func exportFromKeychain(
-        _ keychain: CIKeychain, runner: any ProcessRunner, password: SensitiveText = RandomPasswordGenerator().generate()
-    ) async throws {
-        try await keychain.prepare(runner: runner)
-        let staging = (file as NSString).deletingLastPathComponent + "/.vm-identity-export-\(UUID().uuidString).p12"
-        defer { try? FileManager.default.removeItem(atPath: staging) }
-        let input = SensitiveText(
-            "export -k \(Self.quoted(keychain.path)) -t identities -f pkcs12 -P \(Self.quoted(password.value)) -o \(Self.quoted(staging))\n")
-        let outcome = try await runner.run(
-            ProcessCommand(executable: "/usr/bin/security", arguments: ["-i"], environment: CIKeychain.environment, standardInput: input),
-            onLine: { _ in })
-        guard outcome.exitCode == 0, let data = FileManager.default.contents(atPath: staging), !data.isEmpty else {
-            throw CIKeychainError.failed("security export", exitCode: outcome.exitCode)
-        }
-        try save(p12: data, password: password)
-    }
-
     /// A double-quoted word for `security -i`, which splits on spaces and honours `"` and `\`.
     static func quoted(_ text: String) -> String {
         "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
@@ -88,21 +69,21 @@ public struct GuestIdentity: Codable, Equatable, Sendable, CustomStringConvertib
 /// design accepts; it can no longer take it away. Every intermediate file is 0600 in the 0700 directory and is
 /// deleted before the job's first script runs.
 public enum GuestKeychain {
-    /// Creates `<directory>/job.keychain-db` and returns it as a `CIKeychain` with its password in memory, which the
-    /// job's `JobRunner` unlocks and keeps first on the search list, as on a headless host.
+    /// Creates `<directory>/job.keychain-db` and returns it as a `JobKeychain` with its password in memory, which the
+    /// job's `JobRunner` unlocks and keeps first on the search list.
     public static func install(
         _ identity: GuestIdentity?, directory: String, runner: any ProcessRunner,
         password: SensitiveText = RandomPasswordGenerator().generate()
-    ) async throws -> CIKeychain {
+    ) async throws -> JobKeychain {
         try FileManager.default.createDirectory(
             atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let keychain = CIKeychain(path: directory + "/job.keychain-db", password: password)
-        try await security("create-keychain", CIKeychain.createInput(password: password, path: keychain.path), runner: runner)
+        let keychain = JobKeychain(path: directory + "/job.keychain-db", password: password)
+        try await security("create-keychain", JobKeychain.createInput(password: password, path: keychain.path), runner: runner)
         // No auto-lock during a long archive: no timeout, and a VM does not sleep.
         let settings = try await runner.run(
-            ProcessCommand(executable: "/usr/bin/security", arguments: ["set-keychain-settings", keychain.path], environment: CIKeychain.environment),
+            ProcessCommand(executable: "/usr/bin/security", arguments: ["set-keychain-settings", keychain.path], environment: JobKeychain.environment),
             onLine: { _ in })
-        guard settings.exitCode == 0 else { throw CIKeychainError.failed("security set-keychain-settings", exitCode: settings.exitCode) }
+        guard settings.exitCode == 0 else { throw JobKeychainError.failed("security set-keychain-settings", exitCode: settings.exitCode) }
         try await keychain.prepare(runner: runner)
         if let identity {
             let p12 = directory + "/identity.p12"
@@ -133,19 +114,19 @@ public enum GuestKeychain {
         _ arguments: [String], input: SensitiveText?, _ what: String, runner: any ProcessRunner
     ) async throws {
         let outcome = try await runner.run(
-            ProcessCommand(executable: "/usr/bin/openssl", arguments: arguments, environment: CIKeychain.environment, standardInput: input),
+            ProcessCommand(executable: "/usr/bin/openssl", arguments: arguments, environment: JobKeychain.environment, standardInput: input),
             onLine: { _ in })
-        guard outcome.exitCode == 0 else { throw CIKeychainError.failed("openssl (\(what))", exitCode: outcome.exitCode) }
+        guard outcome.exitCode == 0 else { throw JobKeychainError.failed("openssl (\(what))", exitCode: outcome.exitCode) }
     }
 
     private static func security(
         _ what: String, _ input: SensitiveText, runner: any ProcessRunner, tolerating: String? = nil
     ) async throws {
         let outcome = try await runner.run(
-            ProcessCommand(executable: "/usr/bin/security", arguments: ["-i"], environment: CIKeychain.environment, standardInput: input),
+            ProcessCommand(executable: "/usr/bin/security", arguments: ["-i"], environment: JobKeychain.environment, standardInput: input),
             onLine: { _ in })
         if outcome.exitCode != 0, let tolerating, outcome.output.contains(tolerating) { return }
-        guard outcome.exitCode == 0 else { throw CIKeychainError.failed(what, exitCode: outcome.exitCode) }
+        guard outcome.exitCode == 0 else { throw JobKeychainError.failed(what, exitCode: outcome.exitCode) }
     }
 }
 

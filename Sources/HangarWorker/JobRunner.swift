@@ -16,8 +16,9 @@ import Synchronization
 /// archive the App Store Connect key checked. The key comes in the assignment, never as a variable: its `.p8` is on
 /// disk only while an `xcodebuild` step or a post-action that uses it runs (`AppStoreConnectKeyFile`), and no hook
 /// sees it in its environment. Build phases and package plugins run as this user during those steps and can read it:
-/// on a host Mac that exposure remains (VM builds keep the key out of the guest altogether). A headless worker (one with a `CIKeychain`) unlocks its keychain first,
-/// and lets codesign use any key the archive, export or test step created, whether that step succeeded or not.
+/// on a host Mac that exposure remains (VM builds keep the key out of the guest altogether). In a VM, the job's
+/// `JobKeychain` is unlocked first, and codesign may use any key the archive, export or test step created, whether
+/// that step succeeded or not; a local build signs with the owner's login keychain.
 /// When that fails, `checkout` reports `failed` and the failure reason is the preparation error alone.
 ///
 /// Secrets never leave the machine unmasked: every line goes through `JobLog`, which masks each secret value and the
@@ -38,8 +39,8 @@ public struct JobRunner: Sendable {
     let machineName: String
     let clock: any Clock<Duration>
     let appStoreConnectFactory: AppStoreConnectFactory
-    /// Set when the worker runs headless; nil in a login session, where the login keychain signs.
-    let keychain: CIKeychain?
+    /// The job's own keychain in a VM guest; nil for a local build, where the owner's login keychain signs.
+    let keychain: JobKeychain?
     /// The first line of the `checkout` step's log, before anything else is prepared: how a job's VM came up.
     private let preparationNote: String?
     /// A job still running after this is stopped, as a worker stop is, with the timeout as its reason. Nil: none (in
@@ -57,7 +58,7 @@ public struct JobRunner: Sendable {
         appStoreConnectFactory: @escaping AppStoreConnectFactory = {
             LiveAppStoreConnectClient(credentials: $0, transport: URLSessionTransport())
         },
-        keychain: CIKeychain? = nil,
+        keychain: JobKeychain? = nil,
         preparationNote: String? = nil,
         jobTimeout: Duration? = nil,
         mode: Mode = .standard
@@ -282,10 +283,10 @@ public struct JobRunner: Sendable {
         }
     }
 
-    /// Unlocks a headless worker's keychain, picks Xcode, assembles the environment, writes as-file variables and
-    /// checks the App Store Connect key: the key ID and key are required, the issuer ID only for a team key, which is
-    /// the only kind xcodebuild accepts. Headless, an archive needs that team key: there is no Xcode account to fall
-    /// back on (the scheduler already keeps such jobs off this Mac; this is the check for an older server).
+    /// Unlocks a VM job's keychain, picks Xcode, assembles the environment, writes as-file variables and checks the
+    /// App Store Connect key: the key ID and key are required, the issuer ID only for a team key, which is the only
+    /// kind xcodebuild accepts. In a VM an archive needs that team key: there is no Xcode account to fall back on
+    /// (the scheduler already keeps such jobs off VM Macs; this is the check for an older server).
     private func prepare(
         _ assignment: JobAssignment, layout: WorkspaceLayout, materializer: SecretsMaterializer,
         log: @escaping @Sendable (String) -> Void
@@ -297,7 +298,7 @@ public struct JobRunner: Sendable {
             do { try await keychain.prepare(runner: runner) } catch {
                 throw PreparationError.keychainNotReady(reason: String(describing: error), machine: machineName)
             }
-            log("unlocked the CI keychain (\(keychain.path))")
+            log("unlocked the job's keychain (\(keychain.path))")
         }
         guard let xcode = XcodeVersion.best(try await locator.installed(), requested: workflow.xcode) else {
             throw PreparationError.xcodeNotInstalled(workflow.xcode)
@@ -543,7 +544,7 @@ public struct JobRunner: Sendable {
     }
 
     /// Runs `body`, an xcodebuild step with `-allowProvisioningUpdates`, which may add a signing key to the default
-    /// keychain. Headless, the keychain's partition list is then set again so codesign can use that key without a
+    /// keychain. In a VM, the job keychain's partition list is then set again so codesign can use that key without a
     /// prompt; also after a failure, so a key the failed run created works for the next one. A failure to set it is a
     /// warning: the step's own result stands.
     func allowingCodesign<Value: Sendable>(

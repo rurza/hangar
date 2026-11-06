@@ -148,7 +148,7 @@ import Testing
         #expect(InstallScript.render(origin: "http://localhost", workerSHA256: "'; rm -rf ~; '").contains("HANGAR_WORKER_SHA256=''\n"))
     }
 
-    /// The owner's launch agent gives a stopping worker as long as the LaunchDaemon does; launchd's default is 20 s.
+    /// The launch agent gives a stopping worker two minutes to report its jobs; launchd's default is 20 s.
     @Test func theLaunchAgentWaitsTwoMinutesBeforeSIGKILL() {
         let script = InstallScript.render(origin: "http://localhost")
         #expect(script.contains("<key>ExitTimeOut</key>\n    <integer>120</integer>"))

@@ -4,15 +4,14 @@ import Testing
 
 @testable import HangarWorker
 
-@Suite(.timeLimit(.minutes(1))) struct CIKeychainTests {
-    /// A keychain file and its password file in a temporary directory; `security` is a recording runner.
+@Suite(.timeLimit(.minutes(1))) struct JobKeychainTests {
+    /// A keychain file in a temporary directory, its password in memory; `security` is a recording runner.
     struct Fixture {
         let directory = NSTemporaryDirectory() + "hangar-keychain-" + UUID().uuidString
-        var keychain: CIKeychain { CIKeychain(path: directory + "/" + CIKeychain.fileName, passwordFile: directory + "/keychain-password") }
+        var keychain: JobKeychain { JobKeychain(path: directory + "/job.keychain-db", password: SensitiveText("s3cret")) }
 
-        init(password: String? = "s3cret\n", keychainExists: Bool = true) throws {
+        init(keychainExists: Bool = true) throws {
             try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-            if let password { try password.write(toFile: keychain.passwordFile, atomically: true, encoding: .utf8) }
             if keychainExists { FileManager.default.createFile(atPath: keychain.path, contents: Data()) }
         }
 
@@ -28,8 +27,8 @@ import Testing
         defer { fixture.cleanUp() }
         let path = fixture.keychain.path
         let runner = RecordingProcessRunner()
-        runner.script(Self.isSecurity(["default-keychain", "-d", "user"]), lines: [#"    "/Users/hangar/Library/Keychains/login.keychain-db""#])
-        runner.script(Self.isSecurity(["list-keychains", "-d", "user"]), lines: [#"    "/Users/hangar/Library/Keychains/login.keychain-db""#])
+        runner.script(Self.isSecurity(["default-keychain", "-d", "user"]), lines: [#"    "/Users/builder/Library/Keychains/login.keychain-db""#])
+        runner.script(Self.isSecurity(["list-keychains", "-d", "user"]), lines: [#"    "/Users/builder/Library/Keychains/login.keychain-db""#])
 
         try await fixture.keychain.prepare(runner: runner)
 
@@ -38,7 +37,7 @@ import Testing
             ["default-keychain", "-d", "user"],
             ["default-keychain", "-d", "user", "-s", path],
             ["list-keychains", "-d", "user"],
-            ["list-keychains", "-d", "user", "-s", path, "/Users/hangar/Library/Keychains/login.keychain-db"],
+            ["list-keychains", "-d", "user", "-s", path, "/Users/builder/Library/Keychains/login.keychain-db"],
         ])
         #expect(runner.commands.first?.standardInput?.value == "unlock-keychain -p s3cret \"\(path)\"\n")
         #expect(!runner.commands.contains { $0.arguments.contains { $0.contains("s3cret") } })
@@ -73,27 +72,26 @@ import Testing
         #expect(runner.commands.last?.arguments == ["list-keychains", "-d", "user", "-s", path, "/a.keychain-db"])
     }
 
-    @Test func aWrongPasswordAMissingKeychainOrPasswordFileSaySo() async throws {
+    @Test func aWrongPasswordAMissingKeychainOrAFailedSetupSaySo() async throws {
         let wrong = try Fixture()
         defer { wrong.cleanUp() }
         let runner = RecordingProcessRunner()
         runner.script({ $0.standardInput != nil }, lines: ["security: SecKeychainUnlock: wrong"], exitCode: 51)
-        await #expect(throws: CIKeychainError.wrongPassword) { try await wrong.keychain.prepare(runner: runner) }
+        await #expect(throws: JobKeychainError.wrongPassword) { try await wrong.keychain.prepare(runner: runner) }
 
         let missing = try Fixture(keychainExists: false)
         defer { missing.cleanUp() }
-        await #expect(throws: CIKeychainError.missing(missing.keychain.path)) {
+        await #expect(throws: JobKeychainError.missing(missing.keychain.path)) {
             try await missing.keychain.prepare(runner: RecordingProcessRunner())
         }
-        #expect(await missing.keychain.problem(runner: RecordingProcessRunner())?.contains("run hangar-worker isolate again") == true)
 
-        for password in [nil, "  \n"] {
-            let unreadable = try Fixture(password: password)
-            defer { unreadable.cleanUp() }
-            await #expect(throws: CIKeychainError.passwordUnreadable(unreadable.keychain.passwordFile)) {
-                try await unreadable.keychain.prepare(runner: RecordingProcessRunner())
-            }
+        // GuestJob's stand-in when the keychain could not be created: the job's first step fails with why.
+        let failed = JobKeychain(path: missing.keychain.path, failure: "security create-keychain exited with status 48")
+        let runner2 = RecordingProcessRunner()
+        await #expect(throws: JobKeychainError.unavailable("security create-keychain exited with status 48")) {
+            try await failed.prepare(runner: runner2)
         }
+        #expect(runner2.commands.isEmpty)
     }
 
     @Test func allowingCodesignSetsThePartitionListAndAcceptsAKeychainWithoutKeys() async throws {
@@ -111,33 +109,19 @@ import Testing
 
         let failing = RecordingProcessRunner()
         failing.script({ _ in true }, lines: ["security: something else"], exitCode: 1)
-        await #expect(throws: CIKeychainError.failed("security set-key-partition-list", exitCode: 1)) {
+        await #expect(throws: JobKeychainError.failed("security set-key-partition-list", exitCode: 1)) {
             try await fixture.keychain.allowCodesign(runner: failing)
         }
     }
 
-    @Test func aWorkerIsHeadlessWhenItsHomeHasThePasswordFile() throws {
-        let home = NSTemporaryDirectory() + "hangar-home-" + UUID().uuidString
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        #expect(CIKeychain.installed(home: home) == nil)
-        let keychain = CIKeychain(home: home)
-        #expect(keychain.path == home + "/Library/Keychains/hangar-ci.keychain-db")
-        #expect(keychain.passwordFile == home + "/Library/Application Support/Hangar/worker/keychain-password")
-        #expect(keychain.passwordFile == IsolationLayout(home: home).dataDirectory + "/keychain-password")
-        try FileManager.default.createDirectory(
-            atPath: (keychain.passwordFile as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try "x".write(toFile: keychain.passwordFile, atomically: true, encoding: .utf8)
-        #expect(CIKeychain.installed(home: home) == keychain)
-    }
-
     @Test func searchListPathsAreTheQuotedLines() {
         let output = """
-                "/Users/hangar/Library/Keychains/hangar-ci.keychain-db"
+                "/Users/builder/.hangar-keychain/job.keychain-db"
                 "/Library/Keychains/System.keychain"
             security: a warning
             """
-        #expect(CIKeychain.paths(in: output) == [
-            "/Users/hangar/Library/Keychains/hangar-ci.keychain-db", "/Library/Keychains/System.keychain",
+        #expect(JobKeychain.paths(in: output) == [
+            "/Users/builder/.hangar-keychain/job.keychain-db", "/Library/Keychains/System.keychain",
         ])
     }
 

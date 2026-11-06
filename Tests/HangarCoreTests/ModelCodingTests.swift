@@ -145,28 +145,31 @@ struct ModelCodingTests {
         #expect(report.signingIdentities == [])
         #expect(report.xcodeAccountSignedIn == nil)
         #expect(report.runningUser == nil)
-        #expect(report.headless == nil)
-        #expect(report.keychainProblem == nil)
         #expect(report.chip == "M4")
     }
 
-    @Test func machineReportHeadlessDetailsRoundTrip() throws {
-        let report = MachineReport(
-            macOSVersion: "26.1", xcodes: [], chip: "M4", performanceCores: 10, memoryGB: 16, freeDiskGB: 100,
-            onACPower: true, tools: [:], canSignWithoutPrompt: false, runningJobIDs: [], runningUser: "hangar",
-            headless: true, keychainProblem: "the CI keychain does not unlock with its stored password")
-        let data = try JSONCoding.encoder.encode(report)
-        #expect(try JSONCoding.decoder.decode(MachineReport.self, from: data) == report)
-        #expect(String(decoding: data, as: UTF8.self).contains(#""headless":true"#))
+    /// A worker from before the dedicated hangar user was removed still sends `headless` and `keychainProblem` until
+    /// it updates itself: its report reads as before, without them.
+    @Test func machineReportFromAHeadlessWorkerStillDecodes() throws {
+        let json = #"""
+            {"macOSVersion":"26.1","xcodes":[],"chip":"M4","performanceCores":10,"memoryGB":16,"freeDiskGB":100,
+             "onACPower":true,"tools":{},"canSignWithoutPrompt":false,"runningJobIDs":[],"runningUser":"hangar",
+             "headless":true,"keychainProblem":"the CI keychain does not unlock with its stored password"}
+            """#
+        let report = try JSONCoding.decoder.decode(MachineReport.self, from: Data(json.utf8))
+        #expect(report.runningUser == "hangar")
+        #expect(!report.canSignWithoutPrompt)
+        let encoded = String(decoding: try JSONCoding.encoder.encode(report), as: UTF8.self)
+        #expect(!encoded.contains("headless") && !encoded.contains("keychainProblem"))
     }
 
     @Test func machineReportRunningUserRoundTrips() throws {
         let report = MachineReport(
             macOSVersion: "26.1", xcodes: [], chip: "M4", performanceCores: 10, memoryGB: 16, freeDiskGB: 100,
-            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [], runningUser: "hangar")
+            onACPower: true, tools: [:], canSignWithoutPrompt: true, runningJobIDs: [], runningUser: "adam")
         let data = try JSONCoding.encoder.encode(report)
         #expect(try JSONCoding.decoder.decode(MachineReport.self, from: data) == report)
-        #expect(String(decoding: data, as: UTF8.self).contains(#""runningUser":"hangar""#))
+        #expect(String(decoding: data, as: UTF8.self).contains(#""runningUser":"adam""#))
     }
 
     @Test func machineReportSigningDetailsRoundTrip() throws {

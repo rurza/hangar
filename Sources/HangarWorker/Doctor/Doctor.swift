@@ -15,8 +15,6 @@ public struct Doctor: Sendable {
     private let simulatorRefresh: TimeInterval
     private let now: @Sendable () -> Date
     private let userName: String
-    /// Set for a headless worker (`CIKeychain.installed`): signing is checked against it instead of the login keychain.
-    private let keychain: CIKeychain?
     /// Set when VM builds are on: the report's `vm` section.
     private let vm: VMDoctor?
     /// The last simulator runtimes listed and when the list was last attempted, shared by the copies of this Doctor.
@@ -30,11 +28,10 @@ public struct Doctor: Sendable {
         dataDirectory: String = NSHomeDirectory(), clock: any Clock<Duration> = ContinuousClock(),
         signTimeout: Duration = .seconds(10), simulatorTimeout: Duration = .seconds(10),
         simulatorRefresh: TimeInterval = 600, now: @escaping @Sendable () -> Date = Date.init,
-        userName: String = NSUserName(), keychain: CIKeychain? = nil, vm: VMDoctor? = nil
+        userName: String = NSUserName(), vm: VMDoctor? = nil
     ) {
         self.vm = vm
         self.userName = userName
-        self.keychain = keychain
         self.simulatorTimeout = simulatorTimeout
         self.simulatorRefresh = simulatorRefresh
         self.now = now
@@ -46,16 +43,13 @@ public struct Doctor: Sendable {
         self.signTimeout = signTimeout
     }
 
-    /// With VM builds on, the host's keychain signs nothing (each VM gets the server's identity): it is neither
-    /// unlocked nor probed, and the report lists no identities and no signing problem.
+    /// With VM builds on, the host's keychain signs nothing (each VM gets the server's identity): it is not probed,
+    /// and the report lists no identities. A local build signs with the owner's login keychain, which is probed.
     public func report(runningJobIDs: [UUID]) async -> MachineReport {
-        // First, so the identities below come from an unlocked CI keychain: after a reboot nothing else unlocks it.
-        let keychainProblem = vm == nil ? await keychain?.problem(runner: runner) : nil
         let identities = vm == nil ? await signingIdentities() : []
-        async let signing = vm == nil ? signing(identities: identities, keychainProblem: keychainProblem) : (false, nil)
+        async let canSign = vm == nil ? canSignWithoutPrompt(identities: identities) : false
         async let xcodeAccount = xcodeAccountSignedIn()
         let bytes = Int(await sysctl("hw.memsize")) ?? 0
-        let (canSign, problem) = await signing
         return MachineReport(
             macOSVersion: await output("/usr/bin/sw_vers", ["-productVersion"]) ?? "",
             xcodes: (try? await locator.installed()) ?? [],
@@ -65,15 +59,13 @@ public struct Doctor: Sendable {
             freeDiskGB: freeDiskGB(),
             onACPower: await onACPower(),
             tools: await tools(),
-            canSignWithoutPrompt: canSign,
+            canSignWithoutPrompt: await canSign,
             runningJobIDs: runningJobIDs,
             signingIdentities: Self.uniqueNames(identities),
             xcodeAccountSignedIn: await xcodeAccount,
             simulatorRuntimes: await simulatorRuntimes(),
             capabilities: WorkerCapability.all,
             runningUser: userName,
-            headless: keychain == nil ? nil : true,
-            keychainProblem: problem,
             vm: vm?.report(runningJobs: runningJobIDs.count))
     }
 
@@ -97,8 +89,8 @@ public struct Doctor: Sendable {
         await output("/usr/sbin/sysctl", ["-n", key]) ?? ""
     }
 
-    /// "Important usage" counts purgeable space but reads 0 outside a login session (the headless LaunchDaemon), so
-    /// the plain available capacity stands in for it there.
+    /// "Important usage" counts purgeable space but can read 0 (outside a login session), so the plain available
+    /// capacity stands in for it then.
     private func freeDiskGB() -> Double {
         let url = URL(fileURLWithPath: dataDirectory)
         let values = try? url.resourceValues(forKeys: [
@@ -157,21 +149,6 @@ public struct Doctor: Sendable {
 
     // MARK: Signing
 
-    /// Whether jobs can sign, and for a headless worker what stops it. In a login session that is the codesign test
-    /// below. Headless, the CI keychain must be ready; a keychain without an Apple Development identity yet counts
-    /// as ready, since the first archive creates it there (and the scheduler gives a machine that cannot sign no
-    /// archive). Once there is one, codesign must use it: when it cannot, the keychain's partition list is set again
-    /// (a key added outside a job) and codesign tried once more.
-    private func signing(identities: [SigningIdentity], keychainProblem: String?) async -> (Bool, String?) {
-        guard let keychain else { return (await canSignWithoutPrompt(identities: identities), nil) }
-        if let keychainProblem { return (false, keychainProblem) }
-        guard identities.contains(where: { $0.name.hasPrefix("Apple Development") }) else { return (true, nil) }
-        if await canSignWithoutPrompt(identities: identities) { return (true, nil) }
-        try? await keychain.allowCodesign(runner: runner)
-        if await canSignWithoutPrompt(identities: identities) { return (true, nil) }
-        return (false, "codesign cannot use the Apple Development key in the CI keychain (\(keychain.path))")
-    }
-
     /// Signs a throwaway copy of `/bin/ls` with the first Apple Development identity. A keychain prompt makes
     /// codesign hang, so the attempt is raced against `signTimeout`.
     private func canSignWithoutPrompt(identities: [SigningIdentity]) async -> Bool {
@@ -220,10 +197,8 @@ public struct Doctor: Sendable {
     }
 
     /// Whether Xcode lists an Apple account (`DVTDeveloperAccountManagerAppleIDLists` names an identifier). nil
-    /// when `defaults` cannot run at all. Always false headless: an account's credentials live in a login keychain,
-    /// which nothing unlocks for a LaunchDaemon.
+    /// when `defaults` cannot run at all.
     private func xcodeAccountSignedIn() async -> Bool? {
-        if keychain != nil { return false }
         let command = ProcessCommand(
             executable: "/usr/bin/defaults", arguments: ["read", "com.apple.dt.Xcode", "DVTDeveloperAccountManagerAppleIDLists"],
             environment: Self.environment)

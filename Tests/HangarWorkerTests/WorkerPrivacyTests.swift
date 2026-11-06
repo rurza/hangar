@@ -1,4 +1,5 @@
 import Foundation
+import HangarCore
 import Logging
 import Testing
 
@@ -16,31 +17,24 @@ import Testing
         return (attributes[.posixPermissions] as! NSNumber).intValue
     }
 
-    @Test func onlyTheHangarUserInItsOwnHomeIsTheDedicatedAccount() {
-        #expect(WorkerPrivacy.isDedicatedAccount(user: "hangar", home: "/Users/hangar"))
-        #expect(WorkerPrivacy.isDedicatedAccount(user: "hangar", home: "/Users/hangar/"))
-        #expect(!WorkerPrivacy.isDedicatedAccount(user: "adam", home: "/Users/adam"))
-        #expect(!WorkerPrivacy.isDedicatedAccount(user: "hangar", home: "/Users/adam"))
-        #expect(!WorkerPrivacy.isDedicatedAccount(user: "adam", home: "/Users/hangar"))
-        #expect(!WorkerPrivacy.isDedicatedAccount(user: "hangar", home: "/Volumes/Shared/hangar"))
-    }
-
-    @Test func warnsOnlyWhenNotTheDedicatedAccount() throws {
-        #expect(WorkerPrivacy.startupWarning(user: "hangar", home: "/Users/hangar") == nil)
+    @Test func localBuildsWarnThatABuildCanReadTheOwnersFiles() throws {
         let warning = try #require(WorkerPrivacy.startupWarning(
-            user: "adam", home: "/Users/adam", setupCommand: "sudo /Users/adam/.local/bin/hangar-worker vm setup"))
+            user: "adam", setupCommand: "sudo /Users/adam/.local/bin/hangar-worker vm setup"))
         #expect(warning.contains("running as adam"))
         #expect(warning.hasSuffix("sudo /Users/adam/.local/bin/hangar-worker vm setup"))
         // With VM builds on, builds cannot read adam's files.
-        #expect(WorkerPrivacy.startupWarning(user: "adam", home: "/Users/adam", vmBuilds: true) == nil)
+        #expect(WorkerPrivacy.startupWarning(user: "adam", vmBuilds: true) == nil)
     }
 
-    @Test func lockDownSetsAnOpenDirectoryToOwnerOnly() throws {
-        let home = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(atPath: home) }
-        try WorkerPrivacy.setMode(0o755, at: home)
-        try WorkerPrivacy.lockDown(home: home)
-        #expect(try mode(home) == 0o700)
+    @Test func generatedPasswordsAreLongGroupedAndUnambiguous() {
+        var seen = Set<String>()
+        for _ in 0..<200 {
+            let password = RandomPasswordGenerator().generate().value
+            #expect(password.wholeMatch(of: /[a-hjkmnp-z2-9]{4}(-[a-hjkmnp-z2-9]{4}){4}/) != nil)
+            seen.insert(password)
+        }
+        #expect(seen.count == 200)
+        #expect(RandomPasswordGenerator.alphabet.count == 31)
     }
 
     @Test func theDataDirectoryIsPrivateWhetherNewOrExisting() throws {

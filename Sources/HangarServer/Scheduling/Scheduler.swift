@@ -14,7 +14,7 @@ public struct QueuedJob: Sendable {
     /// `WorkerCapability` names the worker must report.
     public var requiredCapabilities: Set<String>
     /// An archive whose App Store Connect key has no issuer ID: xcodebuild then signs with the Xcode account on the
-    /// machine, which a headless worker does not have.
+    /// machine, which a VM does not have.
     public var needsXcodeAccount: Bool
     /// An archive while the server has no usable signing identity: why (none yet, expired). A VM machine cannot take
     /// it unless its worker holds its own identity; a host machine signs with its own keychain and ignores it.
@@ -58,8 +58,6 @@ public struct MachineSnapshot: Sendable {
     /// "iOS 27.2"…, as the machine reports them.
     public var simulatorRuntimes: [String]
     public var capabilities: Set<String>
-    /// The worker runs without a login session (`MachineReport.headless`), so it has no Xcode account.
-    public var headless: Bool
     /// Builds are turned off on this Mac (`Machine.paused`).
     public var paused: Bool
     /// Every job on this Mac runs in a VM (`MachineReport.vm`): `freeSlots` counts its ready VM slots,
@@ -74,7 +72,7 @@ public struct MachineSnapshot: Sendable {
     public init(
         id: UUID, name: String, isOnline: Bool, freeSlots: Int, runningJobs: Int, xcodeVersions: [String],
         tools: Set<String>, freeDiskGB: Double, performanceCores: Int, onACPower: Bool, canSign: Bool,
-        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], headless: Bool = false, paused: Bool = false,
+        simulatorRuntimes: [String] = [], capabilities: Set<String> = [], paused: Bool = false,
         vm: Bool = false, vmNotReady: String? = nil, vmOwnIdentity: Bool = false
     ) {
         self.vmOwnIdentity = vmOwnIdentity
@@ -83,7 +81,6 @@ public struct MachineSnapshot: Sendable {
         self.paused = paused
         self.simulatorRuntimes = simulatorRuntimes
         self.capabilities = capabilities
-        self.headless = headless
         self.id = id
         self.name = name
         self.isOnline = isOnline
@@ -111,7 +108,7 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
     case simulatorMissing(String)
     /// The worker lacks a capability the job needs: it predates the feature.
     case workerOutdated
-    /// An archive with an individual App Store Connect key, on a headless worker: there is no Xcode account to sign with.
+    /// An archive with an individual App Store Connect key, on a VM Mac: a VM has no Xcode account to sign with.
     case needsTeamKey
     /// Its owner turned builds off on this Mac. Like busy, it passes: the job waits until the machine is resumed.
     case paused
@@ -139,7 +136,7 @@ public enum Ineligibility: Equatable, Sendable, CustomStringConvertible {
         case .simulatorMissing(let platform): "no \(platform) simulator"
         case .workerOutdated: "update the worker (run the install command again)"
         case .needsTeamKey:
-            "needs a team App Store Connect key (with an issuer ID): this Mac's worker runs without an Xcode account"
+            "needs a team App Store Connect key (with an issuer ID): a VM has no Xcode account"
         }
     }
 
@@ -225,7 +222,7 @@ public enum Scheduler {
         if !machine.vm { reasons += job.tools.filter { !machine.tools.contains($0) }.map(Ineligibility.toolMissing) }
         // A VM machine always can: its host keychain signs nothing, and the server's identity is checked below.
         if job.signsOnHost, !machine.canSign { reasons.append(.cannotSign) }
-        if job.needsXcodeAccount, machine.headless { reasons.append(.needsTeamKey) }
+        if job.needsXcodeAccount, machine.vm { reasons.append(.needsTeamKey) }
         // A VM signs with the server's identity (or its worker's own); a host with its own keychain, as before.
         if machine.vm, !machine.vmOwnIdentity, let problem = job.signingProblem { reasons.append(.noSigningIdentity(problem)) }
         if let platform = job.simulatorPlatform,

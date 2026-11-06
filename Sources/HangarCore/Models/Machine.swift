@@ -46,16 +46,9 @@ public struct MachineReport: Codable, Equatable, Sendable {
     /// SHA-256 of the running `hangar-worker`, computed when that process started. Nil from a worker that does not
     /// report it yet. The server offers a replacement when this differs from the binary it would hand out.
     public var binarySHA256: String?
-    /// The macOS user the worker runs as (`NSUserName()`), e.g. "hangar". Nil from a worker that does not report it.
-    /// Anything other than `hangar` means a build can read that user's files (worker isolation design).
+    /// The macOS user the worker runs as (`NSUserName()`), the Mac's owner, e.g. "adam". Nil from a worker that does
+    /// not report it. Without VM builds, a build there can read that user's files.
     public var runningUser: String?
-    /// True when the worker runs without a login session (the `hangar` user's LaunchDaemon): it signs with its own CI
-    /// keychain and has no Xcode account, so it needs a team App Store Connect key to sign. Nil from an older worker
-    /// or one in a login session.
-    public var headless: Bool?
-    /// Why a headless worker's CI keychain cannot sign, in plain English ("does not unlock with the stored password");
-    /// nil when it can, and for every other worker.
-    public var keychainProblem: String?
     /// The machine's VM builds (VM builds design): present when its worker is configured for them, and then every job
     /// on it runs in a VM. Nil for a machine that builds on the host, and from an older worker.
     public var vm: VMReport?
@@ -65,8 +58,7 @@ public struct MachineReport: Codable, Equatable, Sendable {
         memoryGB: Int, freeDiskGB: Double, onACPower: Bool, tools: [String: String],
         canSignWithoutPrompt: Bool, runningJobIDs: [UUID], signingIdentities: [String] = [],
         xcodeAccountSignedIn: Bool? = nil, simulatorRuntimes: [String] = [], capabilities: [String] = [],
-        binarySHA256: String? = nil, runningUser: String? = nil, headless: Bool? = nil, keychainProblem: String? = nil,
-        vm: VMReport? = nil
+        binarySHA256: String? = nil, runningUser: String? = nil, vm: VMReport? = nil
     ) {
         self.vm = vm
         self.macOSVersion = macOSVersion
@@ -85,18 +77,17 @@ public struct MachineReport: Codable, Equatable, Sendable {
         self.capabilities = capabilities
         self.binarySHA256 = binarySHA256
         self.runningUser = runningUser
-        self.headless = headless
-        self.keychainProblem = keychainProblem
     }
 
     private enum CodingKeys: String, CodingKey {
         case macOSVersion, xcodes, chip, performanceCores, memoryGB, freeDiskGB, onACPower, tools, canSignWithoutPrompt
         case runningJobIDs, signingIdentities, xcodeAccountSignedIn, simulatorRuntimes, capabilities, binarySHA256
-        case runningUser, headless, keychainProblem, vm
+        case runningUser, vm
     }
 
     /// An older worker sends none of the newer fields (`signingIdentities`, `xcodeAccountSignedIn`,
-    /// `simulatorRuntimes`, `capabilities`): read as none and unknown.
+    /// `simulatorRuntimes`, `capabilities`): read as none and unknown. One from before the dedicated `hangar` user was
+    /// removed may still send `headless` and `keychainProblem`; they are ignored.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         macOSVersion = try container.decode(String.self, forKey: .macOSVersion)
@@ -115,8 +106,6 @@ public struct MachineReport: Codable, Equatable, Sendable {
         capabilities = try container.decodeIfPresent([String].self, forKey: .capabilities) ?? []
         binarySHA256 = try container.decodeIfPresent(String.self, forKey: .binarySHA256)
         runningUser = try container.decodeIfPresent(String.self, forKey: .runningUser)
-        headless = try container.decodeIfPresent(Bool.self, forKey: .headless)
-        keychainProblem = try container.decodeIfPresent(String.self, forKey: .keychainProblem)
         vm = try container.decodeIfPresent(VMReport.self, forKey: .vm)
     }
 }

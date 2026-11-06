@@ -1,5 +1,10 @@
 # Worker isolation
 
+> **Removed on 2026-11-06 in favour of VM builds.** The dedicated `hangar` user, `hangar-worker isolate`, its
+> LaunchDaemon, the host CI keychain and headless signing are gone from the code. A worker now runs as the Mac's
+> owner (a launch agent) and builds either in a fresh macOS VM per job (2026-11-05-vm-builds-design.md) or locally,
+> as the owner, signing with the login keychain (docs/worker-setup.md). This file is kept as history.
+
 Date: 2026-11-05
 Status: implemented on branch `worker-isolation` (from `workflow-editor` at `9615a07`); not yet verified on a
 real Mac. Revised the same day: setup is automated (a generated password kept in the administrator's keychain,
@@ -9,11 +14,8 @@ CI keychain, and nobody logs in as `hangar`. Paragraphs marked *(revised: Launch
 LaunchDaemon and the CI keychain*, replace what earlier paragraphs say about the graphical login and the login
 keychain.
 
-**Current state (2026-11-06).** Verified on both Macs with 0.9. VM builds (2026-11-05-vm-builds-design.md)
-have since replaced this design as the recommended setup and drop its anti-goal of a VM per job: the `hangar`
-daemon is now the VM host. Building on the host as `hangar` remains supported as the legacy setup.
-`scripts/worker/install-worker.sh` (the checkout install mentioned below) is gone: every Mac installs with the
-`curl … | sh` command and a pairing code.
+**State before removal (2026-11-06).** Verified on both Macs with 0.9, then replaced by VM builds; neither Mac
+ran its worker as `hangar` when the mode was removed.
 
 ## Intent
 
