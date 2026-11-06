@@ -80,6 +80,43 @@ import Testing
         #expect(engine.machines.first?.calls == [.start, .stop])
     }
 
+    /// A restored guest that never answers SSH is stopped, and its slot's state goes: every later job would restore it
+    /// and fail the same way. This job cold-boots instead.
+    @Test func aRestoreThatNeverAnswersSSHStopsTheVMAndColdBoots() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        try fixture.saveSlot(0)
+        let engine = FakeEngine()
+        let runner = RecordingProcessRunner()
+        // SSH answers only once a VM was cold-booted.
+        runner.script(
+            { $0.executable == "/usr/bin/ssh" && !engine.machines.contains { $0.calls.contains(.start) } }, lines: [],
+            exitCode: 255)
+        var launcher = Self.launcher(fixture, engine, runner: runner)
+        launcher.restoreDeadline = .milliseconds(200)
+        let slot = try fixture.image().directory.slot(0)
+        let vm = try await launcher.bootJob(image: try fixture.image(), slot: 0, job: fixture.storage.job(UUID()), user: "builder")
+
+        #expect(engine.machines.map(\.calls) == [[.restore(slot.state), .stop], [.start]])
+        #expect(!FileManager.default.fileExists(atPath: slot.state))
+        #expect(vm.slotIsStale)
+        #expect(vm.note.contains("cold-booted") && vm.note.contains("did not come up"))
+    }
+
+    /// Two macOS VMs already run: the job waits for room (`bootWaitingForRoom`), and the slot's state is kept.
+    @Test func aRestoreRefusedForWantOfRoomKeepsTheState() async throws {
+        let fixture = try VMFixture()
+        defer { fixture.cleanUp() }
+        try fixture.saveSlot(0)
+        let engine = FakeEngine(restoreErrors: [.tooManyVMs])
+        await #expect(throws: VMError.tooManyVMs) {
+            try await Self.launcher(fixture, engine).bootJob(
+                image: try fixture.image(), slot: 0, job: fixture.storage.job(UUID()), user: "builder")
+        }
+        #expect(engine.machines.map(\.calls) == [[.restore(try fixture.image().directory.slot(0).state), .stop]])
+        #expect(FileManager.default.fileExists(atPath: try fixture.image().directory.slot(0).state))
+    }
+
     @Test func preparingASlotGivesItItsOwnIdentityAndSavesItsState() async throws {
         let fixture = try VMFixture()
         defer { fixture.cleanUp() }
