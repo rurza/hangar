@@ -18,7 +18,7 @@
    | `deploy` | Also start and cancel builds of an app's own branches and tags (not a bare commit SHA or a pull request ref). A build can upload to App Store Connect and TestFlight, as its workflow says. |
    | `configure` | Also delete apps, store or clear workflows, and create TestFlight groups. |
 
-   No token an agent can use reads or changes variables, settings or access, adds apps, adds or removes machines, or creates, lists or revokes tokens. `hangar mcp` refuses an `owner` token. Revoke a token in Settings or with `hangar tokens revoke <name>`; it stops working at once.
+   An agent's token can read variable names (never their values) and which settings are set up (never a key, token or password), but cannot change variables, settings or access, add apps, add or remove machines, or create, list or revoke tokens. `hangar mcp` refuses an `owner` token. Revoke a token in Settings or with `hangar tokens revoke <name>`; it stops working at once.
 
 2. **Save the token to a file**, not a command line, where it would stay in your shell history and in Claude Code's settings. In Terminal, on the Mac where Claude Code runs:
 
