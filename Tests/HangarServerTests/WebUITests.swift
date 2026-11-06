@@ -8,7 +8,7 @@ import Testing
 
 @Suite struct WebUITests {
     static let csp =
-        "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
+        "default-src 'self'; img-src 'self' https://*.mzstatic.com data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
         + "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 
     @Test func rootServesIndex() async throws {

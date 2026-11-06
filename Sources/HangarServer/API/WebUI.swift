@@ -7,8 +7,10 @@ import Logging
 public struct WebUI: Sendable {
     /// Every UI response carries this policy: no inline scripts or styles, no requests to other origins, and no
     /// framing by any page (another site could otherwise overlay the UI and trick a click on Delete or Add Mac).
+    /// Images only from this server and Apple's CDN, where every app icon comes from: an `iconURL` on another host
+    /// would otherwise ping it each time the UI is viewed (security review L10).
     static let contentSecurityPolicy =
-        "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
+        "default-src 'self'; img-src 'self' https://*.mzstatic.com data:; style-src 'self'; script-src 'self'; connect-src 'self'; "
         + "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     /// `frame-ancestors` for browsers that predate it.
     static let frameOptions = HTTPFields.Element.Name("X-Frame-Options")!
