@@ -1,6 +1,13 @@
 // What the Machines page and the Deploy sheet say about a Mac: paused or not, whether it is the Mac the server
 // runs on, and its VM builds. No imports, so the tests run it in JXA.
 
+/** A machine is online when it was seen within the last 90 seconds (`Machine.isOnline` on the server). */
+function isOnline(machine, now = new Date()) {
+  if (!machine?.lastSeenAt) return false;
+  const seen = new Date(machine.lastSeenAt);
+  return !Number.isNaN(seen.getTime()) && now - seen <= 90_000;
+}
+
 /** Whether `machine` is the Mac Hangar's server runs on: named like its LocalHostName, ignoring case (as `/setup`). */
 function isServerMac(machine, hostName) {
   if (!hostName || !machine?.name) return false;
@@ -174,4 +181,4 @@ function joinList(items) {
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-export { buildUserWarning, deployMachineLine, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift };
+export { buildUserWarning, deployMachineLine, isOnline, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift };

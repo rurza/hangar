@@ -14,9 +14,9 @@ import { workflowToYAML } from '../yaml.js';
 import {
   PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, detectionNotes, fileFromModels,
   firstExactBranch, firstScheme, itemProblems, modelsFromFile, platformHasSchemes, platformName, schemesFor, scratchWorkflow,
-  testDestinationText, toWorkflow, uniqueName,
+  testDestinationText, toWorkflow, unique, uniqueName,
 } from '../workflow-model.js';
-import { workflowSummary } from '../workflow-summary.js';
+import { listText, workflowSummary } from '../workflow-summary.js';
 import {
   betaGroupsStore, branchesStore, checkRow, chevron, choiceCards, explain, glyph, groupPicker, guessNotes, plusGlyph, segmented,
   tile,
@@ -1510,11 +1510,3 @@ function itemKey(item) {
   return item.kind === 'action' ? `action-${item.index}` : item.kind;
 }
 
-function unique(items) {
-  return items.filter((item, index) => items.indexOf(item) === index);
-}
-
-function listText(items) {
-  if (items.length <= 1) return items.join('');
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-}

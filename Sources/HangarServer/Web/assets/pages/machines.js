@@ -6,9 +6,8 @@ import {
   button, card, checkBadge, confirm, copyText, emptyState, field, h, page, relativeTime, replaceChildren, ring,
   plusIcon, selectContents, sheet, spinner, toast,
 } from '../ui.js';
-import { isOnline } from './build.js';
 import {
-  buildUserWarning, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift,
+  buildUserWarning, isOnline, isServerMac, loadText, pauseButtonLabel, pauseToast, vmChecklist, vmLine, vmSigningLine, xcodeDrift,
 } from '../machine-status.js';
 import { platformName } from '../workflow-summary.js';
 

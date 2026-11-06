@@ -10,8 +10,8 @@ import {
 } from '../repo-ranking.js';
 import { appIcon, expectIcon, isHTTPS } from './apps.js';
 import { queryString } from '../query.js';
+import { platformName } from '../workflow-summary.js';
 
-const PLATFORM_NAMES = { ios: 'iOS', macos: 'macOS', visionos: 'visionOS', tvos: 'tvOS', watchos: 'watchOS' };
 const ASC_APPS_URL = 'https://appstoreconnect.apple.com/apps';
 const STEPS = [['repo', 'Repository'], ['app', 'App'], ['review', 'Review']];
 
@@ -356,7 +356,7 @@ export function openAddAppSheet({ onAdded } = {}) {
 
   function detectedCard(app) {
     const asc = app.appStoreConnect;
-    const platforms = app.platforms.map((platform) => PLATFORM_NAMES[platform] ?? platform).join(' · ');
+    const platforms = app.platforms.map(platformName).join(' · ');
     const text = (name, status) => h('span', { class: 'detected-text' },
       h('span', { class: 'detected-name' }, name),
       h('span', { class: 'detected-detail' }, [app.bundleIDs.join(', '), platforms].filter(Boolean).join(' — ')),
@@ -542,7 +542,7 @@ export function openAddAppSheet({ onAdded } = {}) {
           h('div', null,
             h('p', { class: 'review-name' }, name),
             app?.platforms?.length
-              ? h('p', { class: 'secondary' }, app.platforms.map((platform) => PLATFORM_NAMES[platform] ?? platform).join(' · '))
+              ? h('p', { class: 'secondary' }, app.platforms.map(platformName).join(' · '))
               : null)),
         h('dl', { class: 'review-rows' },
           row(mismatch ? 'Bundle ID (repository)' : 'Bundle ID', bundleID ?? '—', true),

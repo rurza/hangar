@@ -5,9 +5,9 @@
 
 import { confirm, field, h, replaceChildren, sheet, spinner, svg } from '../ui.js';
 import {
-  defaultGroup, detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, uniqueName, wizardModel,
+  defaultGroup, detectionNotes, platformName, schemePlatforms, testDestinationText, toWorkflow, unique, uniqueName, wizardModel,
 } from '../workflow-model.js';
-import { workflowSteps } from '../workflow-summary.js';
+import { listText, workflowSteps } from '../workflow-summary.js';
 import { choiceCards, groupPicker, guessNotes, tile } from './workflow-parts.js';
 
 const OTHER_ANY = '\u0000any';
@@ -190,7 +190,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
     for (const choice of archived()) byPlatform.set(choice.platform, [...(byPlatform.get(choice.platform) ?? []), choice.scheme]);
     const twice = [...byPlatform.entries()].find(([, schemes]) => schemes.length > 1);
     if (!twice) return null;
-    return `${listOf(twice[1])} both archive for ${platformName(twice[0])}. Each deploy gives them the same build number, so App Store Connect accepts only one: archive one of them, or put the other in its own workflow.`;
+    return `${listText(twice[1])} both archive for ${platformName(twice[0])}. Each deploy gives them the same build number, so App Store Connect accepts only one: archive one of them, or put the other in its own workflow.`;
   }
 
   function outcome(choice) {
@@ -236,7 +236,7 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
         title: 'Share the Mac App Yourself',
         detail: macOnly
           ? 'Signs it with Developer ID: download it from the build page and hand it out, outside the App Store.'
-          : `Mac apps only, and ${listOf(notMac)} ${notMac.length === 1 ? 'isn’t one' : 'aren’t'}.`,
+          : `Mac apps only, and ${listText(notMac)} ${notMac.length === 1 ? 'isn’t one' : 'aren’t'}.`,
         disabled: !macOnly,
       },
       {
@@ -414,11 +414,3 @@ function initialChoices(suggestion, appName) {
     || a.scheme.localeCompare(b.scheme));
 }
 
-function unique(items) {
-  return items.filter((item, index) => items.indexOf(item) === index);
-}
-
-function listOf(items) {
-  if (items.length <= 1) return items.join('');
-  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
-}
