@@ -17,6 +17,19 @@ public enum DiskUsage {
 
     public static func bytes(of path: String) -> UInt64 { bytes(of: [path]) }
 
+    /// What each group of paths adds, in order: a block an earlier group already holds is not counted again, so a
+    /// slot's state counts only what it does not share with its image, and the results add up to the whole.
+    public static func bytes(ofGroups groups: [[String]]) -> [UInt64] {
+        var collector = ExtentCollector()
+        var counted: UInt64 = 0
+        return groups.map { group in
+            for path in group { collector.add(tree: path) }
+            let total = collector.total
+            defer { counted = total }
+            return total > counted ? total - counted : 0
+        }
+    }
+
     /// Decimal gigabytes, as Finder and `df -H` count them.
     public static func gigabytes(_ bytes: UInt64) -> Double { Double(bytes) / 1_000_000_000 }
 

@@ -137,29 +137,43 @@ public final class DiskSweeper: Sendable {
     // MARK: Measuring
 
     struct Measurement {
-        var total: UInt64
-        var images: UInt64
-        var workspaces: UInt64
+        /// Each piece of Hangar's usage, clones counted in the first piece that holds them.
+        var parts: [(label: String, bytes: UInt64)]
+
+        var total: UInt64 { parts.reduce(0) { $0 + $1.bytes } }
 
         func report(at date: Date) -> HangarDiskUsage {
-            let other = total > images + workspaces ? total - images - workspaces : 0
-            let parts = [("VM images", images), ("Workspaces", workspaces), ("Other", other)]
-                .filter { $0.1 >= 1_000_000 }
-                .sorted { $0.1 > $1.1 }
-                .map { HangarDiskUsage.Part(label: $0.0, gb: DiskUsage.gigabytes($0.1)) }
+            let parts = parts.filter { $0.bytes >= 1_000_000 }
+                .sorted { $0.bytes > $1.bytes }
+                .map { HangarDiskUsage.Part(label: $0.label, gb: DiskUsage.gigabytes($0.bytes)) }
             return HangarDiskUsage(totalGB: DiskUsage.gigabytes(total), parts: parts, measuredAt: date)
         }
     }
 
     /// Everything of Hangar's this worker knows about: VM storage, the work and data directories and its
-    /// `hangar-*` temporary directories.
+    /// `hangar-*` temporary directories. Images come first, so a slot's saved state and a running VM's disk, both
+    /// clones, count only the blocks they changed.
     func measure() -> Measurement {
         let temporary = DiskSweepPlan.entries(locations.systemTemporary).filter { $0.hasPrefix("hangar-") }
             .map { locations.systemTemporary + "/" + $0 }
-        let roots = [locations.storage?.root, locations.workDirectory, locations.dataDirectory].compactMap { $0 } + temporary
-        return Measurement(
-            total: DiskUsage.bytes(of: roots),
-            images: locations.storage.map { DiskUsage.bytes(of: $0.images) } ?? 0,
-            workspaces: DiskUsage.bytes(of: locations.workspaceDirectories))
+        var images: [String] = [], slots: [String] = []
+        if let storage = locations.storage {
+            for name in DiskSweepPlan.entries(storage.images) {
+                let image = storage.images + "/" + name
+                for entry in DiskSweepPlan.entries(image) {
+                    if entry == "slots" { slots.append(image + "/" + entry) } else { images.append(image + "/" + entry) }
+                }
+            }
+        }
+        let rest = [locations.storage?.root, locations.workDirectory, locations.dataDirectory].compactMap { $0 } + temporary
+        let groups: [(String, [String])] = [
+            ("VM images", images),
+            ("Saved VM states", slots),
+            ("Running VMs", locations.storage.map { [$0.jobs] } ?? []),
+            ("Workspaces", locations.workspaceDirectories),
+            ("Other", rest),
+        ]
+        let bytes = DiskUsage.bytes(ofGroups: groups.map(\.1))
+        return Measurement(parts: zip(groups.map(\.0), bytes).map { ($0, $1) })
     }
 }

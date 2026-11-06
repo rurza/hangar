@@ -4,7 +4,7 @@ import Foundation
 /// machine card and Settings show as "Hangar uses 51 GB on this Mac".
 public struct HangarDiskUsage: Codable, Equatable, Sendable {
     public struct Part: Codable, Equatable, Sendable {
-        /// "VM images", "Workspaces", "Build logs and artifacts", "Other".
+        /// "VM images", "Saved VM states", "Running VMs", "Workspaces", "Build logs and artifacts", "Other".
         public var label: String
         public var gb: Double
 

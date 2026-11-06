@@ -298,6 +298,21 @@ private struct Disk {
         #expect(summary.usage?.parts.first?.label == "VM images")
     }
 
+    @Test func usageNamesImagesSavedStatesAndRunningVMsApart() async throws {
+        let disk = try Disk()
+        defer { disk.cleanUp() }
+        try disk.image("xcode-27.3", xcode: "27.3", build: "27C1", slots: ["0"])
+        try disk.file("vm/images/xcode-27.3/disk.img", bytes: 5_000_000)
+        try disk.file("vm/images/xcode-27.3/slots/0/state.vzstate", bytes: 3_000_000)
+        let running = UUID()
+        try disk.file("vm/jobs/\(running.uuidString)/disk.img", bytes: 2_000_000)
+        let usage = try #require(
+            await sweeper(disk, vm: VMSettings(storage: disk.path("vm")), pool: VMSlotPool(count: 1))
+                .sweepQuietly(runningJobIDs: [running], xcodesNeeded: nil).usage)
+        #expect(usage.parts.map(\.label) == ["VM images", "Saved VM states", "Running VMs"])
+        #expect(usage.parts.map { ($0.gb * 1000).rounded() } == [5, 3, 2])
+    }
+
     @Test func aVMMacsHostWorkspacesGoWithTheirFolder() async throws {
         let disk = try Disk()
         defer { disk.cleanUp() }
