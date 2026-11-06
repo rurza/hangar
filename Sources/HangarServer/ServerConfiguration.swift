@@ -13,7 +13,7 @@ public struct ServerConfiguration: Sendable {
     /// A job running this long that its machine's heartbeat no longer lists fails: the worker lost track of it
     /// (it restarted, or its finish never arrived). The grace covers a heartbeat sent just before the job started.
     public var untrackedJobGrace: TimeInterval
-    /// Host names the server answers to besides the bound host, its loopback names and `*.ts.net` (see `HostPolicy`):
+    /// Host names the server answers to besides the bound host and its loopback names (see `HostPolicy`):
     /// this Mac's names found at start-up and `--allowed-host` / `HANGAR_ALLOWED_HOSTS`.
     public var allowedHosts: [String]
     /// The `hangar-worker` binary `GET /install/hangar-worker` hands out; nil when there is none (the one-command

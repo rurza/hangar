@@ -6,21 +6,43 @@ The `hangar` CLI and the web UI talk to the server only through this API. Every 
 
 ## Request rules
 
-- Every request's `Host` must name the server (see [server setup](server-setup.md#options)): its bound address, its host or MagicDNS name, a `*.ts.net` name or an `--allowed-host`. Any other gets `421` `host_not_allowed`, on every route including the web UI.
+- Every request's `Host` must name the server (see [server setup](server-setup.md#options)): its bound address, its host names, its own MagicDNS name (and that name's first label) or an `--allowed-host`. Other `*.ts.net` names are refused. Any other gets `421` `host_not_allowed`, on every route including the web UI.
 - On the public routes (not `/api/v1/worker/*`), every method but `GET`, `HEAD` and `OPTIONS` is refused with `403` `cross_site_request` when `Sec-Fetch-Site` is present and not `same-origin` or `none`, or when `Origin` names another host or port than `Host`. A request body must be sent as `Content-Type: application/json` (parameters such as `charset` are fine), else `415` `unsupported_media_type`; bodiless calls such as `DELETE` or a cancel need no Content-Type. The CLI sends neither `Origin` nor `Sec-Fetch-Site`.
 
-## API tokens
+## Who may call the API
 
-Agents (the [MCP server](mcp.md)) call the API with an API token: `Authorization: Bearer hgr_…`. A token is created in Settings › Agent Access or with `hangar tokens create`, shown once, stored only as its SHA-256, and revoked by deleting it. Requests without an API token are unchanged: the API trusts the tailnet, as the web UI and the CLI always have. A token bounds what its bearer can do; it does not lock the API for everyone else.
+Every public route (everything under `/api/v1` but the worker routes) needs one of:
 
-- An unknown or revoked token gets `401` `invalid_api_token`; it never falls back to the open API. A bearer value that does not start with `hgr_` (a machine token, say) is ignored on the public routes, as before tokens.
-- Each token has a scope, and scopes nest: `read` < `deploy` < `configure`. A route outside the token's scope gets `403` `token_scope`.
-  - `read`: every `GET` but the local-only `/setup/*` routes and `/api-tokens` (except `/api-tokens/current`).
-  - `deploy`: also `POST /builds` and `POST /builds/{id}/cancel`.
-  - `configure`: also `POST /apps`, `DELETE /apps/{id}`, `PUT` and `DELETE /apps/{id}/workflow-file`, `POST /apps/{id}/beta-groups` and `PUT /apps/{id}/numbers/next`.
-  - No token may change variables, variable groups or their links, or settings, create, renew, import or remove the signing certificate (`GET /signing` is `read`), run setup, add, pair, pause, resume or delete machines, enroll, or create, list or revoke tokens.
-- A token never excuses a cross-site request: the cross-site rules run first.
+- **The owner's device.** A request without an API token is let in when its socket peer is a tailnet device whose Tailscale login is one of the owner logins. The server asks the local Tailscale daemon (`tailscale whois`, its LocalAPI) and caches the answer for a minute (10 seconds for an unknown address). By default the owner is the login that owns the server's own tailnet node; `PUT /access`, Settings › Access or `hangar-server access allow <login>…` replace that list. Only the socket address counts, never a header. Tailscale names a device, not a process, so a connection from the server Mac's own address counts only when a process of the server's own macOS user holds its client end (found with `libproc`; a build running as `hangar` there is refused). Never the owner: loopback and LAN addresses (host-executor builds and local agents connect from there), a request a proxy relayed (it carries `Forwarded`, `X-Forwarded-*`, `X-Real-IP` or `Tailscale-User-Login`), a tagged device, another tailnet user, and anyone while Tailscale is not running.
+- **An API token**, `Authorization: Bearer hgr_…`, from anywhere.
+
+Anything else gets `401` `authentication_required`. Open to all: `GET /health`, and `POST /enroll`, which a pairing code authenticates (the `curl … | sh` install). The web UI's pages and the install routes are static and open; the data they show comes from the API. The worker routes keep their machine and job tokens.
+
+### API tokens
+
+A token is created in Settings › Agent Access or with `hangar tokens create` (by the owner), or on the server Mac with `hangar-server token create`. It is shown once, stored only as its SHA-256, and revoked by deleting it.
+
+- An unknown or revoked token gets `401` `invalid_api_token`; it never falls back to the owner check. A bearer value that does not start with `hgr_` (a machine token, say) is ignored on the public routes.
+- Each token has a scope, and scopes nest: `read` < `deploy` < `configure` < `owner`. A route outside the token's scope gets `403` `token_scope`.
+  - `read`: every `GET` but the local-only `/setup/*` routes, `/access` and `/api-tokens` (except `/api-tokens/current`).
+  - `deploy`: also `POST /builds` and `POST /builds/{id}/cancel`. A token's deploy builds only a branch or tag of the app's own repository: the ref is looked up as `heads/<ref>`, then `tags/<ref>`, so a commit SHA (which may exist only in a fork) or `pull/N/head` gets `400` `ref_not_allowed`. The owner deploys any ref.
+  - `configure`: also `DELETE /apps/{id}`, `PUT` and `DELETE /apps/{id}/workflow-file`, `POST /apps/{id}/beta-groups` and `PUT /apps/{id}/numbers/next`. Not `POST /apps`: adding an app picks the repository whose scripts get the secrets, so only the owner adds apps.
+  - `owner`: everything the owner can do. Only `hangar-server token create --scope owner`, run on the server Mac against the data directory, makes one; `POST /api-tokens` refuses the scope with `400` `invalid_scope`. It is for the owner's own CLI where Tailscale cannot vouch for it (loopback, a tagged server node). `hangar mcp` refuses it.
+  - No other token may change variables, variable groups or their links, settings or access, create, renew, import or remove the signing certificate (`GET /signing` is `read`), run setup, add apps, add, pair, pause, resume, allow VM builds on or delete machines, or create, list or revoke tokens.
+- Neither a token nor the owner's device excuses a cross-site request: the cross-site rules run first.
 - Every request a token makes other than a `GET` is logged with the token's name. `lastUsedAt` is updated at most once a minute.
+
+### Getting a token
+
+- **The CLI** sends a token when it finds one: `HANGAR_API_TOKEN`, else the file named by `HANGAR_API_TOKEN_FILE`, else `~/.config/hangar/token` (`$XDG_CONFIG_HOME/hangar/token`). No command takes a token as an argument. From one of the owner's tailnet devices, with `HANGAR_SERVER` set to the server's tailnet address or name, it needs none.
+- **On the server Mac, without the API** (Tailscale down, a login change, the CLI on loopback): as the user the server runs as,
+
+  ```sh
+  (umask 077; mkdir -p ~/.config/hangar; hangar-server token create my-cli --scope owner > ~/.config/hangar/token)
+  ```
+
+  prints the secret to stdout only. `hangar-server access show`, `allow <login>…` and `reset` read and set the owner logins the same way. Both take `--data-dir` (default `$HANGAR_DATA_DIR`, else `~/Library/Application Support/Hangar/server`) and work whether the server runs or not.
+- **Agents**: see [MCP](mcp.md#setup). Keep the token in a file, never on a command line.
 
 ## Routes
 
@@ -30,12 +52,12 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | --- | --- | --- |
 | `GET /health` | | `200` `{"ok": true, "version": "0.13.1"}` |
 | `GET /apps` | | `200` `[App]`; apps without `iconURL` get one resolved in the background (at most one attempt per app per hour), shown on a later request |
-| `POST /apps` | `CreateAppRequest` | `201` `App`; `400` `invalid_input` when `iconURL` is not an https URL with a host; without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
+| `POST /apps` | `CreateAppRequest` | `201` `App`. Owner only. `400` `invalid_repository` unless `repoURL` is a GitHub repository (`https://github.com/<owner>/<repo>` or `git@github.com:…`); `400` `invalid_input` when `iconURL` is not an https URL with a host (the web UI shows icons only from `*.mzstatic.com` and the server itself); without `iconURL` the server looks for the icon in the background (App Store Connect's newest builds, else the public iTunes lookup) and stores it; the response does not wait |
 | `GET /apps/{id}` | | `200` `App` |
 | `DELETE /apps/{id}` | | `204`; deletes its builds, jobs, numbers and variables |
 | `GET /apps/{id}/variables` | | `200` `[VariableSummary]`, by name; `workflows` lists the workflows a variable is limited to (empty: all workflows) |
 | `PUT /apps/{id}/variables/{name}` | `VariableInput` `{value, isSecret, asFile, workflows}` | `204`. Sets the variable limited to exactly `workflows` (empty or absent: the one for all workflows), replacing that one. One name may exist once for all workflows and any number of times for disjoint sets of workflows: a set sharing a workflow with another is `409` `variable_workflows_overlap`. `HANGAR_*` names cannot be limited (`400` `reserved_variable`); an empty or overlong workflow name is `400` `invalid_workflows` |
-| `PATCH /apps/{id}/variables/{name}?workflow=` | `VariableUpdate` `{workflows?, value?, isSecret?, asFile?}` | `204`. Changes the variable limited to exactly the `workflow` parameters (repeat it per workflow; none: the one for all workflows); what is absent stays. `404` `variable_not_found`; moving it onto workflows another covers is `409` `variable_workflows_overlap`, or `variable_exists` for all workflows |
+| `PATCH /apps/{id}/variables/{name}?workflow=` | `VariableUpdate` `{workflows?, value?, isSecret?, asFile?}` | `204`. Changes the variable limited to exactly the `workflow` parameters (repeat it per workflow; none: the one for all workflows); what is absent stays. `isSecret: false` on a secret needs `value` too, else `400` `value_required`: a secret is made plain only by someone who knows it. `404` `variable_not_found`; moving it onto workflows another covers is `409` `variable_workflows_overlap`, or `variable_exists` for all workflows |
 | `DELETE /apps/{id}/variables/{name}?workflow=` | | `204`; deletes the variable limited to exactly the `workflow` parameters (none: the one for all workflows) |
 | `GET /apps/{id}/environment?workflow=` | | `200` `[EffectiveVariable]` `{name, isSecret, asFile, source: {kind, group?, workflows}, replaces}`: what a job of `workflow` gets, by name, with no values. Without `workflow` only what applies to every workflow. A job gets each name from the first of: an app variable limited to its workflow, the app's for all workflows, a group linked for its workflow, a group linked for all workflows, a global variable (a global secret only if the app receives it, see `/apps/{id}/global-secrets`); between two groups at the same level the one linked first. `replaces` lists the lower ones that define the name too |
 | `GET /apps/{id}/variable-groups` | | `200` `[AppVariableGroupLink]` `{groupID, name, workflows, variables}`, in precedence order (first linked first) |
@@ -75,11 +97,13 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /jobs/{id}/artifacts` | | `200` `[ArtifactInfo]` `{name, sizeBytes}`, sorted by name |
 | `GET /jobs/{id}/artifacts/{name}` | | `200` the file, `application/octet-stream`, `Content-Disposition: attachment` |
 | `GET /machines` | | `200` `[Machine]` with their latest reports; never tokens |
-| `POST /machines` | `CreateMachineRequest` | `201` `CreateMachineResponse` `{machine, token}` |
+| `POST /machines` | `CreateMachineRequest` | `201` `CreateMachineResponse` `{machine, token}`. Owner only; a new Mac normally enrolls with a pairing code instead (`POST /enroll`) |
 | `POST /machines/pairings` | | `201` `Pairing` `{code, expiresAt, expiresIn}`: a one-time code (`XXXX-XXXX`, from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`) valid for 15 minutes (`expiresIn` is the seconds left, for a countdown that does not depend on the client's clock); at most 5 are live, a sixth drops the oldest; kept in memory, so a restart forgets them |
 | `POST /enroll` | `EnrollRequest` `{code, name, maxConcurrentJobs?}` | `201` `CreateMachineResponse` `{machine, token}`, like `POST /machines` (`maxConcurrentJobs` defaults to 1) and a `machine` event; `403` `invalid_pairing_code` for an unknown, used or expired code; `409` `machine_exists` and `400` `invalid_name` leave the code usable; after 10 failed codes from one address within 10 minutes, that address gets `429` `too_many_attempts` until its oldest failure is 10 minutes old (and after 100 failures from all addresses together, every address does). The code is case-insensitive, its dash optional, and it is compared in constant time. This is the install script's call: curl sends JSON without `Origin`, so the cross-site rules let it through |
 | `POST /machines/{id}/pause` | | `200` `Machine` with `paused: true`, and a `machine` event: builds are turned off on that Mac. The scheduler gives it no new jobs; a job it was already given or is running finishes, and the worker keeps reporting (so it stays online) and updating itself. Jobs that could run only there wait in the queue (reason `builds paused`) rather than fail. `{id}` is the name or UUID; `404` `machine_not_found` |
 | `POST /machines/{id}/resume` | | `200` `Machine` with `paused: false`, and a `machine` event; the scheduler ticks at once, so waiting jobs can start. `404` `machine_not_found` |
+| `POST /machines/{id}/vm-builds` | | `200` `Machine` with `vmBuilds: true`, and a `machine` event: the owner allows VM builds on that Mac. Only such a machine is given VM jobs and the server's signing identity; one whose report has `vm` but is not allowed waits with the queue note "the owner has not allowed VM builds on this Mac". A heartbeat cannot set it. Owner only |
+| `DELETE /machines/{id}/vm-builds` | | `200` `Machine` with `vmBuilds: false`: VM builds stop on that Mac (a running job finishes). Owner only |
 | `DELETE /machines/{id}` | | `204` |
 | `GET /settings` | | `200` `SettingsStatus` `{version, appStoreConnect: {keyID, issuerID?, kind}?, githubTokenSet, developmentKey?}`; `appStoreConnect` is absent unless the server holds an App Store Connect key (a setting, never a variable); `kind` is `"team"` with an issuer ID and `"individual"` without, when `issuerID` is absent; `developmentKey` is the optional development key, the same shape; the key and the token are never returned; `workerInstallAvailable` is true when the server has a `hangar-worker` to hand out at `GET /install/hangar-worker`; `github` is `GitHubStatus` `{login?, source: "token"|"gh"}` when a token is set (`login` from GitHub's `GET /user`, cached 5 minutes per token; absent when GitHub cannot be asked) |
 | `POST /settings/asc-key` | `SaveASCKeyRequest` `{keyID, issuerID?, privateKey}` | `200` `ASCKeyTestResult` `{kind, keyID, appCount}`. Tests the key first (lists the key's apps in App Store Connect) and only then stores it as the server's key, sealed with the master key. It is a setting: no job's environment ever has it, and only `JobAssignment.appStoreConnectKey` carries it (see *Worker routes*). `409` `issuer_required` when App Store Connect refuses a key sent without an issuer ID; `400` `asc_key_rejected` when it refuses one with an issuer ID, `asc_key_forbidden` on 403 (no role that can list apps), `invalid_asc_key` when the text is not a .p8 key; `502` `asc_unavailable` |
@@ -105,8 +129,10 @@ An app's `{id}` is its slug or its UUID. Build and job IDs are UUIDs. A machine'
 | `GET /apps/{id}/beta-groups` | | `200` `[BetaGroup]` `{id, name, isInternal}`: the app's TestFlight groups in App Store Connect, internal ones first, each set by name. `409` `asc_not_configured` without the App Store Connect key; `502` `asc_refused` when App Store Connect refuses, with its own words in the message |
 | `POST /apps/{id}/beta-groups` | `{name}` | `201` `BetaGroup`: creates an internal group of the app (`POST /v1/betaGroups` with `isInternalGroup: true` and the app relationship). `400` `invalid_request` for an empty name; otherwise as `GET` |
 | `GET /apps/{id}/repo-icon?ref=` | `ref` optional | `200` the image of the `appiconset` icon `workflow-suggestion` finds, cached in memory for an hour; `404` `icon_not_found` when there is none (or only an Icon Composer icon) |
+| `GET /access` | | `200` `AccessStatus` `{viewerLogin?, viewerToken?, allowedLogins, configured, serverNodeLogin?, serverNodeTagged}`: who is asking (their Tailscale login, or their owner token's name), the logins that count as the owner now, whether they were set (`configured`) or are the server node's own login, and that login (absent while Tailscale is not running, or when the node is tagged). Owner only |
+| `PUT /access` | `AccessUpdate` `{allowedLogins}` | `200` `AccessStatus`. Replaces the owner logins; an empty list goes back to the server node's login. `400` `invalid_login` for an empty login or one with spaces or commas; `409` `access_lockout` when a request from the owner's device would leave its own login out. Owner only |
 | `GET /api-tokens` | | `200` `[APIToken]` `{id, name, scope, prefix, createdAt, lastUsedAt?}` sorted by name; never a secret or its hash |
-| `POST /api-tokens` | `CreateAPITokenRequest` `{name, scope}` | `201` `CreateAPITokenResponse` `{token: APIToken, secret}`: the only response with the secret (`hgr_` and 43 base64url characters); `prefix` is its first 8 characters. `400` `invalid_name` (empty or over 64 characters), `409` `token_exists` |
+| `POST /api-tokens` | `CreateAPITokenRequest` `{name, scope}` | `201` `CreateAPITokenResponse` `{token: APIToken, secret}`: the only response with the secret (`hgr_` and 43 base64url characters); `prefix` is its first 8 characters. `400` `invalid_name` (empty or over 64 characters), `invalid_scope` for `owner`; `409` `token_exists` |
 | `DELETE /api-tokens/{id}` | | `204`; `{id}` is the name or UUID; the token stops working at once. `404` `token_not_found` |
 | `GET /api-tokens/current` | | `200` `APIToken`: the token the request carries (any scope); `404` `not_found` without one |
 | `GET /events` | | SSE stream, see below |
@@ -153,7 +179,7 @@ Worker machines call these routes under `/api/v1/worker`. Each needs `Authorizat
 | `POST /worker/jobs/{id}/provisioning` | `JobProvisioningRequest` `{useServerIdentity}` | `200` `JobProvisioning` `{profiles: [{bundleID, name, uuid, isMac, content (base64)}], missing: [{bundleID, reason}], developmentKey?, notes}`: what a VM archive's guest signs with (see *VM archives* below). Only for an archive assigned to this machine, `assigned` or `running` (`409` `job_state_conflict`), on a machine whose report has `vm` (`400` `not_a_vm_archive`). Machine token only; a job token gets `403` |
 | `DELETE /worker/jobs/{id}/token` | | `204`: deletes the job tokens this machine was given for the job (another machine's stay). Idempotent, and allowed after the job ended or moved. Machine token only |
 
-A `JobAssignment` carries the job's environment for its build's workflow, with values, resolved as `GET /apps/{id}/environment` describes. An archive assigned to a machine whose report has a `vm` object also carries `signingIdentity` `{p12 (base64), password}`: the server's signing identity, absent when there is none or it has expired. Host workers and test jobs never get it.
+A `JobAssignment` carries the job's environment for its build's workflow, with values, resolved as `GET /apps/{id}/environment` describes. An archive assigned to a machine the owner allowed VM builds on (`vmBuilds`), whose report has a `vm` object, also carries `signingIdentity` `{p12 (base64), password}`: the server's signing identity, absent when there is none or it has expired. Host workers and test jobs never get it. It is the only response that holds secret values, and it goes only to the machine the job is assigned to.
 
 `appStoreConnectKey` `{keyID, issuerID?, privateKey}` is the server's App Store Connect key, never part of `environment`. It goes with every job on a host Mac (the worker writes the `.p8` only while its archive, test or export `xcodebuild` and each post-action run, and removes it right after; hooks never see it), and with an archive on a VM Mac, whose host keeps it for the export and never passes it to the guest. A VM Mac's test jobs get none. With `GET /worker/jobs/next` and `POST /worker/jobs/{id}/provisioning`, these are the only responses that hold secret values, and they go only to the machine the job is assigned to.
 
@@ -200,11 +226,11 @@ Every error is a JSON body `{"code": "...", "message": "..."}` with one of these
 
 | Status | Codes |
 | --- | --- |
-| `400` | `invalid_request` (malformed body or query), `asc_key_not_found`, `asc_key_rejected`, `asc_key_forbidden`, `invalid_asc_key`, `invalid_key_id`, `github_token_rejected`, `invalid_token`, `gh_not_signed_in`, `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_workflows`, `reserved_variable`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path`, `invalid_identity` |
-| `401` | `unauthorized` (worker routes), `invalid_api_token`, `invalid_job_token` |
-| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only`, `token_scope`, `job_token_scope` |
+| `400` | `invalid_request` (malformed body or query), `asc_key_not_found`, `asc_key_rejected`, `asc_key_forbidden`, `invalid_asc_key`, `invalid_key_id`, `github_token_rejected`, `invalid_token`, `gh_not_signed_in`, `invalid_job_result`, `invalid_name`, `invalid_variable_name`, `invalid_workflows`, `reserved_variable`, `invalid_artifact_name`, `invalid_workflow_file`, `workflow_file_missing`, `approval_not_supported`, `unsupported_repository`, `invalid_path`, `invalid_identity`, `invalid_scope`, `invalid_login`, `invalid_repository`, `ref_not_allowed`, `value_required` |
+| `401` | `authentication_required` (neither the owner's device nor an API token), `unauthorized` (worker routes), `invalid_api_token`, `invalid_job_token` |
+| `403` | `cross_site_request`, `invalid_pairing_code`, `local_only`, `token_scope`, `job_token_scope`, `owner_only` |
 | `404` | `not_found` (no such route), `app_not_found`, `build_not_found`, `job_not_found`, `machine_not_found`, `workflow_not_found`, `artifact_not_found`, `ref_not_found`, `icon_not_found`, `token_not_found`, `variable_not_found`, `variable_group_not_found`, `repository_not_found` (no such repository, or the token cannot read it) |
-| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed`, `token_exists`, `variable_workflows_overlap`, `variable_exists`, `variable_group_exists`, `signing_identity_exists`, `signing_busy` (another change to the signing certificate is running), `team_key_required` (creating a certificate needs a team key) |
+| `409` | `app_exists`, `machine_exists`, `bump_not_higher`, `job_not_assigned_to_machine`, `job_state_conflict` (the job is not in a state that allows the call), `asc_not_configured`, `github_not_configured`, `issuer_required` (the App Store Connect key needs its issuer ID), `worker_already_installed`, `token_exists`, `variable_workflows_overlap`, `variable_exists`, `variable_group_exists`, `signing_identity_exists`, `signing_busy` (another change to the signing certificate is running), `team_key_required` (creating a certificate needs a team key), `access_lockout` |
 | `415` | `unsupported_media_type` |
 | `422` | `no_project_found` (no Xcode project in the repository) |
 | `421` | `host_not_allowed` |

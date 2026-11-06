@@ -131,11 +131,15 @@ public struct Machine: Codable, Equatable, Sendable, Identifiable {
     /// Builds are turned off on this Mac: the scheduler gives it no new jobs. A job it is already running finishes,
     /// and the worker keeps reporting (and updating itself). False from an older server.
     public var paused: Bool
+    /// The owner allowed VM builds on this Mac (`POST /machines/{id}/vm-builds`). Only such a machine gets VM jobs and
+    /// the server's signing identity; a heartbeat that reports `vm` cannot grant it. False from an older server.
+    public var vmBuilds: Bool
 
     public init(
         id: UUID, name: String, maxConcurrentJobs: Int = 1, lastSeenAt: Date? = nil,
-        report: MachineReport? = nil, createdAt: Date, paused: Bool = false
+        report: MachineReport? = nil, createdAt: Date, paused: Bool = false, vmBuilds: Bool = false
     ) {
+        self.vmBuilds = vmBuilds
         self.id = id
         self.name = name
         self.maxConcurrentJobs = maxConcurrentJobs
@@ -145,7 +149,9 @@ public struct Machine: Codable, Equatable, Sendable, Identifiable {
         self.paused = paused
     }
 
-    private enum CodingKeys: String, CodingKey { case id, name, maxConcurrentJobs, lastSeenAt, report, createdAt, paused }
+    private enum CodingKeys: String, CodingKey {
+        case id, name, maxConcurrentJobs, lastSeenAt, report, createdAt, paused, vmBuilds
+    }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -156,6 +162,7 @@ public struct Machine: Codable, Equatable, Sendable, Identifiable {
         report = try container.decodeIfPresent(MachineReport.self, forKey: .report)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         paused = try container.decodeIfPresent(Bool.self, forKey: .paused) ?? false
+        vmBuilds = try container.decodeIfPresent(Bool.self, forKey: .vmBuilds) ?? false
     }
 
     public func isOnline(now: Date, timeout: TimeInterval = 90) -> Bool {

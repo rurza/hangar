@@ -11,6 +11,17 @@ public enum DeployError: Error, Equatable, Sendable {
     case approvalNotSupported(postAction: String)
     case numbering(BuildNumberError)
     case buildNotFound(UUID)
+    /// A token deploy named something other than one of the app's branches or tags.
+    case refNotAllowed(String)
+}
+
+/// Which refs a deploy may build.
+public enum DeployRefs: Sendable {
+    /// Anything the repository resolves: the owner's deploys.
+    case any
+    /// Only the app repository's own branches and tags: API tokens, so a leaked deploy token cannot build a fork's
+    /// commit or a pull request with the app's secrets (security review M3).
+    case branchesAndTags
 }
 
 /// Creates builds from `.hangar.yml` at the resolved commit and cancels them. `hangar deploy` and the web UI end up here.
@@ -49,14 +60,14 @@ public struct BuildService: Sendable {
     }
 
     /// Nothing is reserved until the workflow file is parsed, the workflow picked and the approval gate passed.
-    public func deploy(_ request: DeployRequest) async throws -> Build {
+    public func deploy(_ request: DeployRequest, refs: DeployRefs = .any) async throws -> Build {
         guard let app = try apps.find(slugOrID: request.app) else { throw DeployError.appNotFound(request.app) }
         var pinned: Machine?
         if let name = request.machine {
             guard let machine = try machines.find(nameOrID: name) else { throw DeployError.machineNotFound(name) }
             pinned = machine
         }
-        let (commit, file, _) = try await workflows(app: app, ref: request.ref)
+        let (commit, file, _) = try await workflows(app: app, ref: request.ref, refs: refs)
         guard let workflow = file.workflows[request.workflow] else {
             throw DeployError.workflowNotFound(name: request.workflow, available: file.workflows.keys.sorted())
         }
@@ -109,10 +120,18 @@ public struct BuildService: Sendable {
 
     /// The workflow file for the commit `ref` resolves to: the one defined in Hangar if there is one, otherwise
     /// `.hangar.yml` at that commit. The commit is resolved either way, so a build always records one.
-    public func workflows(app: App, ref: String) async throws -> (commit: String, file: WorkflowFile, source: WorkflowSource) {
+    public func workflows(
+        app: App, ref: String, refs: DeployRefs = .any
+    ) async throws -> (commit: String, file: WorkflowFile, source: WorkflowSource) {
         let commit: String
-        do { commit = try await sourceHost.resolveCommit(repoURL: app.repoURL, ref: ref, token: try token(app)) } catch SourceHostError.refNotFound {
-            throw DeployError.refNotFound(ref)
+        do {
+            switch refs {
+            case .any: commit = try await sourceHost.resolveCommit(repoURL: app.repoURL, ref: ref, token: try token(app))
+            case .branchesAndTags:
+                commit = try await sourceHost.resolveBranchOrTag(repoURL: app.repoURL, name: ref, token: try token(app))
+            }
+        } catch SourceHostError.refNotFound {
+            throw refs == .any ? DeployError.refNotFound(ref) : DeployError.refNotAllowed(ref)
         }
         let (file, source) = try await workflowFile(app: app, commit: commit)
         return (commit, file, source)

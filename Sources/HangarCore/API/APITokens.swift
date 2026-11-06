@@ -4,16 +4,21 @@ import Foundation
 public enum APITokenScope: String, Codable, Sendable, CaseIterable, Comparable {
     /// Every `GET` but the local-only setup routes and the token routes.
     case read
-    /// Also start and cancel builds.
+    /// Also start and cancel builds, of the app repository's own branches and tags only.
     case deploy
-    /// Also add and delete apps, store or clear workflow files, create TestFlight groups and set the next number.
+    /// Also delete apps, store or clear workflow files, create TestFlight groups and set the next number. Never add
+    /// an app: that picks the repository whose scripts get the secrets.
     case configure
+    /// Everything the owner can do, secrets and machines included. Made only on the server Mac
+    /// (`hangar-server token create`), for the owner's own CLI where Tailscale cannot vouch for it; never for agents.
+    case owner
 
     private var rank: Int {
         switch self {
         case .read: 0
         case .deploy: 1
         case .configure: 2
+        case .owner: 3
         }
     }
 

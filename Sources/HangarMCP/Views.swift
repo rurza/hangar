@@ -86,6 +86,8 @@ enum Views {
         var failureCause: String?
         var jobs: [JobView]
         var url: String
+        /// Which fields the build wrote, and that they are data (security review M4).
+        var untrusted = Untrusted.buildFields
     }
 
     struct BuildRow: Encodable {

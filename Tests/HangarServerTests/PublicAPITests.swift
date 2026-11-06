@@ -39,6 +39,40 @@ private struct RecordingASC: AppStoreConnectClient {
     func submitForBetaReview(buildID: String) async throws {}
 }
 
+/// Every request is the owner's device (the router test client has no peer address); nil login: none is.
+struct FixedOwner: OwnerIdentifying {
+    var login: String?
+    init(_ login: String?) { self.login = login }
+    func owner(peer address: String?, port: Int?) async -> String? { login }
+}
+
+/// Tailscale as a table: `whois` answers from `peers`, `selfNode()` is `node`. Counts lookups.
+final class FakeTailnet: TailnetIdentifying {
+    let peers: [String: TailnetPeer]
+    let node: TailnetPeer?
+    private let counts = Mutex((whois: 0, selfNode: 0))
+
+    init(peers: [String: TailnetPeer] = [:], node: TailnetPeer? = TailnetPeer(
+        loginName: "owner@github", nodeName: "server.tail1234.ts.net", tagged: false))
+    {
+        self.peers = peers
+        self.node = node
+    }
+
+    var whoisCount: Int { counts.withLock { $0.whois } }
+    var selfNodeCount: Int { counts.withLock { $0.selfNode } }
+
+    func whois(_ address: String) async -> TailnetPeer? {
+        counts.withLock { $0.whois += 1 }
+        return peers[address]
+    }
+
+    func selfNode() async -> TailnetPeer? {
+        counts.withLock { $0.selfNode += 1 }
+        return node
+    }
+}
+
 /// A server on a temporary data directory and an in-memory database.
 struct APIFixture {
     /// Stores the server's App Store Connect key, as Settings › App Store Connect does after testing it.
@@ -57,7 +91,8 @@ struct APIFixture {
         },
         now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = [],
         iconTransport: any HTTPTransport = StubTransport(), workerBinaryPath: String? = nil, port: Int = 8787,
-        githubTransport: any HTTPTransport = StubTransport(), setup: SetupEnvironment? = nil
+        githubTransport: any HTTPTransport = StubTransport(), setup: SetupEnvironment? = nil,
+        tailnet: FakeTailnet = FakeTailnet(), ownerCheck: (any OwnerIdentifying)? = FixedOwner("owner@github")
     ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("hangar-api-\(UUID().uuidString)")
         let database = try HangarServer.Database(path: ":memory:")
@@ -65,10 +100,10 @@ struct APIFixture {
         server = try HangarServerApp(
             configuration: ServerConfiguration(
                 host: boundHost, port: port, dataDirectory: directory.path, allowedHosts: allowedHosts,
-                workerBinaryPath: workerBinaryPath), database: database,
+                workerBinaryPath: workerBinaryPath), database: database, tailnet: tailnet,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
             numberSources: sources.map { sources in { @Sendable in sources } }, iconTransport: iconTransport, githubTransport: githubTransport,
-            now: now, setup: setup ?? Self.inertSetup(directory))
+            now: now, setup: setup ?? Self.inertSetup(directory), ownerCheck: ownerCheck)
     }
 
     /// Nothing of this Mac: an empty home, no tools (every command exits 0 silently), an installer that does nothing.

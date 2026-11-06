@@ -57,6 +57,9 @@ final class FakeSourceHost: SourceHost {
         var branches = RepositoryBranches(defaultBranch: "main", branches: ["main"])
         var branchesError: SourceHostError?
         var branchReads = 0
+        var tags: [String] = []
+        /// What `resolveBranchOrTag` was asked for.
+        var branchOrTagNames: [String] = []
     }
     let state = Mutex(State())
 
@@ -66,6 +69,17 @@ final class FakeSourceHost: SourceHost {
             state.refs.append(ref)
             state.repoURLs.append(repoURL)
             if state.unknownRefs.contains(ref) { throw SourceHostError.refNotFound(ref) }
+            return state.commit
+        }
+    }
+
+    /// Only `branches.branches` and `tags` resolve, as GitHub's `heads/` and `tags/` namespaces do.
+    func resolveBranchOrTag(repoURL: String, name: String, token: String?) async throws -> String {
+        try state.withLock { state in
+            state.branchOrTagNames.append(name)
+            guard state.branches.branches.contains(name) || state.tags.contains(name) else {
+                throw SourceHostError.refNotFound(name)
+            }
             return state.commit
         }
     }

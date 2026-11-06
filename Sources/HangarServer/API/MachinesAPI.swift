@@ -37,6 +37,20 @@ extension HangarServerApp {
         // Pause: the scheduler gives the machine no new jobs; a running one finishes, and the worker keeps reporting.
         api.post("machines/:id/pause") { _, context in try setPaused(context, true) }
         api.post("machines/:id/resume") { _, context in try setPaused(context, false) }
+        // VM builds: the owner's decision, never a heartbeat's. Allowing them is what lets the machine receive the
+        // server's signing identity.
+        api.post("machines/:id/vm-builds") { _, context in try setVMBuilds(context, true) }
+        api.delete("machines/:id/vm-builds") { _, context in try setVMBuilds(context, false) }
+    }
+
+    private func setVMBuilds(_ context: HangarRequestContext, _ allowed: Bool) throws -> Response {
+        let key = try context.parameters.require("id")
+        guard let found = try machines.find(nameOrID: key), let machine = try machines.setVMBuilds(id: found.id, allowed)
+        else { throw APIError(code: "machine_not_found", message: "No machine '\(key)'.") }
+        context.logger.info("VM builds \(allowed ? "allowed" : "stopped") on machine '\(machine.name)'")
+        events.publish(.server(.machine(machine)))
+        scheduler.poke()
+        return try Response.json(machine)
     }
 
     private func setPaused(_ context: HangarRequestContext, _ paused: Bool) throws -> Response {

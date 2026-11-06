@@ -273,6 +273,14 @@ enum Migrations {
                 WHERE v.name NOT LIKE 'HANGAR\\_%' ESCAPE '\\';
                 """)
         }
+        // VM builds become the owner's decision per machine (security review H1): a heartbeat's `vm` section no longer
+        // grants VM jobs or the signing identity. Machines whose latest report has `vm` keep building in VMs.
+        migrator.registerMigration("v14") { db in
+            try db.execute(sql: """
+                ALTER TABLE machines ADD COLUMN vm_builds BOOLEAN NOT NULL DEFAULT 0;
+                UPDATE machines SET vm_builds = 1 WHERE json_extract(report_json, '$.vm') IS NOT NULL;
+                """)
+        }
         return migrator
     }
 }

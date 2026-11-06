@@ -57,4 +57,51 @@ import Testing
         #expect(try machines.setPaused(id: old.id, false)?.paused == false)
         #expect(try machines.setPaused(id: UUID(), true) == nil)
     }
+
+    /// The upgrade keeps every Mac that builds in VMs today building in VMs: its latest report has `vm`.
+    @Test func machinesReportingVMBeforeTheFlagKeepVMBuilds() throws {
+        let database = try HangarServer.Database(path: ":memory:")
+        try Migrations.migrator.migrate(database.pool, upTo: "v10")
+        let vm = #"{"macOSVersion":"26","xcodes":[],"chip":"M4","performanceCores":4,"memoryGB":16,"freeDiskGB":1,"onACPower":true,"tools":{},"canSignWithoutPrompt":true,"runningJobIDs":[],"vm":{"slots":1,"configuredSlots":1,"freeSlots":1,"storageFreeGB":200,"networkFilter":true}}"#
+        let host = #"{"macOSVersion":"26","xcodes":[],"chip":"M4","performanceCores":4,"memoryGB":16,"freeDiskGB":1,"onACPower":true,"tools":{},"canSignWithoutPrompt":true,"runningJobIDs":[]}"#
+        try database.write { db in
+            for (name, report) in [("macbook", vm as String?), ("mini", host), ("new", nil)] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO machines (id, name, token_hash, max_concurrent_jobs, created_at, report_json)
+                        VALUES (?, ?, ?, 1, 1800000000, ?)
+                        """,
+                    arguments: [UUID().uuidString, name, name + String(repeating: "0", count: 58), report])
+            }
+        }
+        try database.migrate()
+        let machines = MachineRepository(database: database)
+        #expect(try machines.find(nameOrID: "macbook")?.vmBuilds == true)
+        #expect(try machines.find(nameOrID: "mini")?.vmBuilds == false)
+        #expect(try machines.find(nameOrID: "new")?.vmBuilds == false)
+        let mini = try #require(try machines.find(nameOrID: "mini"))
+        #expect(try machines.setVMBuilds(id: mini.id, true)?.vmBuilds == true)
+        #expect(try machines.setVMBuilds(id: mini.id, false)?.vmBuilds == false)
+    }
+
+    @Test func onlyTheOwnerAllowsVMBuilds() async throws {
+        let fixture = try APIFixture()
+        let (machine, _) = try fixture.server.machines.create(name: "macbook")
+        let (_, configure) = try fixture.server.apiTokens.create(name: "agent", scope: .configure)
+        try await fixture.test { client in
+            try await client.execute(
+                uri: "/api/v1/machines/macbook/vm-builds", method: .post, headers: [.authorization: "Bearer \(configure)"]
+            ) { #expect($0.status == .forbidden) }
+            try await client.execute(uri: "/api/v1/machines/macbook/vm-builds", method: .post) { response in
+                #expect(response.status == .ok)
+                let machine = try decode(Machine.self, response)
+                #expect(machine.vmBuilds)
+            }
+            try await client.execute(uri: "/api/v1/machines/macbook/vm-builds", method: .delete) { response in
+                let machine = try decode(Machine.self, response)
+                #expect(machine.vmBuilds == false)
+            }
+        }
+        #expect(try fixture.server.machines.find(nameOrID: machine.id.uuidString)?.vmBuilds == false)
+    }
 }

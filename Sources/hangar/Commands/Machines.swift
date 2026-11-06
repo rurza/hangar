@@ -6,7 +6,7 @@ import HangarCore
 struct Machines: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "List, add, pause and remove worker machines.",
-        subcommands: [List.self, Add.self, Pause.self, Resume.self, Remove.self])
+        subcommands: [List.self, Add.self, Pause.self, Resume.self, AllowVM.self, StopVM.self, Remove.self])
 
     struct List: HangarCommand {
         static let configuration = CommandConfiguration(abstract: "List machines with their latest reports.")
@@ -82,6 +82,37 @@ struct Machines: AsyncParsableCommand {
             let resumed = try await cli.api.resumeMachine(machine)
             if cli.json { return try cli.printJSON(resumed) }
             cli.print("Resumed \(resumed.name): it takes builds again.")
+        }
+    }
+
+    struct AllowVM: HangarCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "allow-vm",
+            abstract: "Allow VM builds on a machine you set up for them.",
+            discussion: """
+                Only a machine the owner allowed gets VM jobs and the server's signing certificate; a worker cannot \
+                grant itself that by reporting VMs.
+                """)
+        @OptionGroup var global: GlobalOptions
+        @Argument(help: "The machine's name or ID.") var machine: String
+
+        func run(_ cli: CLI) async throws {
+            let updated = try await cli.api.setVMBuilds(machine, allowed: true)
+            if cli.json { return try cli.printJSON(updated) }
+            cli.print("Allowed VM builds on \(updated.name).")
+        }
+    }
+
+    struct StopVM: HangarCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "stop-vm", abstract: "Stop VM builds on a machine: it gets no VM jobs or signing certificate.")
+        @OptionGroup var global: GlobalOptions
+        @Argument(help: "The machine's name or ID.") var machine: String
+
+        func run(_ cli: CLI) async throws {
+            let updated = try await cli.api.setVMBuilds(machine, allowed: false)
+            if cli.json { return try cli.printJSON(updated) }
+            cli.print("Stopped VM builds on \(updated.name).")
         }
     }
 

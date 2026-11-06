@@ -727,15 +727,22 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
     }
 
     /// A reverse proxy on this Mac (`tailscale serve`, nginx) connects from loopback for every tailnet peer; its
-    /// forwarding headers make the request remote whatever the socket says.
+    /// forwarding headers make the request remote whatever the socket says. Without a token it is not the owner's
+    /// either (401); with an owner token it is still not this Mac.
     @Test(arguments: ["X-Forwarded-For", "Forwarded", "X-Real-IP", "Tailscale-User-Login", "X-Forwarded-Host"])
     func aRequestRelayedByAProxyIsNotLocal(header: String) async throws {
         let keys = try KeyHome()
         let fixture = try APIFixture(port: 0, setup: SetupEnvironment(
             homeDirectory: keys.home.path, currentDirectory: keys.cwd.path, environment: [:],
             runner: RecordingProcessRunner(), installer: FakeInstaller()))
-        let relayed: HTTPFields = [HTTPFields.Element.Name(header)!: "100.80.1.2"]
+        let (_, secret) = try fixture.server.apiTokens.create(name: "my-cli", scope: .owner)
+        let name = HTTPFields.Element.Name(header)!
+        let bare: HTTPFields = [name: "100.80.1.2"]
+        let relayed: HTTPFields = [name: "100.80.1.2", .authorization: "Bearer \(secret)"]
         try await fixture.server.build().test(.live) { client in
+            try await client.execute(uri: "/api/v1/setup", method: .get, headers: bare) { response throws in
+                #expect(response.status == .unauthorized)
+            }
             try await client.execute(uri: "/api/v1/setup/asc-keys", method: .get, headers: relayed) { response throws in
                 #expect(response.status == .forbidden)
                 #expect(try decode(APIError.self, response).code == "local_only")

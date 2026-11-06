@@ -38,6 +38,8 @@ struct CLIHarness {
     var pollInterval: Duration = .seconds(3600)
     var lostContactAfter: Duration = .seconds(120)
     var environment: [String: String] = [:]
+    /// Files the CLI may read (the API token file), by path.
+    var files: [String: String] = [:]
 
     static func json(_ value: some Encodable, status: Int = 200) throws -> StubTransport.Response {
         StubTransport.Response(status: status, body: try JSONCoding.encoder.encode(value))
@@ -53,8 +55,8 @@ struct CLIHarness {
         let stdinData = Data(stdin.utf8)
         let eventsText = events
         let context = CLIContext(
-            makeAPI: { url in
-                HangarAPI(baseURL: url, transport: transport) { _ in
+            makeAPI: { url, token in
+                HangarAPI(baseURL: url, transport: transport, token: token) { _ in
                     AsyncThrowingStream { continuation in
                         for line in eventsText.split(separator: "\n", omittingEmptySubsequences: false) {
                             continuation.yield(String(line))
@@ -65,7 +67,8 @@ struct CLIHarness {
             },
             console: Console(
                 write: { capture.out($0) }, writeError: { capture.err($0) }, readInput: { stdinData }, isTTY: isTTY),
-            environment: environment, timeZone: Self.utc, pollInterval: pollInterval, lostContactAfter: lostContactAfter)
+            environment: environment, timeZone: Self.utc, pollInterval: pollInterval, lostContactAfter: lostContactAfter,
+            readFile: { [files] in files[$0] })
 
         let exitCode: Int32 = await CLIContext.$current.withValue(context) {
             do {

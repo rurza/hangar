@@ -5,6 +5,9 @@ import HangarCore
 public protocol SourceHost: Sendable {
     /// The full commit SHA `ref` (branch, tag or SHA) points at.
     func resolveCommit(repoURL: String, ref: String, token: String?) async throws -> String
+    /// The full commit SHA of the repository's own branch or tag named `name`; `refNotFound` for anything else, such
+    /// as a bare SHA (which may exist only in a fork) or a pull request ref.
+    func resolveBranchOrTag(repoURL: String, name: String, token: String?) async throws -> String
     /// The file's text at `commit`, or nil when the commit has no such file.
     func readFile(repoURL: String, commit: String, path: String, token: String?) async throws -> String?
     /// The file's bytes at `commit`, or nil when the commit has no such file. A body over `maxBytes` (by its
@@ -29,6 +32,11 @@ public enum SourceHostError: Error, Equatable, Sendable {
 }
 
 extension SourceHost {
+    /// A host that cannot tell branches and tags from other refs resolves none this way.
+    public func resolveBranchOrTag(repoURL: String, name: String, token: String?) async throws -> String {
+        throw SourceHostError.refNotFound(name)
+    }
+
     /// Hosts that cannot list branches offer none; the Deploy sheet then takes a typed ref only.
     public func branches(repoURL: String, token: String?) async throws -> RepositoryBranches {
         RepositoryBranches(defaultBranch: nil, branches: [])

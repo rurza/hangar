@@ -42,7 +42,21 @@ Point the CLI at it:
 export HANGAR_SERVER=http://<tailnet-host>:8787
 ```
 
-The CLI defaults to `http://localhost:8787`, so set this on every machine other than the server.
+The CLI defaults to `http://localhost:8787`, so set this on every Mac, the server's included: the server binds its tailnet address, and only requests that arrive over the tailnet can be the owner's.
+
+## Who can use it
+
+The server answers its owner and API tokens, nobody else ([details](api.md#who-may-call-the-api)):
+
+- **Your devices.** A browser or the CLI on a device signed in to Tailscale as the login that owns the server Mac's tailnet node needs nothing else; the server asks Tailscale who each device belongs to (`tailscale whois`). This covers the server Mac itself when it uses its tailnet address, for processes of the user the server runs as; other users there (a build running as `hangar`) need a token. Allow other logins in **Settings › Access**, or on the server Mac with `hangar-server access allow <login>…` (`hangar-server access show` prints the list, `reset` goes back to the node's login). A tagged server node has no owner of its own: set the logins.
+- **Everything else needs an API token**: scripts on loopback, agents, and every caller while Tailscale is down. Agents get scoped tokens ([MCP access](mcp.md)). For your own CLI where Tailscale cannot vouch for it, make an owner token on the server Mac, as the user the server runs as:
+
+  ```sh
+  (umask 077; mkdir -p ~/.config/hangar; hangar-server token create my-cli --scope owner > ~/.config/hangar/token)
+  ```
+
+  The CLI reads `~/.config/hangar/token` (or `HANGAR_API_TOKEN_FILE`, or `HANGAR_API_TOKEN`). This works without the API, whether the server runs or not, and is the way back in if the owner logins are ever wrong.
+- **New Macs** enroll with a pairing code from **Machines › Add Mac** (`curl … | sh`); enrolling needs no other credential. A Mac set up for VM builds gets VM jobs and the signing certificate only after you allow them on its card (**Allow VM Builds**, or `hangar machines allow-vm <name>`).
 
 ## Options
 
@@ -55,7 +69,7 @@ Each of host, port and data directory is taken from the flag first, then from th
 - Host default: the first IPv4 printed by `tailscale ip -4`. At login Tailscale may not be up yet, so the server retries for up to 60 seconds (every 2 s). If no address shows up, it exits with status 1 and prints `Tailscale address not found; start Tailscale or pass --host <address>` to stderr; launchd then restarts it. It never falls back to loopback silently. Pass `--host 127.0.0.1` explicitly for a local-only server.
 - Port default: 8787.
 - Data directory default: `~/Library/Application Support/Hangar/server`.
-- Allowed host names: the server answers only requests whose `Host` names this server, so a web page that rebinds its own DNS name to your server's address gets `421 host_not_allowed` instead of the API or the UI. Always allowed: the bound address (any port); `localhost`, `127.0.0.1` and `[::1]` when bound to loopback or to `0.0.0.0`; this Mac's short host name (from `gethostname` and `scutil --get LocalHostName`); its MagicDNS name (`Self.DNSName` from `tailscale status --json`, read at start-up); and any name ending in `.ts.net`. To reach the server under another name (a DNS alias, a LAN address when bound to `0.0.0.0`), add it with `--allowed-host <name>` (repeatable) or `HANGAR_ALLOWED_HOSTS=name1,name2`; the two are combined. The server logs the full list at start-up (`allowed host names: ...`).
+- Allowed host names: the server answers only requests whose `Host` names this server, so a web page that rebinds its own DNS name to your server's address gets `421 host_not_allowed` instead of the API or the UI. Always allowed: the bound address (any port); `localhost`, `127.0.0.1` and `[::1]` when bound to loopback or to `0.0.0.0`; this Mac's short host name (from `gethostname` and `scutil --get LocalHostName`); its MagicDNS name (`Self.DNSName` from `tailscale status --json`, read at start-up, or later from the owner check when Tailscale came up after the server) and that name's first label. Other `.ts.net` names, other devices' and other tailnets', are refused. To reach the server under another name (a DNS alias, a LAN address when bound to `0.0.0.0`), add it with `--allowed-host <name>` (repeatable) or `HANGAR_ALLOWED_HOSTS=name1,name2`; the two are combined. The server logs the full list at start-up (`allowed host names: ...`).
 
 To change options for the launchd agent, edit `ProgramArguments` or add an `EnvironmentVariables` dictionary in `~/Library/LaunchAgents/app.hangar.server.plist`, then reload it:
 
