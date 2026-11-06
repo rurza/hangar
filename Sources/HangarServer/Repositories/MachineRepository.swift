@@ -75,6 +75,15 @@ public struct MachineRepository: Sendable {
         }
     }
 
+    /// Allows or stops VM builds on this machine (the owner's call); the updated machine, nil when there is none.
+    public func setVMBuilds(id: UUID, _ allowed: Bool) throws -> Machine? {
+        try database.write { db in
+            try db.execute(sql: "UPDATE machines SET vm_builds = ? WHERE id = ?", arguments: [allowed, id.uuidString])
+            return try Row.fetchOne(db, sql: "SELECT * FROM machines WHERE id = ?", arguments: [id.uuidString])
+                .map(Self.machine)
+        }
+    }
+
     public func delete(id: UUID) throws {
         try database.write { db in try db.execute(sql: "DELETE FROM machines WHERE id = ?", arguments: [id.uuidString]) }
     }
@@ -94,6 +103,6 @@ public struct MachineRepository: Sendable {
             id: UUID(uuidString: row["id"])!, name: row["name"], maxConcurrentJobs: row["max_concurrent_jobs"],
             lastSeenAt: dbDate(row["last_seen_at"] as Double?),
             report: try report.map { try JSONCoding.decoder.decode(MachineReport.self, from: Data($0.utf8)) },
-            createdAt: dbDate(row["created_at"] as Double), paused: row["paused"])
+            createdAt: dbDate(row["created_at"] as Double), paused: row["paused"], vmBuilds: row["vm_builds"])
     }
 }

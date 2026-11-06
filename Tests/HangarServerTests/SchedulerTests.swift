@@ -34,7 +34,7 @@ import Testing
     /// A machine whose worker reports VM builds, as `SchedulerLoop.snapshot` sees it.
     func vmMachine(
         _ vm: VMReport, maxConcurrentJobs: Int = 1, runningJobs: Int = 0, freeDiskGB: Double = 400,
-        headless: Bool? = nil
+        headless: Bool? = nil, vmBuilds: Bool = true
     ) -> MachineSnapshot {
         let report = MachineReport(
             macOSVersion: "26.6", xcodes: [InstalledXcode(version: "26.1", build: "A", path: "/Applications/Xcode.app")],
@@ -43,8 +43,17 @@ import Testing
             simulatorRuntimes: ["visionOS 26.1"], capabilities: [WorkerCapability.testActions], headless: headless, vm: vm)
         let machine = Machine(
             id: UUID(), name: "Mini", maxConcurrentJobs: maxConcurrentJobs, lastSeenAt: Self.start, report: report,
-            createdAt: Self.start)
+            createdAt: Self.start, vmBuilds: vmBuilds)
         return SchedulerLoop.snapshot(machine, runningJobs: runningJobs, now: Self.start)
+    }
+
+    /// A heartbeat that reports `vm` does not make a VM Mac: the owner allows VM builds (security review H1).
+    @Test func aVMMacTheOwnerHasNotAllowedTakesNoJobs() {
+        let mini = vmMachine(VMReport(
+            slots: 2, configuredSlots: 2, freeSlots: 2, storageFreeGB: 200, networkFilter: true, images: [Self.image]),
+            vmBuilds: false)
+        #expect(Scheduler.ineligibility(of: job(), on: mini, minFreeDiskGB: 20)
+            == [.vmNotReady(SchedulerLoop.vmBuildsNotAllowed)])
     }
 
     static let image = VMImageInfo(

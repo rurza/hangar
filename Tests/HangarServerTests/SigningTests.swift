@@ -416,9 +416,19 @@ private func makeP12(commonName: String = "Apple Development: Jane Doe (ABCDE123
         let setup = try await WorkerAPITests.Setup(workflow: "ci")
         try seed(setup.fixture.server)
         try setup.fixture.server.machines.updateReport(id: setup.machine.id, report: vmReport(), seenAt: WorkerAPITests.t0)
+        _ = try setup.fixture.server.machines.setVMBuilds(id: setup.machine.id, true)
         let seen = try await assignments(setup)
         #expect(seen[.archive]?.signingIdentity == Self.identity)
         #expect(seen[.test]?.signingIdentity == nil)
+    }
+
+    /// Claiming `vm` in a heartbeat is not enough: the owner must have allowed VM builds on the machine.
+    @Test func aSelfReportedVMMachineDoesNotGetIt() async throws {
+        let setup = try await WorkerAPITests.Setup(workflow: "ci")
+        try seed(setup.fixture.server)
+        try setup.fixture.server.machines.updateReport(id: setup.machine.id, report: vmReport(), seenAt: WorkerAPITests.t0)
+        let seen = try await assignments(setup)
+        #expect(seen[.archive] != nil && seen[.archive]?.signingIdentity == nil)
     }
 
     @Test func aHostWorkerNeverGetsIt() async throws {

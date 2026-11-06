@@ -57,6 +57,8 @@ private struct FixedSource: KnownNumberSource {
     }
 
     func report(_ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil) throws {
+        // A VM Mac in these tests is one the owner allowed VM builds on.
+        if vm != nil { _ = try machines.setVMBuilds(id: machine.id, true) }
         try machines.updateReport(
             id: machine.id,
             report: MachineReport(

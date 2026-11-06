@@ -121,3 +121,17 @@ private typealias H = CLIHarness
         #expect(refused.requests.first?.url?.path == "/api/v1/api-tokens/current")
     }
 }
+
+@Suite struct MachineVMBuildsCommandTests {
+    @Test func allowAndStopVMBuilds() async throws {
+        let machine = Machine(id: UUID(), name: "macbook", createdAt: H.t0, vmBuilds: true)
+        let allow = await H(responses: [try H.json(machine)]).run(["machines", "allow-vm", "macbook"])
+        #expect(allow.exitCode == 0 && allow.out.contains("Allowed VM builds on macbook"))
+        #expect(allow.requests.first?.httpMethod == "POST")
+        #expect(allow.requests.first?.url?.path == "/api/v1/machines/macbook/vm-builds")
+        var stopped = machine
+        stopped.vmBuilds = false
+        let stop = await H(responses: [try H.json(stopped)]).run(["machines", "stop-vm", "macbook"])
+        #expect(stop.exitCode == 0 && stop.requests.first?.httpMethod == "DELETE")
+    }
+}

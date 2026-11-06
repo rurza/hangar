@@ -194,6 +194,9 @@ public actor SchedulerLoop {
         return Dictionary(grouping: active, by: { $0 }).mapValues(\.count)
     }
 
+    /// Why a machine that reports `vm` gets no jobs until the owner allows VM builds on it.
+    static let vmBuildsNotAllowed = "the owner has not allowed VM builds on this Mac (Machines › Allow VM Builds)"
+
     /// Machines without a report are offline for scheduling. A machine that reports `vm` runs every job in a VM and is
     /// judged by it: its ready slots, its images' Xcode versions and simulator runtimes, its VM storage, and no Xcode
     /// account (the guest has none), whatever the host has.
@@ -213,7 +216,9 @@ public actor SchedulerLoop {
                 onACPower: report.onACPower, canSign: report.canSignWithoutPrompt,
                 simulatorRuntimes: Array(Set(vm.images.flatMap(\.simulatorRuntimes))).sorted(),
                 capabilities: Set(report.capabilities), headless: true, paused: machine.paused, vm: true,
-                vmNotReady: vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready"), vmOwnIdentity: vm.ownIdentity)
+                vmNotReady: machine.vmBuilds
+                    ? (vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready")) : Self.vmBuildsNotAllowed,
+                vmOwnIdentity: vm.ownIdentity)
         }
         return MachineSnapshot(
             id: machine.id, name: machine.name, isOnline: machine.isOnline(now: now), freeSlots: freeSlots,

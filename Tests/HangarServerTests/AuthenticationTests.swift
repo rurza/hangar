@@ -294,6 +294,7 @@ import Testing
         DELETE apps/:id/variables/:name owner
         DELETE apps/:id/workflow-file configure
         DELETE machines/:id owner
+        DELETE machines/:id/vm-builds owner
         DELETE signing owner
         DELETE variable-groups/:group owner
         DELETE variable-groups/:group/variables/:name owner
@@ -349,6 +350,7 @@ import Testing
         POST machines owner
         POST machines/:id/pause owner
         POST machines/:id/resume owner
+        POST machines/:id/vm-builds owner
         POST machines/pairings owner
         POST settings/asc-key owner
         POST settings/github-token owner

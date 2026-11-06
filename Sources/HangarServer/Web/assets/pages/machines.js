@@ -51,7 +51,9 @@ export async function machinesPage(params, context) {
     const nodes = machines.map((machine) => {
       let widget = widgets.get(machine.id);
       if (!widget) {
-        widget = machineWidget(machine, { onRemove: remove, onPause: setPaused, jobInfo: jobs.info, serverMac });
+        widget = machineWidget(machine, {
+          onRemove: remove, onPause: setPaused, onVMBuilds: setVMBuilds, jobInfo: jobs.info, serverMac,
+        });
         widgets.set(machine.id, widget);
       } else {
         widget.update(machine);
@@ -104,6 +106,19 @@ export async function machinesPage(params, context) {
     try {
       const updated = await api.post(`/machines/${seg(machine.id)}/${paused ? 'pause' : 'resume'}`);
       toast(pauseToast(updated), 'success');
+      upsert(updated);
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  }
+
+  /** Allows or stops VM builds on `machine`: the owner's decision, which a heartbeat cannot make. */
+  async function setVMBuilds(machine, allowed) {
+    try {
+      const updated = allowed
+        ? await api.post(`/machines/${seg(machine.id)}/vm-builds`)
+        : await api.del(`/machines/${seg(machine.id)}/vm-builds`);
+      toast(allowed ? `VM builds allowed on ${updated.name}` : `VM builds stopped on ${updated.name}`, 'success');
       upsert(updated);
     } catch (error) {
       toast(error.message, 'error');
@@ -166,7 +181,7 @@ export async function removeMachine(machine) {
  * A machine's widget. `update(machine)` redraws it with new data, `tick()` re-evaluates the online state.
  * `onPause(machine, paused)` adds the Pause/Resume Builds button; `serverMac(machine)` marks the server's own Mac.
  */
-export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac }) {
+export function machineWidget(initial, { onRemove, onPause, onVMBuilds, jobInfo, serverMac }) {
   let machine = initial;
   const title = h('h2', { class: 'machine-name' });
   const status = h('p', { class: 'machine-status' });
@@ -191,10 +206,22 @@ export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac }
       }
     },
   }) : null;
+  // Shown once the Mac reports VM builds, or while the owner allows them.
+  const vmButton = onVMBuilds ? button('', {
+    class: 'button button-secondary button-small machine-vm-builds',
+    onClick: async () => {
+      vmButton.disabled = true;
+      try {
+        await onVMBuilds(machine, !machine.vmBuilds);
+      } finally {
+        vmButton.disabled = false;
+      }
+    },
+  }) : null;
   const element = card({ class: 'machine-card' },
     h('div', { class: 'machine-head' }, h('div', { class: 'machine-heading' }, title, status), tags),
     body,
-    h('div', { class: 'card-actions' }, pauseButton, removeButton));
+    h('div', { class: 'card-actions' }, vmButton, pauseButton, removeButton));
 
   function tick() {
     const online = isOnline(machine);
@@ -220,6 +247,11 @@ export function machineWidget(initial, { onRemove, onPause, jobInfo, serverMac }
         ? h('span', { class: 'tag', title: 'Hangar’s server runs on this Mac' }, 'Server')
         : null,
       machine.paused ? h('span', { class: 'badge badge-paused' }, h('span', { class: 'badge-dot', 'aria-hidden': 'true' }), 'Paused') : null);
+    if (vmButton) {
+      vmButton.hidden = !machine.vmBuilds && !machine.report?.vm;
+      vmButton.textContent = machine.vmBuilds ? 'Stop VM Builds' : 'Allow VM Builds';
+      vmButton.setAttribute('aria-label', `${vmButton.textContent} on ${machine.name}`);
+    }
     replaceChildren(body, machine.report ? reportView(machine, jobInfo) : waitingView());
     tick();
   }
@@ -264,7 +296,7 @@ function reportView(machine, jobInfo) {
       h('div', { class: 'machine-load-text' },
         activity,
         h('p', { class: 'card-detail' }, load.detail))),
-    report.vm ? vmView(report.vm) : null,
+    report.vm ? vmView(report.vm, machine.vmBuilds) : null,
     h('dl', { class: 'facts' },
       fact('Chip', report.chip || '–'),
       fact('Performance cores', String(report.performanceCores)),
@@ -310,11 +342,17 @@ function cannotSignAdvice(report) {
 }
 
 /** A VM Mac's slots, images and network filter on one line, and, while no slot is ready, why. */
-function vmView(vm) {
+function vmView(vm, allowed) {
   const line = vmLine(vm);
   return [
     h('p', { class: 'card-detail machine-vm' }, line.text),
-    line.problem
+    allowed ? null : h('div', { class: 'signing signing-warning' },
+      h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
+      h('div', null,
+        h('p', { class: 'signing-title' }, 'VM builds not allowed yet'),
+        h('p', { class: 'card-note' }, 'This Mac is set up for VM builds. Allow them to give it jobs and the signing '
+          + 'certificate; only allow a Mac you set up yourself.'))),
+    allowed && line.problem
       ? h('div', { class: 'signing signing-warning' },
         h('span', { class: 'signing-icon', 'aria-hidden': 'true' }, '!'),
         h('div', null,

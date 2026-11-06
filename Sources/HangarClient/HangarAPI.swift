@@ -245,6 +245,14 @@ public struct HangarAPI: Sendable {
         try await send("POST", "machines/\(segment(machine))/resume")
     }
 
+    /// Allows (`true`) or stops VM builds on `machine`; owner only.
+    public func setVMBuilds(_ machine: String, allowed: Bool) async throws -> Machine {
+        try await send(allowed ? "POST" : "DELETE", "machines/\(segment(machine))/vm-builds")
+    }
+
+    /// Who counts as the owner; owner only.
+    public func access() async throws -> AccessStatus { try await get("access") }
+
     // MARK: - Plumbing
 
     private struct Empty: Encodable {}

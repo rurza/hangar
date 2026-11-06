@@ -247,11 +247,12 @@ extension HangarServerApp {
             signingIdentity: try assignmentIdentity(job: job, machineID: machineID))
     }
 
-    /// The server's signing identity, only for an archive on a machine that runs its jobs in VMs: the guest has no
-    /// keychain of its own. A host worker signs with its own keychain and never gets it.
+    /// The server's signing identity, only for an archive on a machine the owner allowed VM builds on, and that runs
+    /// its jobs in VMs: the guest has no keychain of its own. A host worker signs with its own keychain and never gets
+    /// it, and a heartbeat that merely reports `vm` does not either.
     func assignmentIdentity(job: Job, machineID: UUID) throws -> JobSigningIdentity? {
-        guard job.action.kind == .archive,
-            try machines.find(nameOrID: machineID.uuidString)?.report?.vm != nil
+        guard job.action.kind == .archive, let machine = try machines.find(nameOrID: machineID.uuidString),
+            machine.vmBuilds, machine.report?.vm != nil
         else { return nil }
         return try signing.jobIdentity()
     }
