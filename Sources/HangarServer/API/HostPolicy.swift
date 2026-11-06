@@ -5,14 +5,15 @@ import Hummingbird
 /// Which `Host` values the server answers. A DNS-rebinding page reaches the server under the attacker's own name,
 /// so a request whose Host is not one of this Mac's names is refused.
 ///
-/// Allowed: the bound host; `localhost`, `127.0.0.1` and `::1` when bound to loopback or to every interface; any
-/// `*.ts.net` name (MagicDNS); and the extra names (this Mac's host names, its MagicDNS name, `--allowed-host`).
-/// The port is not compared. Names compare case-insensitively, without a trailing dot or IPv6 brackets.
+/// Allowed: the bound host; `localhost`, `127.0.0.1` and `::1` when bound to loopback or to every interface; and the
+/// extra names (this Mac's host names, its MagicDNS name and that name's first label, `--allowed-host`). Not any
+/// other `*.ts.net` name: those are other tailnets' and other devices' (security review L6). The port is not
+/// compared. Names compare case-insensitively, without a trailing dot or IPv6 brackets.
 public struct HostPolicy: Sendable, Equatable {
     public static let loopbackNames = ["localhost", "127.0.0.1", "::1"]
     static let wildcardHosts: Set<String> = ["0.0.0.0", "::"]
 
-    /// The exact names allowed, normalized and sorted; `*.ts.net` is allowed on top of these.
+    /// The exact names allowed, normalized and sorted.
     public let names: [String]
 
     public init(boundHost: String, extraNames: [String] = []) {
@@ -26,11 +27,11 @@ public struct HostPolicy: Sendable, Equatable {
     /// True when the `Host` (or HTTP/2 `:authority`) value names this server. A missing Host is refused.
     public func allows(authority: String?) -> Bool {
         guard let authority, let host = HostName.split(authority)?.host, !host.isEmpty else { return false }
-        return names.contains(host) || host.hasSuffix(".ts.net")
+        return names.contains(host)
     }
 
-    /// The names for the start-up log: the exact names, then the `*.ts.net` rule.
-    public var description: String { (names + ["*.ts.net"]).joined(separator: ", ") }
+    /// The names for the start-up log.
+    public var description: String { names.joined(separator: ", ") }
 
     static func isLoopback(_ host: String) -> Bool {
         host == "localhost" || host == "::1" || host.hasPrefix("127.")
@@ -52,7 +53,11 @@ public struct HostPolicy: Sendable, Equatable {
         {
             names.append(local)
         }
-        if let magicDNS = await magicDNSName(runner: runner, fileExists: fileExists) { names.append(magicDNS) }
+        if let magicDNS = await magicDNSName(runner: runner, fileExists: fileExists) {
+            names.append(magicDNS)
+            // MagicDNS also answers to the machine name alone.
+            if let short = shortName(magicDNS) { names.append(short) }
+        }
         var seen = Set<String>()
         return names.map(HostName.normalize).filter { seen.insert($0).inserted }
     }
@@ -90,17 +95,30 @@ public struct HostPolicy: Sendable, Equatable {
 }
 
 /// Refuses every request whose Host is not allowed with 421 `host_not_allowed`: UI, API and worker routes alike.
+/// This node's MagicDNS name, as Tailscale reports it now, also counts: Tailscale may have come up after start-up,
+/// when the names were detected.
 struct HostCheck: RouterMiddleware {
     typealias Context = HangarRequestContext
 
     let policy: HostPolicy
+    /// This server's own MagicDNS name, nil when unknown.
+    var ownNodeName: @Sendable () async -> String? = { nil }
 
     func handle(_ request: Request, context: Context, next: (Request, Context) async throws -> Response) async throws -> Response {
-        guard policy.allows(authority: request.authority) else {
+        var allowed = policy.allows(authority: request.authority)
+        if !allowed { allowed = await isOwnNodeName(request.authority) }
+        guard allowed else {
             throw APIError(
                 code: "host_not_allowed",
                 message: "This server does not answer to that host name. Add it with --allowed-host if it is yours.")
         }
         return try await next(request, context)
+    }
+
+    func isOwnNodeName(_ authority: String?) async -> Bool {
+        guard let host = authority.flatMap(HostName.split)?.host, host.hasSuffix(".ts.net"),
+            let own = await ownNodeName().map(HostName.normalize), !own.isEmpty
+        else { return false }
+        return host == own
     }
 }

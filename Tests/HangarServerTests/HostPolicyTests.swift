@@ -11,20 +11,21 @@ import Testing
 
     @Test(arguments: [
         "100.71.242.42", "100.71.242.42:8787", "100.71.242.42:1",
-        "studio", "Studio:8787", "studio.tail1234.ts.net", "studio.tail1234.ts.net.:8787", "other-mac.tailabc.ts.net",
-        "ci.example.com:8787",
+        "studio", "Studio:8787", "studio.tail1234.ts.net", "studio.tail1234.ts.net.:8787", "ci.example.com:8787",
     ])
-    func allowsTheBoundHostThisMacsNamesAndTailnetNames(authority: String) {
-        let policy = HostPolicy(boundHost: Self.tailscaleIP, extraNames: ["studio", "ci.example.com"])
+    func allowsTheBoundHostAndThisMacsNames(authority: String) {
+        let policy = HostPolicy(boundHost: Self.tailscaleIP, extraNames: ["studio", "studio.tail1234.ts.net", "ci.example.com"])
         #expect(policy.allows(authority: authority))
     }
 
     @Test(arguments: [
         "evil.example", "evil.example:8787", "localhost", "localhost:8787", "127.0.0.1:8787", "[::1]:8787",
         "100.71.242.43:8787", "ts.net.evil.example", "studio.local", "", "100.71.242.42:x",
+        // Another device's or another tailnet's MagicDNS name is not this server's (security review L6).
+        "other-mac.tailabc.ts.net", "other-mac.tail1234.ts.net", "evil.ts.net",
     ])
     func refusesOtherNamesAndLoopbackWhenBoundToTailscale(authority: String) {
-        let policy = HostPolicy(boundHost: Self.tailscaleIP, extraNames: ["studio", "ci.example.com"])
+        let policy = HostPolicy(boundHost: Self.tailscaleIP, extraNames: ["studio", "studio.tail1234.ts.net", "ci.example.com"])
         #expect(!policy.allows(authority: authority))
     }
 
@@ -41,9 +42,19 @@ import Testing
         #expect(!policy.allows(authority: "evil.example:8787"))
     }
 
-    @Test func descriptionListsTheNamesAndTheTailnetRule() {
+    @Test func descriptionListsTheNames() {
         let policy = HostPolicy(boundHost: Self.tailscaleIP, extraNames: ["Studio", "studio.", " "])
-        #expect(policy.description == "100.71.242.42, studio, *.ts.net")
+        #expect(policy.description == "100.71.242.42, studio")
+    }
+
+    /// Tailscale may come up after start-up: the node's own MagicDNS name, learned later, is allowed then.
+    @Test func theNodesOwnMagicDNSNameLearnedLaterCounts() async {
+        let check = HostCheck(policy: HostPolicy(boundHost: Self.tailscaleIP), ownNodeName: { "Studio.tail1234.ts.net" })
+        #expect(await check.isOwnNodeName("studio.tail1234.ts.net.:8787"))
+        #expect(await !check.isOwnNodeName("other.tail1234.ts.net"))
+        #expect(await !check.isOwnNodeName("studio.tail1234.ts.net.evil.example"))
+        let unknown = HostCheck(policy: HostPolicy(boundHost: Self.tailscaleIP))
+        #expect(await !unknown.isOwnNodeName("studio.tail1234.ts.net"))
     }
 
     @Test func detectsTheShortHostNameLocalHostNameAndMagicDNSName() async {

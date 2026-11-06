@@ -40,7 +40,9 @@ extension HangarServerApp {
         let router = Router(context: HangarRequestContext.self)
         router.add(middleware: APIErrorMiddleware())
         // Every route, the UI's included: a DNS-rebinding page arrives under a Host that is not this server's.
-        router.add(middleware: HostCheck(policy: configuration.hostPolicy))
+        router.add(middleware: HostCheck(policy: configuration.hostPolicy, ownNodeName: { [owners] in
+            await owners.serverNode()?.nodeName
+        }))
         router.add(middleware: ProxyMark())
         // The cross-site guard skips the worker routes, which a machine token authenticates.
         // Authentication runs after it: neither a token nor the owner's device makes a cross-site request acceptable.

@@ -48,7 +48,7 @@ struct HangarServerCommand: AsyncParsableCommand {
             name: .customLong("allowed-host"),
             help: ArgumentHelp(
                 "Another host name the server answers to (repeatable); HANGAR_ALLOWED_HOSTS takes a comma-separated list.",
-                discussion: "Always allowed: the bound address, localhost when bound to loopback, this Mac's host name, its MagicDNS name and any *.ts.net name."))
+                discussion: "Always allowed: the bound address, localhost when bound to loopback, this Mac's host names and its own MagicDNS name."))
         var allowedHosts: [String] = []
 
         func run() async throws {
