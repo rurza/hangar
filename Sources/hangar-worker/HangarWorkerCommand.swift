@@ -207,8 +207,7 @@ struct HangarWorkerCommand: AsyncParsableCommand {
                 worker, its configuration (the same machine token) and its build cache into that user, locks the \
                 user's home to 0700, creates hangar's CI keychain (its password in a 0600 file in that home) and \
                 installs the worker as a LaunchDaemon that runs as hangar from boot, with no login. It confirms the \
-                worker runs and reaches the server as hangar, then removes this user's agent and configuration. A \
-                hangar user set up by an older version (a launch agent and a login) is moved to the LaunchDaemon. \
+                worker runs and reaches the server as hangar, then removes this user's agent and configuration. \
                 Running it again picks up where it stopped.
                 """)
 

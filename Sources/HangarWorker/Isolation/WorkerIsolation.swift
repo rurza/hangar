@@ -30,8 +30,6 @@ public struct IsolationLayout: Sendable, Equatable {
     public var keychains: String { home + "/Library/Keychains" }
     /// The CI keychain and its password file (in `dataDirectory`).
     public var keychain: CIKeychain { CIKeychain(home: home) }
-    /// The launch agent an older `isolate` installed in the account (0.8 and before); the daemon replaces it.
-    public var legacyAgentPlist: String { home + "/Library/LaunchAgents/" + WorkerLaunchAgent.label + ".plist" }
     public var daemonPlist: String { launchDaemons + "/" + WorkerLaunchDaemon.label + ".plist" }
 }
 
@@ -96,8 +94,7 @@ public struct IsolationError: Error, CustomStringConvertible, Equatable {
 /// `WorkDirectoryMigration` would) into that account, lock its home to 0700, create its CI keychain (`CIKeychain`),
 /// and install and start the worker as a LaunchDaemon that runs as `hangar` from boot without a login. It then
 /// confirms the daemon runs and the server sees the machine heartbeat from it, and removes the old agent and
-/// configuration. An account set up by an older version (a launch agent in its login session) loses that agent on the
-/// way. Each step is idempotent, so running it again resumes.
+/// configuration. Each step is idempotent, so running it again resumes.
 public struct WorkerIsolation: Sendable {
     public struct Dependencies: Sendable {
         public var runner: any IsolationRunner
@@ -239,7 +236,6 @@ public struct WorkerIsolation: Sendable {
             say("The \(layout.user) user exists (uid \(uid!)).")
         }
         if let password, !dryRun { showPassword(password) }
-        let accountUID = uid!
         try require(.sudo("/usr/sbin/createhomedir", "-c", "-u", layout.user), "create the \(layout.user) home")
 
         // 4. The server's data must not be readable by the account, checked before anything moves.
@@ -250,8 +246,6 @@ public struct WorkerIsolation: Sendable {
 
         // 6. Move the worker into the account.
         if let oldAgent { try await stopOldAgent(oldAgent) }
-        try removeLegacyAgent(uid: accountUID)
-        let stoppedAt = dependencies.now()
         try makeDirectories()
         try require(
             .sudo("/usr/bin/install", "-o", layout.user, "-g", "staff", "-m", "755", binary, layout.binary),
@@ -273,7 +267,7 @@ public struct WorkerIsolation: Sendable {
         try await startDaemon(plistChanged: plistChanged)
 
         // 8. The server must see the machine heartbeat from the daemon; then the old agent goes.
-        try await confirmHeartbeat(source: source, since: stoppedAt)
+        try await confirmHeartbeat(source: source)
         if oldAgent != nil {
             try require(.change("/bin/rm", "-f", invoker.plist), "remove the old launch agent")
         }
@@ -490,26 +484,6 @@ public struct WorkerIsolation: Sendable {
         }
     }
 
-    /// A `hangar` set up by an older version runs the worker as a launch agent in its login session. The daemon
-    /// replaces it: the agent is booted out (SIGTERM: a build in flight stops and reports why) and its plist removed,
-    /// so a later login as `hangar` does not start a second worker with the same token.
-    private func removeLegacyAgent(uid: String) throws {
-        let target = "gui/\(uid)/\(WorkerLaunchAgent.label)"
-        if dryRun {
-            say("  if \(layout.user) has an older version's launch agent (\(IsolationCommand.quote(layout.legacyAgentPlist))):")
-            say("    would run: /usr/bin/sudo /bin/launchctl bootout \(target)")
-            say("    would run: /usr/bin/sudo /bin/rm -f \(IsolationCommand.quote(layout.legacyAgentPlist))")
-            return
-        }
-        guard runner.succeeds(.sudo("/bin/test", "-f", layout.legacyAgentPlist)) else { return }
-        say("\(layout.user) runs the worker as a launch agent in its login session (an older version); it moves to a LaunchDaemon, which needs no login.")
-        let print = IsolationCommand(["/usr/bin/sudo", "/bin/launchctl", "print", target], kind: .probe, capturesOutput: true, quiet: true)
-        if runner.succeeds(print) {
-            try require(.sudo("/bin/launchctl", "bootout", target), "stop \(layout.user)'s launch agent")
-        }
-        try require(.sudo("/bin/rm", "-f", layout.legacyAgentPlist), "remove \(layout.user)'s launch agent")
-    }
-
     /// The CI keychain (`CIKeychain`): a generated password in a 0600 file inside the 0700 home, then the keychain,
     /// without automatic locking, both made as `hangar`. The password reaches `security` on standard input only. A
     /// keychain that exists and unlocks with its stored password is kept, with the signing identity in it; any other
@@ -652,16 +626,13 @@ public struct WorkerIsolation: Sendable {
         say("")
     }
 
-    /// Whether `machine`'s last heartbeat came from the new daemon: the worker reports `headless` and the account.
-    /// A server before 0.9 drops `headless` (and one before 0.7 `runningUser`); then only a heartbeat after the old
-    /// workers stopped counts, since an older version's agent in the account also reported `hangar`.
-    static func isDaemonHeartbeat(_ machine: Machine, user: String, since: Date) -> Bool {
+    /// Whether `machine`'s last heartbeat came from the daemon: the worker reports `headless` and the account.
+    static func isDaemonHeartbeat(_ machine: Machine, user: String) -> Bool {
         guard let report = machine.report else { return false }
-        if report.headless == true { return report.runningUser == user }
-        return (report.runningUser ?? user) == user && (machine.lastSeenAt ?? .distantPast) > since
+        return report.headless == true && report.runningUser == user
     }
 
-    private func confirmHeartbeat(source: WorkerConfiguration?, since: Date) async throws {
+    private func confirmHeartbeat(source: WorkerConfiguration?) async throws {
         if dryRun {
             say("  would wait for the server to see a heartbeat from \(layout.user) (GET /api/v1/worker/me)")
             return
@@ -678,7 +649,7 @@ public struct WorkerIsolation: Sendable {
         }
         for _ in 0..<timing.heartbeatPolls {
             if case .accepted(let machine) = await dependencies.check(source),
-                Self.isDaemonHeartbeat(machine, user: layout.user, since: since)
+                Self.isDaemonHeartbeat(machine, user: layout.user)
             {
                 say("Hangar sees \(machine.name) heartbeat as \(machine.report?.runningUser ?? layout.user).")
                 if let problem = machine.report?.keychainProblem {
