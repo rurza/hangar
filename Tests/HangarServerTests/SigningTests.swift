@@ -460,7 +460,7 @@ struct SigningEligibilityTests {
         MachineSnapshot(
             id: UUID(), name: "studio", isOnline: true, freeSlots: 1, runningJobs: 0, xcodeVersions: ["27.2"], tools: [],
             freeDiskGB: 200, performanceCores: 10, onACPower: true, canSign: true,
-            simulatorRuntimes: ["iOS 27.2"], headless: vm, vm: vm, vmOwnIdentity: ownIdentity)
+            simulatorRuntimes: ["iOS 27.2"], vm: vm, vmOwnIdentity: ownIdentity)
     }
 
     @Test func eligibility() {

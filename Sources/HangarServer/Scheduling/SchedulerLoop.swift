@@ -239,7 +239,7 @@ public actor SchedulerLoop {
                 tools: [], freeDiskGB: vm.storageFreeGB, performanceCores: report.performanceCores,
                 onACPower: report.onACPower, canSign: true,
                 simulatorRuntimes: Array(Set(vm.images.flatMap(\.simulatorRuntimes))).sorted(),
-                capabilities: Set(report.capabilities), headless: true, paused: machine.paused, vm: true,
+                capabilities: Set(report.capabilities), paused: machine.paused, vm: true,
                 vmNotReady: machine.vmBuilds
                     ? (vm.slots > 0 ? nil : (vm.problem ?? "no VM slot is ready")) : Self.vmBuildsNotAllowed,
                 vmOwnIdentity: vm.ownIdentity)
@@ -249,6 +249,6 @@ public actor SchedulerLoop {
             runningJobs: runningJobs, xcodeVersions: report.xcodes.map(\.version), tools: Set(report.tools.keys),
             freeDiskGB: report.freeDiskGB, performanceCores: report.performanceCores, onACPower: report.onACPower,
             canSign: report.canSignWithoutPrompt, simulatorRuntimes: report.simulatorRuntimes,
-            capabilities: Set(report.capabilities), headless: report.headless ?? false, paused: machine.paused)
+            capabilities: Set(report.capabilities), paused: machine.paused)
     }
 }

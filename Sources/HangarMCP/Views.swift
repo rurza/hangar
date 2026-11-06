@@ -108,9 +108,6 @@ enum Views {
         var canSignWithoutPrompt: Bool?
         var xcodeAccountSignedIn: Bool?
         var signingIdentities: [String]?
-        /// Runs without a login: signs with its CI keychain, needs a team App Store Connect key.
-        var headless: Bool?
-        var keychainProblem: String?
         /// Present when every job on this Mac runs in a VM: its slots, network filter, VM storage and images (the
         /// Xcode versions and simulator runtimes a job there gets). `problem` says why no slot is ready.
         var vm: VMReport?
@@ -171,7 +168,6 @@ enum Views {
             xcodes: report?.xcodes.map { "\($0.version) (\($0.build))" }, freeDiskGB: report?.freeDiskGB,
             simulatorRuntimes: report?.simulatorRuntimes, tools: report.map { $0.tools.keys.sorted() },
             canSignWithoutPrompt: report?.canSignWithoutPrompt, xcodeAccountSignedIn: report?.xcodeAccountSignedIn,
-            signingIdentities: report?.signingIdentities, headless: report?.headless,
-            keychainProblem: report?.keychainProblem, vm: report?.vm)
+            signingIdentities: report?.signingIdentities, vm: report?.vm)
     }
 }

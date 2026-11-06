@@ -68,7 +68,7 @@ private struct FixedSource: KnownNumberSource {
     }
 
     func report(
-        _ machine: Machine, freeDiskGB: Double = 100, headless: Bool? = nil, vm: VMReport? = nil, running: [UUID] = []
+        _ machine: Machine, freeDiskGB: Double = 100, vm: VMReport? = nil, running: [UUID] = []
     ) throws {
         // A VM Mac in these tests is one the owner allowed VM builds on.
         if vm != nil { _ = try machines.setVMBuilds(id: machine.id, true) }
@@ -77,7 +77,7 @@ private struct FixedSource: KnownNumberSource {
             report: MachineReport(
                 macOSVersion: "26.0", xcodes: [InstalledXcode(version: "27.2", build: "A1", path: "/Applications/Xcode.app")],
                 chip: "M4", performanceCores: 4, memoryGB: 16, freeDiskGB: freeDiskGB, onACPower: true, tools: ["git": "2.45"],
-                canSignWithoutPrompt: true, runningJobIDs: running, headless: headless, vm: vm),
+                canSignWithoutPrompt: true, runningJobIDs: running, vm: vm),
             seenAt: now)
     }
 
@@ -153,19 +153,22 @@ private struct FixedSource: KnownNumberSource {
         #expect(third.machineID == studio.id)
     }
 
+    /// A VM has no Xcode account; a local Mac signs with its owner's.
     @Test func anIndividualKeysArchiveWaitsForAMacWithAnXcodeAccount() async throws {
         let asked = Mutex<[UUID]>([])
         let current = current
         let loop = SchedulerLoop(
             builds: builds, machines: machines, events: events, config: SchedulerConfig(), clock: clock,
             now: { current.date }, teamKey: { appID in asked.withLock { $0.append(appID) }; return false })
-        try report(macBook, headless: true)
+        try report(macBook, vm: VMReport(
+            slots: 1, configuredSlots: 1, freeSlots: 1, storageFreeGB: 150, networkFilter: true,
+            images: [VMImageInfo(name: "xcode-27.2", macOS: "26.6.2", xcode: "27.2")]))
         let (_, jobID) = try await deploy()
         try await loop.tick()
         let waiting = try #require(try builds.job(id: jobID))
         #expect(waiting.status == .queued)
         #expect(waiting.queueNote
-            == "MacBook Pro: needs a team App Store Connect key (with an issuer ID): this Mac's worker runs without an Xcode account")
+            == "MacBook Pro: needs a team App Store Connect key (with an issuer ID): a VM has no Xcode account")
         #expect(asked.withLock { $0 } == [app.id])
 
         let laptop = try machines.create(name: "Laptop").0

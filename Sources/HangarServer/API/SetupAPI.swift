@@ -22,7 +22,6 @@ extension HangarServerApp {
                     localHostName: hostName,
                     workerInstallAvailable: InstallRoutes.workerBinary(at: configuration.workerBinaryPath) != nil,
                     viewerIsLocal: local, installedWorker: local ? await setup.installedWorker() : nil,
-                    dedicatedUserRequired: setup.dedicatedUserRequired,
                     tailnetName: configuration.allowedHosts.first { $0.hasSuffix(".ts.net") && !$0.hasPrefix("*") }))
         }
 
@@ -233,17 +232,13 @@ extension HangarServerApp {
         return InstallScript.origin(authority: host.contains(":") ? "[\(host)]:\(configuration.port)" : "\(host):\(configuration.port)")
     }
 
-    /// Enrolls this Mac with a fresh pairing code by running the `/install` script here, for the server's user.
-    /// Never touches a worker already set up on this Mac.
+    /// Enrolls this Mac with a fresh pairing code by running the `/install` script here, for the server's user (a
+    /// launch agent, as the script installs it for anyone). Without a terminal the script picks the default build
+    /// mode: on Apple silicon VM builds, so the Mac is enrolled with builds paused and `vm setup` is left to the owner
+    /// in Terminal (it needs sudo, which the server never runs); on an Intel Mac local builds. Never touches a worker
+    /// already set up on this Mac.
     func startLocalWorkerInstall() async throws -> LocalWorkerInstall {
         if let current = localWorkerSetup.current, current.state == .running { return current }
-        if setup.dedicatedUserRequired {
-            // The server must not sudo, and must not build as the user that holds master.key.
-            let command = localOrigin.map { "curl -fsSL \($0)/install | sh" } ?? "the install command from Machines › Add Mac"
-            throw APIError(
-                code: "dedicated_user_required",
-                message: "Builds run as a separate macOS user, not as \(setup.processUser), who runs Hangar's server. In Terminal on this Mac, as an administrator, run \(command): it creates the hangar user and sets up the worker there.")
-        }
         guard let name = await localHostName.value(setup) else {
             throw APIError(code: "host_name_unknown", message: "Hangar cannot read this Mac's name (scutil --get LocalHostName).")
         }
@@ -279,16 +274,25 @@ extension HangarServerApp {
         if environment["HANGAR_BIN_DIR"] == nil {
             environment["HANGAR_BIN_DIR"] = URL(fileURLWithPath: setup.homeDirectory).appendingPathComponent(".local/bin").path
         }
+        let worker = URL(fileURLWithPath: environment["HANGAR_BIN_DIR"]!).appendingPathComponent("hangar-worker").path
         let script = InstallScript.render(
             origin: origin, workerSHA256: WorkerBinaryDigest.current(at: configuration.workerBinaryPath))
         let installer = setup.installer
         let machines = machines
         let childEnvironment = environment
         localWorkerSetup.run(
-            secret: code,
+            secret: code, vmSetupCommand: "sudo \(Self.shellWord(worker)) vm setup",
             install: { onLine in try await installer.run(script: script, environment: childEnvironment, onLine: onLine) },
             finish: { try machines.all().first { $0.name.caseInsensitiveCompare(name) == .orderedSame } })
         return reserved
+    }
+}
+
+extension HangarServerApp {
+    /// `text` as one word for a shell: as it is when it needs no quoting, else in single quotes.
+    static func shellWord(_ text: String) -> String {
+        if !text.isEmpty, text.wholeMatch(of: /[A-Za-z0-9_\/.,:@%+=-]+/) != nil { return text }
+        return "'" + text.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 }
 

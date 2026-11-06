@@ -45,9 +45,10 @@ final class LocalWorkerSetup: Sendable {
 
     /// Runs `install` in the reserved slot. `secret` is masked in every output line; `finish` names the enrolled
     /// machine once the script has succeeded (none is a failure). An install still running after `timeout` is
-    /// cancelled and fails.
+    /// cancelled and fails. A machine enrolled paused waits for VM builds: the result then carries `vmSetupCommand`.
     func run(
-        secret: String, install: @escaping @Sendable (@escaping @Sendable (String) -> Void) async throws -> Int32,
+        secret: String, vmSetupCommand: String? = nil,
+        install: @escaping @Sendable (@escaping @Sendable (String) -> Void) async throws -> Int32,
         finish: @escaping @Sendable () throws -> Machine?
     ) {
         let timeout = timeout
@@ -97,6 +98,7 @@ final class LocalWorkerSetup: Sendable {
                 install?.state = result
                 install?.machine = machine
                 install?.message = message
+                install?.vmSetupCommand = machine?.paused == true ? vmSetupCommand : nil
             }
         }
     }

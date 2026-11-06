@@ -101,7 +101,7 @@ private struct KeyHome {
 /// this Mac (the router test client has no socket peer).
 private func setupEnvironment(
     _ keys: KeyHome, runner: RecordingProcessRunner = RecordingProcessRunner(), installer: FakeInstaller = FakeInstaller(),
-    environment: [String: String] = [:], agentLoaded: Bool = false, local: Bool = true, processUser: String = "hangar"
+    environment: [String: String] = [:], agentLoaded: Bool = false, local: Bool = true
 ) -> SetupEnvironment {
     runner.script(
         { $0.executable == "/bin/launchctl" && $0.arguments.first == "print" },
@@ -110,7 +110,7 @@ private func setupEnvironment(
     return SetupEnvironment(
         homeDirectory: keys.home.path, currentDirectory: keys.cwd.path,
         environment: ["PATH": "/usr/bin:/bin", "HOME": keys.home.path].merging(environment) { $1 },
-        runner: runner, installer: installer, isLocalPeer: { _ in local }, processUser: processUser)
+        runner: runner, installer: installer, isLocalPeer: { _ in local })
 }
 
 private func isGh(_ arguments: [String]) -> @Sendable (ProcessCommand) -> Bool {
@@ -439,7 +439,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
     private func localWorkerFixture(
         runner: RecordingProcessRunner = RecordingProcessRunner(), installer: FakeInstaller = FakeInstaller(),
         workerBinary: Bool = true, environment: [String: String] = [:], agentLoaded: Bool = false,
-        keys: KeyHome? = nil, port: Int = 8787, processUser: String = "hangar"
+        keys: KeyHome? = nil, port: Int = 8787
     ) throws -> (APIFixture, KeyHome) {
         let keys = try keys ?? KeyHome()
         scriptHostName(runner)
@@ -448,8 +448,7 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         let fixture = try APIFixture(
             workerBinaryPath: binary, port: port,
             setup: setupEnvironment(
-                keys, runner: runner, installer: installer, environment: environment, agentLoaded: agentLoaded,
-                processUser: processUser))
+                keys, runner: runner, installer: installer, environment: environment, agentLoaded: agentLoaded))
         return (fixture, keys)
     }
 
@@ -465,32 +464,35 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         return LocalWorkerInstall(state: .running)
     }
 
-    @Test func useThisMacIsRefusedWhenTheServerIsNotTheHangarUser() async throws {
+    /// The server's own user gets the worker, whoever it is; on Apple silicon the script enrolls the Mac paused for VM
+    /// builds, and the result says which command sets them up (it needs sudo, which the server never runs).
+    @Test func useThisMacInstallsForTheServersUserAndNamesTheVMSetupCommand() async throws {
         let installer = FakeInstaller()
-        let (fixture, _) = try localWorkerFixture(installer: installer, processUser: "adam")
-        try await fixture.test { client in
-            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
-                #expect(try decode(SetupStatus.self, response).dedicatedUserRequired)
+        let (fixture, keys) = try localWorkerFixture(installer: installer)
+        let server = fixture.server
+        installer.handle { run in
+            let code = try #require(run.environment["HANGAR_PAIRING_CODE"])
+            let name = try #require(run.environment["HANGAR_MACHINE_NAME"])
+            let (machine, _) = try server.pairings.redeem(code, from: "127.0.0.1") {
+                try server.createMachine(name: name, maxConcurrentJobs: 1)
             }
-            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { response throws in
-                #expect(response.status == .conflict)
-                let error = try decode(APIError.self, response)
-                #expect(error.code == "dedicated_user_required")
-                #expect(error.message.contains("not as adam"))
-                #expect(error.message.contains("curl -fsSL http://127.0.0.1:8787/install | sh"))
-            }
+            _ = try server.machines.setPaused(id: machine.id, true)
+            return 0
         }
-        #expect(installer.runs.isEmpty, "no script ran")
+        try await fixture.test { client in
+            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { #expect($0.status == .accepted) }
+            let install = try await waitForInstall(client)
+            #expect(install.state == .succeeded)
+            #expect(install.machine?.paused == true)
+            #expect(install.vmSetupCommand == "sudo \(keys.home.path)/.local/bin/hangar-worker vm setup")
+        }
+        #expect(installer.runs.first?.environment["HANGAR_VM"] == nil, "the script picks the mode")
     }
 
-    @Test func theHangarUserMayStillUseThisMac() async throws {
-        let (fixture, _) = try localWorkerFixture()
-        try await fixture.test { client in
-            try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
-                #expect(try !decode(SetupStatus.self, response).dedicatedUserRequired)
-            }
-            try await client.execute(uri: "/api/v1/setup/local-worker", method: .post) { #expect($0.status == .accepted) }
-        }
+    @Test func aWorkerPathWithASpaceIsQuotedInTheCommand() {
+        #expect(HangarServerApp.shellWord("/Users/a b/.local/bin/hangar-worker") == "'/Users/a b/.local/bin/hangar-worker'")
+        #expect(HangarServerApp.shellWord("/Users/it's/hangar-worker") == #"'/Users/it'\''s/hangar-worker'"#)
+        #expect(HangarServerApp.shellWord("/Users/adam/.local/bin/hangar-worker") == "/Users/adam/.local/bin/hangar-worker")
     }
 
     @Test func useThisMacRunsTheInstallScriptWithAFreshPairingCode() async throws {
@@ -516,6 +518,8 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
             let install = try await waitForInstall(client)
             #expect(install.state == .succeeded)
             #expect(install.machine?.name == "studio")
+            // Enrolled with builds on (local builds): nothing more to set up.
+            #expect(install.vmSetupCommand == nil)
             #expect(install.lines.contains("Installing the Hangar worker"))
             #expect(install.lines.contains("Pairing code ••••"))
             try await client.execute(uri: "/api/v1/setup", method: .get) { response throws in
@@ -617,19 +621,6 @@ private func scriptHostName(_ runner: RecordingProcessRunner, _ name: String = "
         #expect(installer.runs.isEmpty)
         let probe = try #require(runner.commands.first { $0.executable == "/bin/launchctl" })
         #expect(probe.arguments == ["print", "gui/\(getuid())/app.hangar.worker"])
-    }
-
-    @Test func theHangarUsersLaunchDaemonCountsAsAnInstalledWorker() async throws {
-        let keys = try KeyHome()
-        let runner = RecordingProcessRunner()
-        runner.script(
-            { $0.executable == "/bin/launchctl" && $0.arguments == ["print", "system/app.hangar.worker"] },
-            lines: ["system/app.hangar.worker = {", "state = running"])
-        let environment = setupEnvironment(keys, runner: runner)
-        #expect(await environment.installedWorker() == InstalledWorker(serverURL: nil, agentLoaded: true))
-        #expect(runner.commands.map(\.arguments) == [
-            ["print", "gui/\(getuid())/app.hangar.worker"], ["print", "system/app.hangar.worker"],
-        ])
     }
 
     @Test func aHungLaunchctlProbeTimesOut() async throws {

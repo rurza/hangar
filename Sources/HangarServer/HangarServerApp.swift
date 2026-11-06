@@ -118,7 +118,7 @@ public struct HangarServerApp: Sendable {
         scheduler = SchedulerLoop(
             builds: builds, machines: machines, events: events,
             config: SchedulerConfig(minFreeDiskGB: configuration.minFreeDiskGB), clock: clock, now: now,
-            // An unreadable key counts as a team key: the worker then says what is wrong, instead of every headless
+            // An unreadable key counts as a team key: the worker then says what is wrong, instead of every VM
             // machine refusing the job.
             teamKey: { _ in (try? ascKeys.key(.main)).map { $0?.isTeamKey ?? false } ?? true },
             signingProblem: { signing.jobProblem() })

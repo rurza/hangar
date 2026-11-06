@@ -21,26 +21,26 @@ import Testing
         _ name: String, isOnline: Bool = true, freeSlots: Int = 1, runningJobs: Int = 0,
         xcodeVersions: [String] = ["27.2.1"], tools: Set<String> = ["git"], freeDiskGB: Double = 100,
         performanceCores: Int = 8, onACPower: Bool = false, canSign: Bool = true, simulatorRuntimes: [String] = [],
-        capabilities: Set<String> = [WorkerCapability.testActions], headless: Bool = false, paused: Bool = false,
+        capabilities: Set<String> = [WorkerCapability.testActions], paused: Bool = false,
         vm: Bool = false, vmNotReady: String? = nil
     ) -> MachineSnapshot {
         MachineSnapshot(
             id: UUID(), name: name, isOnline: isOnline, freeSlots: freeSlots, runningJobs: runningJobs,
             xcodeVersions: xcodeVersions, tools: tools, freeDiskGB: freeDiskGB, performanceCores: performanceCores,
             onACPower: onACPower, canSign: canSign, simulatorRuntimes: simulatorRuntimes,
-            capabilities: capabilities, headless: headless, paused: paused, vm: vm, vmNotReady: vmNotReady)
+            capabilities: capabilities, paused: paused, vm: vm, vmNotReady: vmNotReady)
     }
 
     /// A machine whose worker reports VM builds, as `SchedulerLoop.snapshot` sees it.
     func vmMachine(
         _ vm: VMReport, maxConcurrentJobs: Int = 1, runningJobs: Int = 0, freeDiskGB: Double = 400,
-        headless: Bool? = nil, hostCanSign: Bool = true, vmBuilds: Bool = true
+        hostCanSign: Bool = true, vmBuilds: Bool = true
     ) -> MachineSnapshot {
         let report = MachineReport(
             macOSVersion: "26.6", xcodes: [InstalledXcode(version: "26.1", build: "A", path: "/Applications/Xcode.app")],
             chip: "M4", performanceCores: 10, memoryGB: 32, freeDiskGB: freeDiskGB, onACPower: true,
             tools: ["swiftlint": "0.57"], canSignWithoutPrompt: hostCanSign, runningJobIDs: [],
-            simulatorRuntimes: ["visionOS 26.1"], capabilities: [WorkerCapability.testActions], headless: headless, vm: vm)
+            simulatorRuntimes: ["visionOS 26.1"], capabilities: [WorkerCapability.testActions], vm: vm)
         let machine = Machine(
             id: UUID(), name: "Mini", maxConcurrentJobs: maxConcurrentJobs, lastSeenAt: Self.start, report: report,
             createdAt: Self.start, vmBuilds: vmBuilds)
@@ -65,7 +65,7 @@ import Testing
             VMImageInfo(name: "xcode-26.4", macOS: "26.6.2", xcode: "26.4", simulatorRuntimes: ["iOS 26.4", "iOS 27.2"]),
             VMImageInfo(name: "vanilla", macOS: "26.6.2"),
         ])
-        let snapshot = vmMachine(vm, maxConcurrentJobs: 1, runningJobs: 1, freeDiskGB: 900, headless: false)
+        let snapshot = vmMachine(vm, maxConcurrentJobs: 1, runningJobs: 1, freeDiskGB: 900)
         #expect(snapshot.vm)
         #expect(snapshot.vmNotReady == nil)
         // Its slots, not the machine's job limit.
@@ -73,8 +73,6 @@ import Testing
         #expect(snapshot.xcodeVersions == ["27.2", "26.4"])
         #expect(snapshot.simulatorRuntimes == ["iOS 26.4", "iOS 27.2"])
         #expect(snapshot.freeDiskGB == 150)
-        // The guest has no Xcode account, whatever the host has.
-        #expect(snapshot.headless)
         #expect(snapshot.canSign)
         #expect(vmMachine(vm, runningJobs: 3).freeSlots == 0)
     }
@@ -125,7 +123,6 @@ import Testing
         #expect(snapshot.xcodeVersions == ["27.2"])
         #expect(snapshot.tools == ["git"])
         #expect(snapshot.freeDiskGB == 300)
-        #expect(!snapshot.headless)
     }
 
     @Test func aVMMacWithTwoReadySlotsTakesTwoJobs() {
@@ -184,7 +181,7 @@ import Testing
             == [.lowDisk(freeGB: 12.5, minimumGB: 20)])
         let roomy = VMReport(slots: 1, configuredSlots: 1, freeSlots: 1, storageFreeGB: 150, networkFilter: true, images: [Self.image])
         #expect(Scheduler.ineligibility(of: job(), on: vmMachine(roomy, freeDiskGB: 5), minFreeDiskGB: 20).isEmpty)
-        #expect(Scheduler.ineligibility(of: job(needsXcodeAccount: true), on: vmMachine(roomy, headless: false), minFreeDiskGB: 20)
+        #expect(Scheduler.ineligibility(of: job(needsXcodeAccount: true), on: vmMachine(roomy), minFreeDiskGB: 20)
             == [.needsTeamKey])
     }
 
@@ -223,20 +220,20 @@ import Testing
         #expect(!HangarServerApp.passingReasons(.offline))
     }
 
-    @Test func anArchiveWithAnIndividualKeySkipsAHeadlessMac() throws {
+    /// The guest has no Xcode account, whatever the host has; a local Mac signs with its owner's.
+    @Test func anArchiveWithAnIndividualKeySkipsAVMMac() throws {
         let queued = job(needsXcodeAccount: true)
-        let headless = machine("Mini", performanceCores: 12, headless: true)
-        let plan = Scheduler.plan(jobs: [queued], machines: [headless], minFreeDiskGB: 20)
+        let vm = machine("Mini", performanceCores: 12, vm: true)
+        let plan = Scheduler.plan(jobs: [queued], machines: [vm], minFreeDiskGB: 20)
         #expect(plan.assignments.isEmpty)
         let reasons = try #require(plan.waiting[queued.id])
         #expect(reasons == ["Mini": [.needsTeamKey]])
         #expect(Scheduler.queueNote(reasons)
-            == "Mini: needs a team App Store Connect key (with an issuer ID): this Mac's worker runs without an Xcode account")
-        // A Mac in a login session signs with its Xcode account; a team key signs anywhere.
+            == "Mini: needs a team App Store Connect key (with an issuer ID): a VM has no Xcode account")
         let laptop = machine("MacBook", performanceCores: 4)
-        #expect(Scheduler.plan(jobs: [queued], machines: [headless, laptop], minFreeDiskGB: 20).assignments
+        #expect(Scheduler.plan(jobs: [queued], machines: [vm, laptop], minFreeDiskGB: 20).assignments
             == [Assignment(jobID: queued.id, machineID: laptop.id)])
-        #expect(Scheduler.plan(jobs: [job()], machines: [headless], minFreeDiskGB: 20).assignments.count == 1)
+        #expect(Scheduler.plan(jobs: [job()], machines: [vm], minFreeDiskGB: 20).assignments.count == 1)
     }
 
     @Test func onlyArchivesWithoutATeamKeyNeedTheXcodeAccount() {
