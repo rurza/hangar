@@ -89,6 +89,8 @@ The environment has `CI_XCODEBUILD_ACTION=test`, `CI_RESULT_BUNDLE_PATH`, `CI_TE
 
 After the tests, pass or fail, Hangar reads the result bundle with `xcrun xcresulttool get test-results summary` (Xcode 16 or later; with an older Xcode there are no totals and the job keeps xcodebuild's reason) and logs the totals and each failing test. Failing tests fail the job with "test: 3 tests failed"; when xcodebuild fails for another reason (a compile error, say), the reason stays "test: xcodebuild exited with 65". The result bundle is uploaded as `<scheme>.xcresult.zip`, and the totals become job outputs (see the [API](api.md#test-outputs)).
 
+Failed snapshots of [swift-snapshot-testing](https://github.com/pointfreeco/swift-snapshot-testing) go to the job's own folder: Hangar sets `TEST_RUNNER_SNAPSHOT_ARTIFACTS` (xcodebuild passes it to the tests as `SNAPSHOT_ARTIFACTS`), and uploads the folder as `<scheme>-snapshot-failures.zip` when it is not empty. Without it they would land in the user's own temporary folder on a Mac that builds locally, which `TMPDIR` cannot change: Foundation ignores it on macOS. A variable of that name in the workflow wins.
+
 ### Secret variables
 
 Secret variables are available to `ci_scripts` hooks and post-actions but not to `xcodebuild`, so not to build phases: xcodebuild records its environment in DerivedData logs and in the result bundle, which is uploaded as an artifact. If a build phase needs a secret, write it to a file from `ci_pre_xcodebuild.sh`.

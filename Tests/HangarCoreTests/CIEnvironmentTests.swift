@@ -10,7 +10,7 @@ import Testing
     let paths = CIEnvironment.Paths(
         repository: "/w/repo", projectFile: "/w/repo/Legilo.xcodeproj", derivedData: "/w/DD",
         archive: "/j/archive/App.xcarchive", resultBundle: "/j/result.xcresult", workspace: "/j",
-        temporary: "/var/folders/x/T/hangar-jobs/job-1")
+        temporary: "/var/folders/x/T/hangar-jobs/job-1", snapshotArtifacts: "/j/snapshot-artifacts")
     let jobID = UUID()
     let buildID = UUID()
 
@@ -72,6 +72,19 @@ import Testing
         #expect(env["CI_XCODE_SCHEME"] == "LegiloTests")
         #expect(make()["CI_TEST_PLAN"] == nil)
         #expect(make()["CI_TEST_DESTINATION_DEVICE_TYPE"] == nil)
+        // swift-snapshot-testing writes failed snapshots there instead of the user's own temporary folder; xcodebuild
+        // passes TEST_RUNNER_ variables to the tests without the prefix.
+        #expect(env["TEST_RUNNER_SNAPSHOT_ARTIFACTS"] == "/j/snapshot-artifacts")
+        #expect(make()["TEST_RUNNER_SNAPSHOT_ARTIFACTS"] == nil)
+    }
+
+    @Test func aProjectsOwnSnapshotFolderWins() {
+        let ci = ["TEST_RUNNER_SNAPSHOT_ARTIFACTS": "/j/snapshot-artifacts"]
+        let merged = CIEnvironment.merge(
+            ci: ci, entries: [EnvEntry(name: "TEST_RUNNER_SNAPSHOT_ARTIFACTS", value: "/elsewhere", isSecret: false, asFile: false)],
+            secretsDirectory: "/j/secrets")
+        #expect(merged.env["TEST_RUNNER_SNAPSHOT_ARTIFACTS"] == "/elsewhere")
+        #expect(merged.warnings.isEmpty)
     }
 
     @Test func passesIdentityAndLocaleThroughFromTheProcessEnvironment() {

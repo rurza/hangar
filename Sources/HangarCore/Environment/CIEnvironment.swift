@@ -28,11 +28,15 @@ public struct CIEnvironment: Sendable {
         public var workspace: String
         /// The job's own temporary directory: `TMPDIR` of every command of the job.
         public var temporary: String
+        /// Where a test job's failed snapshots go (swift-snapshot-testing's `SNAPSHOT_ARTIFACTS`). Without it they go
+        /// to the user's own temporary folder, which `TMPDIR` cannot move: Foundation ignores it on macOS.
+        public var snapshotArtifacts: String?
 
         public init(
             repository: String, projectFile: String, derivedData: String, archive: String,
-            resultBundle: String, workspace: String, temporary: String
+            resultBundle: String, workspace: String, temporary: String, snapshotArtifacts: String? = nil
         ) {
+            self.snapshotArtifacts = snapshotArtifacts
             self.repository = repository
             self.projectFile = projectFile
             self.derivedData = derivedData
@@ -60,7 +64,8 @@ public struct CIEnvironment: Sendable {
     static let reservedSummary = "CI_*, PATH, HOME, DEVELOPER_DIR, USER, LOGNAME, TMPDIR and SHELL"
 
     /// Locale variables an app variable may override; everything else in the job environment is fixed.
-    static let overridableNames: Set<String> = ["LANG", "LC_ALL", "LC_CTYPE"]
+    /// A project that keeps its failed snapshots elsewhere says so with its own variable.
+    static let overridableNames: Set<String> = ["LANG", "LC_ALL", "LC_CTYPE", "TEST_RUNNER_SNAPSHOT_ARTIFACTS"]
 
     /// The identity and locale subset of a process environment: `passthroughNames` when set and non-empty,
     /// `USER`/`LOGNAME` derived from `NSUserName()` when missing, and `LANG=en_US.UTF-8` when missing.
@@ -112,6 +117,8 @@ public struct CIEnvironment: Sendable {
             if let testPlan = action.testPlan { env["CI_TEST_PLAN"] = testPlan }
             if let deviceType = testDestination?.deviceType { env["CI_TEST_DESTINATION_DEVICE_TYPE"] = deviceType }
             if let runtime = testDestination?.runtime { env["CI_TEST_DESTINATION_RUNTIME"] = runtime }
+            // xcodebuild hands TEST_RUNNER_ variables to the tests, without the prefix.
+            if let snapshots = paths.snapshotArtifacts { env["TEST_RUNNER_SNAPSHOT_ARTIFACTS"] = snapshots }
         }
         if !isFullSHA(ref) { env["CI_BRANCH"] = ref }
         if let teamID { env["CI_TEAM_ID"] = teamID }
@@ -135,7 +142,7 @@ public struct CIEnvironment: Sendable {
         return additions
     }
 
-    /// User entries never override the CI set (only `LANG`, `LC_ALL` and `LC_CTYPE` may be overridden): a name in `ci`,
+    /// User entries never override the CI set (only the locale and `TEST_RUNNER_SNAPSHOT_ARTIFACTS` may be overridden): a name in `ci`,
     /// in `reservedNames` or starting with `CI_` is dropped with a warning that says why.
     /// As-file entries become `<secretsDirectory>/<NAME>`, which is the env value; the stored value is the file body.
     public static func merge(ci: [String: String], entries: [EnvEntry], secretsDirectory: String) -> MergedEnvironment {

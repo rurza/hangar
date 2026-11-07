@@ -360,7 +360,7 @@ public struct JobRunner: Sendable {
             repository: layout.repository, projectFile: layout.repository + "/" + workflow.projectOrWorkspacePath,
             derivedData: layout.derivedData, archive: layout.archive(scheme: action.scheme),
             resultBundle: layout.resultBundle, workspace: layout.jobDirectory,
-            temporary: layout.temporary)
+            temporary: layout.temporary, snapshotArtifacts: layout.snapshotArtifacts)
         let ci = CIEnvironment.make(
             app: assignment.app, workflow: assignment.workflowName, action: action, buildNumber: assignment.buildNumber,
             jobID: assignment.job.id, buildID: assignment.job.buildID, commit: assignment.commit, ref: assignment.ref,

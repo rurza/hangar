@@ -51,6 +51,25 @@ import Testing
         #expect(try String(contentsOf: urls["DistributionSummary.plist"]!, encoding: .utf8) == "summary")
     }
 
+    /// The failed snapshots of a test run, so the build page shows which ones differ.
+    @Test func failedSnapshotsAreZippedOnlyWhenThereAreAny() async throws {
+        let directory = NSTemporaryDirectory() + "hangar-artifacts-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let layout = WorkspaceLayout(dataDirectory: directory, appSlug: "demo", jobID: UUID())
+        try Self.make(layout.resultBundle + "/Info.plist")
+        try FileManager.default.createDirectory(atPath: layout.snapshotArtifacts, withIntermediateDirectories: true)
+        let collector = ArtifactCollector(runner: LiveProcessRunner())
+
+        let none = try await collector.collect(layout: layout, scheme: "Demo", log: { _ in })
+        #expect(none.artifacts.map(\.name) == ["Demo.xcresult.zip"])
+
+        try Self.make(layout.snapshotArtifacts + "/CellTests/cell_dark.png", "png")
+        let some = try await collector.collect(layout: layout, scheme: "Demo", log: { _ in })
+        #expect(some.artifacts.map(\.name) == ["Demo.xcresult.zip", "Demo-snapshot-failures.zip"])
+        let zip = try #require(some.artifacts.last?.url)
+        #expect(try await Self.zipEntries(zip).contains("snapshot-artifacts/CellTests/cell_dark.png"))
+    }
+
     @Test func missingPiecesAreSkipped() async throws {
         let directory = NSTemporaryDirectory() + "hangar-artifacts-" + UUID().uuidString
         defer { try? FileManager.default.removeItem(atPath: directory) }

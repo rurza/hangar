@@ -30,6 +30,8 @@ public struct WorkspaceLayout: Sendable, Equatable {
     public var export: String { "\(jobDirectory)/export" }
     public var upload: String { "\(jobDirectory)/upload" }
     public var resultBundle: String { "\(jobDirectory)/result.xcresult" }
+    /// A test job's failed snapshots; collected as `<scheme>-snapshot-failures.zip`.
+    public var snapshotArtifacts: String { "\(jobDirectory)/snapshot-artifacts" }
     /// Everything the job logged, uncondensed; see `JobLog`.
     public var fullLog: String { "\(jobDirectory)/full-log.txt" }
     /// The job's `TMPDIR`, outside the job directory: `<temporaryRoot>/<job ID>`.

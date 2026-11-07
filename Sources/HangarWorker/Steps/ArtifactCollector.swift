@@ -63,6 +63,9 @@ public struct ArtifactCollector: Sendable {
 
         await zip(layout.archive(scheme: scheme) + "/dSYMs", as: "\(scheme)-dSYMs.zip")
         await zip(layout.resultBundle, as: "\(scheme).xcresult.zip")
+        if !((try? fileManager.contentsOfDirectory(atPath: layout.snapshotArtifacts)) ?? []).isEmpty {
+            await zip(layout.snapshotArtifacts, as: "\(scheme)-snapshot-failures.zip")
+        }
         let exported = ((try? fileManager.contentsOfDirectory(atPath: layout.export)) ?? []).sorted()
         for name in exported {
             switch (name as NSString).pathExtension {
