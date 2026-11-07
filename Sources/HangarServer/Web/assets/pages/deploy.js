@@ -47,7 +47,8 @@ export function openDeploySheet(app) {
   let branchesLoading = true;
   let branchesHint = null; // why the branches could not be listed; stays the field's hint
   let repository = null; // RepositoryBranches: every branch, the default first
-  let refTyped = false; // the user typed the ref: the workflow's branch no longer replaces it
+  let refTyped = false; // the user picked the ref: the workflow's branch no longer replaces it
+  let chosenWorkflow = null; // the workflow the user picked: it stays picked at another branch that has it
 
   // MARK: Fields
 
@@ -92,7 +93,10 @@ export function openDeploySheet(app) {
 
   const workflowSelect = h('select', {
     class: 'input select', id: 'deploy-workflow', 'aria-describedby': 'deploy-workflow-hint',
-    onChange: () => { check = null; renderWorkflowDetails(); renderWhere(); scheduleCheck(0); followWorkflowBranch(); },
+    onChange: () => {
+      chosenWorkflow = workflowSelect.value;
+      check = null; renderWorkflowDetails(); renderWhere(); scheduleCheck(0); followWorkflowBranch();
+    },
   });
   const workflowHint = h('p', { class: 'field-hint', id: 'deploy-workflow-hint' });
   const workflowField = h('div', { class: 'field' },
@@ -245,7 +249,7 @@ export function openDeploySheet(app) {
   }
 
   function renderWorkflows() {
-    const previous = workflowSelect.value;
+    const previous = chosenWorkflow ?? workflowSelect.value;
     const names = workflows && !workflowsLoading ? Object.keys(workflows.workflows?.workflows ?? {}).sort() : [];
     if (names.length === 0) {
       const placeholder = workflowsLoading || branchesLoading ? 'Loading…' : 'No workflows';
