@@ -1,0 +1,11 @@
+{
+  "data": [
+    {"type": "buildUploads", "id": "u1", "attributes": {"cfBundleShortVersionString": "1.0.0", "cfBundleVersion": "21", "platform": "IOS",
+      "state": {"errors": [], "warnings": [], "infos": [], "state": "COMPLETE"}, "uploadedDate": "2026-11-07T01:00:02-08:00"}},
+    {"type": "buildUploads", "id": "u2", "attributes": {"cfBundleShortVersionString": "1.0.0", "cfBundleVersion": "21", "platform": "MAC_OS",
+      "state": {"errors": [{"code": "90284", "description": "Invalid Code Signing. The executable 'Velum.app/Contents/Resources/VelumKit_VelumFeature.bundle' must be signed with the certificate that is contained in the provisioning profile."}], "warnings": [], "infos": [], "state": "FAILED"}}},
+    {"type": "buildUploads", "id": "u3", "attributes": {"cfBundleShortVersionString": "1.0.0", "cfBundleVersion": "20", "platform": "MAC_OS",
+      "state": {"errors": [], "warnings": [], "infos": [], "state": "COMPLETE"}}}
+  ],
+  "links": {}
+}

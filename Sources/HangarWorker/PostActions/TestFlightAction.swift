@@ -7,6 +7,8 @@ public enum TestFlightError: Error, Equatable, CustomStringConvertible {
     case appStoreConnectNotConfigured
     case processingFailed(state: String)
     case processingTimedOut(minutes: Int)
+    /// App Store Connect refused the upload ("ITMS-90284: Invalid Code Signing. …"), so no build will appear.
+    case uploadRejected(issues: [String])
     case unknownGroup(name: String, available: [String])
 
     public var description: String {
@@ -17,6 +19,10 @@ public enum TestFlightError: Error, Equatable, CustomStringConvertible {
             "App Store Connect finished processing the build with state \(state)"
         case .processingTimedOut(let minutes):
             "The build was still processing after \(minutes) minutes"
+        case .uploadRejected(let issues):
+            "App Store Connect refused the upload: "
+                + (issues.isEmpty ? "it gave no reason" : issues.prefix(3).joined(separator: "; "))
+                + (issues.count > 3 ? " (and \(issues.count - 3) more)" : "")
         case .unknownGroup(let name, let available):
             "No TestFlight group named '\(name)'; available groups: \(available.isEmpty ? "none" : available.joined(separator: ", "))"
         }
@@ -191,6 +197,14 @@ public struct TestFlightAction: PostActionModule {
             }
             let match = builds?.first { $0.version == version && $0.platform == platform }
             if builds != nil { context.log("TestFlight processing: \(match?.processingState ?? "not listed yet")") }
+            // An upload App Store Connect refused never becomes a build: its upload says so, and why.
+            if builds != nil, match == nil, let uploads = try? await client.buildUploads(appID: context.app.appStoreConnectAppID, version: version),
+                let refused = uploads.first(where: { $0.platform == platform && $0.state == "FAILED" })
+            {
+                let issues = refused.errors.map { $0.code.isEmpty ? $0.description : "ITMS-\($0.code): \($0.description)" }
+                for issue in issues { context.log("App Store Connect: \(issue)") }
+                throw TestFlightError.uploadRejected(issues: issues)
+            }
             if let match {
                 switch match.processingState {
                 case "VALID": return match

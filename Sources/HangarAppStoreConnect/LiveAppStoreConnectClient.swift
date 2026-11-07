@@ -50,6 +50,21 @@ public final class LiveAppStoreConnectClient: AppStoreConnectClient {
         return result
     }
 
+    public func buildUploads(appID: String, version: String) async throws -> [ASCBuildUpload] {
+        let path = "/v1/apps/\(appID)/buildUploads"
+        return try await pages(Wire.BuildUploads.self, path: path, query: [URLQueryItem(name: "limit", value: "200")])
+            .flatMap(\.data)
+            .filter { $0.attributes.cfBundleVersion == version }
+            .map { item in
+                ASCBuildUpload(
+                    version: item.attributes.cfBundleVersion ?? version, platform: item.attributes.platform,
+                    state: item.attributes.state?.state ?? "",
+                    errors: (item.attributes.state?.errors ?? []).map {
+                        ASCBuildUpload.Issue(code: $0.code ?? "", description: $0.description ?? "")
+                    })
+            }
+    }
+
     public func xcodeCloudRunNumbers(appID: String) async throws -> [Int] {
         let products = try await pages(Wire.Resources.self, path: "/v1/ciProducts", query: [URLQueryItem(name: "filter[app]", value: appID)])
         var numbers: [Int] = []
@@ -472,6 +487,28 @@ private enum Wire {
         }
         var data: [Item]
         var included: [Included]?
+        var links: Links?
+        var nextURL: String? { links?.next }
+    }
+
+    struct BuildUploads: Decodable, Paged {
+        struct Item: Decodable {
+            struct Attributes: Decodable {
+                struct State: Decodable {
+                    struct Issue: Decodable {
+                        var code: String?
+                        var description: String?
+                    }
+                    var state: String?
+                    var errors: [Issue]?
+                }
+                var cfBundleVersion: String?
+                var platform: String?
+                var state: State?
+            }
+            var attributes: Attributes
+        }
+        var data: [Item]
         var links: Links?
         var nextURL: String? { links?.next }
     }

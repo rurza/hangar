@@ -48,6 +48,18 @@ struct LiveClientDecodingTests {
         #expect(requests[1].url?.absoluteString == "https://api.appstoreconnect.apple.com/v1/builds?cursor=AQ&limit=200")
     }
 
+    /// The shape App Store Connect answered for Velum on 2026-11-07: a refused macOS upload with its reasons.
+    @Test func buildUploadsReadsTheStateAndTheReasonsOfOneVersion() async throws {
+        let transport = StubTransport(responses: [try respond("build-uploads")])
+        let uploads = try await makeClient(transport).buildUploads(appID: "6828797696", version: "21")
+
+        #expect(uploads.map(\.platform) == ["IOS", "MAC_OS"])
+        #expect(uploads.map(\.state) == ["COMPLETE", "FAILED"])
+        #expect(uploads[1].errors.map(\.code) == ["90284"])
+        #expect(uploads[1].errors.first?.description.hasPrefix("Invalid Code Signing.") == true)
+        #expect(transport.requests.first?.url?.path == "/v1/apps/6828797696/buildUploads")
+    }
+
     @Test func appsDecodesAcrossPages() async throws {
         let transport = StubTransport(responses: [try respond("apps-page1"), try respond("apps-page2")])
         let apps = try await makeClient(transport).apps()

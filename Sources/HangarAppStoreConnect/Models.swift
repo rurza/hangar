@@ -14,6 +14,34 @@ public struct ASCCredentials: Sendable {
     }
 }
 
+/// One upload of a build (`buildUploads`): its state, and App Store Connect's own words when it refused it.
+public struct ASCBuildUpload: Sendable, Equatable {
+    public struct Issue: Sendable, Equatable {
+        /// "90284", as in ITMS-90284.
+        public var code: String
+        public var description: String
+
+        public init(code: String, description: String) {
+            self.code = code
+            self.description = description
+        }
+    }
+
+    public var version: String
+    /// IOS, MAC_OS, …
+    public var platform: String?
+    /// AWAITING_UPLOAD, PROCESSING, FAILED or COMPLETE.
+    public var state: String
+    public var errors: [Issue]
+
+    public init(version: String, platform: String?, state: String, errors: [Issue] = []) {
+        self.version = version
+        self.platform = platform
+        self.state = state
+        self.errors = errors
+    }
+}
+
 public struct ASCBuild: Sendable, Equatable {
     public var id: String
     /// Raw `CFBundleVersion`; integer validation is the caller's job.

@@ -3,6 +3,9 @@ import Dependencies
 public protocol AppStoreConnectClient: Sendable {
     /// Builds of an app, optionally of one version string; pages through `links.next`.
     func builds(appID: String, version: String?) async throws -> [ASCBuild]
+    /// The app's uploads of one `CFBundleVersion` (`GET /v1/apps/{id}/buildUploads`, read-only): an upload App Store
+    /// Connect refused never becomes a build, and only its upload says why.
+    func buildUploads(appID: String, version: String) async throws -> [ASCBuildUpload]
     /// Build run numbers of every Xcode Cloud product of the app (read-only).
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int]
     /// Every app of the team (read-only); pages through `links.next`.
@@ -56,6 +59,9 @@ public protocol AppStoreConnectClient: Sendable {
 }
 
 extension AppStoreConnectClient {
+    /// Clients that cannot list uploads have none to say.
+    public func buildUploads(appID: String, version: String) async throws -> [ASCBuildUpload] { [] }
+
     /// Clients that cannot create certificates say so.
     public func createCertificate(type: ASCCertificateType, csrPEM: String) async throws -> ASCCertificate {
         throw ASCError.decoding("creating certificates is not available from this client")

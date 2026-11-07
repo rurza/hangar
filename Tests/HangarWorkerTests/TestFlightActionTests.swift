@@ -28,13 +28,15 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
     private let groups: [ASCBetaGroup]
     private let addBuildError: ASCError?
     private let reviewError: ASCError?
+    private let uploads: [ASCBuildUpload]
 
     /// The first polls throw `pollErrors`, in order, before `polls` are answered.
     init(
         polls: [[ASCBuild]], pollErrors: [any Error & Sendable] = [], groups: [ASCBetaGroup] = [],
-        addBuildError: ASCError? = nil, reviewError: ASCError? = nil
+        addBuildError: ASCError? = nil, reviewError: ASCError? = nil, uploads: [ASCBuildUpload] = []
     ) {
         state = Mutex(State(polls: polls, pollErrors: pollErrors))
+        self.uploads = uploads
         self.groups = groups
         self.addBuildError = addBuildError
         self.reviewError = reviewError
@@ -52,6 +54,10 @@ private final class FakeAppStoreConnect: AppStoreConnectClient {
     }
 
     func xcodeCloudRunNumbers(appID: String) async throws -> [Int] { [] }
+
+    func buildUploads(appID: String, version: String) async throws -> [ASCBuildUpload] {
+        uploads.filter { $0.version == version }
+    }
 
     func apps() async throws -> [ASCApp] { [] }
     func appIconURL(appID: String) async throws -> String? { nil }
@@ -208,6 +214,23 @@ private final class StageLog: Sendable {
         #expect(client.pollCount == 3)
         #expect(output.warnings == ["Processing: The build was still processing after 1 minutes"])
         #expect(output.stages?.first { $0.name == "Processing" }?.status == .warning)
+    }
+
+    /// Velum 21 (macOS): App Store Connect refused the upload (ITMS-90284), so it never listed a build, and the step
+    /// waited out its hour and ended with a warning. Its upload says it failed, and why.
+    @Test func aRefusedUploadFailsWithAppStoreConnectsReasons() async throws {
+        let fixture = try Fixture()
+        let refused = ASCBuildUpload(
+            version: "311", platform: "IOS", state: "FAILED",
+            errors: [ASCBuildUpload.Issue(code: "90284", description: "Invalid Code Signing. The executable 'Demo.app/Kit.bundle' must be signed with the certificate that is contained in the provisioning profile.")])
+        // Another platform's upload of the same number went through; this one's did not.
+        let other = ASCBuildUpload(version: "311", platform: "MAC_OS", state: "COMPLETE")
+        let client = FakeAppStoreConnect(polls: [[]], uploads: [other, refused])
+        let result = await fixture.run(TestFlightSettings(), fixture.context(client: client))
+        #expect(throws: TestFlightError.uploadRejected(issues: [
+            "ITMS-90284: Invalid Code Signing. The executable 'Demo.app/Kit.bundle' must be signed with the certificate that is contained in the provisioning profile.",
+        ])) { try result.get() }
+        #expect(client.pollCount == 1)
     }
 
     @Test func notYetListedCountsAsProcessing() async throws {
