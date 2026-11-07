@@ -1,7 +1,6 @@
 # MCP access for AI agents
 
-`hangar mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. It gives an agent such as Claude Code much of what a person does in the web UI: set up an app's workflows, deploy, and follow the build to its logs and artifacts. Adding an app stays with the owner. It is a client of the server's [HTTP API](api.md), like the CLI, and authenticates with an API token, so the server decides what the agent may do.
-
+The Hangar server is a [Model Context Protocol](https://modelcontextprotocol.io) server at `http://<server>:8787/mcp` (the Streamable HTTP transport). It gives an agent such as Claude Code much of what a person does in the web UI: set up an app's workflows, deploy, and follow the build to its logs and artifacts. Adding an app stays with the owner. Its tools call the server's [HTTP API](api.md) with the agent's API token, so the server decides what the agent may do. `hangar mcp` serves the same tools on stdio, for an agent that cannot send its token from a file over HTTP.
 ## Setup
 
 1. **Create a token.** In the web UI open **Settings › Agent Access › New Token**, or run:
@@ -28,26 +27,23 @@
 
    It asks for the token without showing it and saves it readable only by you. Use a file of its own: `~/.config/hangar/token` is the CLI's, which `hangar mcp` never reads.
 
-3. **Register the server with Claude Code**, with `hangar` on its `PATH`. On a Mac that has no `hangar` yet, the server hands it out:
+3. **Register the server with Claude Code**, over HTTP:
+
+   ```sh
+   claude mcp add-json hangar --scope user '{"type":"http","url":"http://<server>:8787/mcp","headersHelper":"printf '\''{\"Authorization\":\"Bearer %s\"}'\'' \"$(cat ~/.config/hangar/mcp-token)\""}'
+   ```
+
+   Claude Code runs the `headersHelper` for every connection, so the token is read from its file and never written into Claude Code's settings. The New Token sheet shows both commands with the server's address filled in. `claude mcp list` should then show `hangar` as connected.
+
+4. **Other agents.** One that can read a header from a file connects over HTTP the same way: OpenCode, for one, with a remote server whose `Authorization` header is `Bearer {file:~/.config/hangar/mcp-token}`. One that takes a header only as plain text in its settings (Grok) or from an environment variable (Codex) starts `hangar mcp` as a stdio server instead, with `HANGAR_SERVER` (or `--server`) and `HANGAR_API_TOKEN_FILE` in its environment (`HANGAR_API_TOKEN` also works). The token is never read from an argument, where `ps` would show it. On a Mac that has no `hangar` yet, the server hands it out:
 
    ```sh
    mkdir -p ~/.local/bin && curl -fsSL http://<server>:8787/install/hangar -o ~/.local/bin/hangar && chmod +x ~/.local/bin/hangar
    ```
 
-   Then:
-
-   ```sh
-   claude mcp add hangar --scope user \
-     --env HANGAR_SERVER=http://<server>:8787 \
-     --env HANGAR_API_TOKEN_FILE="$HOME/.config/hangar/mcp-token" \
-     -- hangar mcp
-   ```
-
-   The New Token sheet shows both commands with the server's address filled in. `claude mcp list` should then show `hangar` as connected.
-
    Or load the plugin (`claude --plugin-dir plugins/hangar`), whose `.mcp.json` starts `hangar mcp` with `HANGAR_SERVER` and `HANGAR_API_TOKEN_FILE` (or `HANGAR_API_TOKEN`) from Claude Code's environment.
 
-4. **Other agents** start `hangar mcp` as a stdio server with `HANGAR_SERVER` (or `--server`) and `HANGAR_API_TOKEN_FILE` in its environment (`HANGAR_API_TOKEN` also works). The token is never read from an argument, where `ps` would show it.
+   Over HTTP, an owner token is refused as `hangar mcp` refuses it (403), and a request without a token gets 401. Each request stands alone: there is no session and no server-sent stream (a GET is 405).
 
 Ask the agent, for example, "set up a TestFlight workflow for Legilo", "deploy Legilo to TestFlight from main" or "why did the last Legilo build fail?".
 

@@ -31,7 +31,7 @@ let package = Package(
         ]),
         .target(name: "HangarAppStoreConnect", dependencies: ["HangarCore"]),
         .target(name: "HangarServer", dependencies: [
-            "HangarCore", "HangarAppStoreConnect",
+            "HangarCore", "HangarAppStoreConnect", "HangarClient", "HangarMCP",
             .product(name: "Hummingbird", package: "hummingbird"),
             .product(name: "GRDB", package: "GRDB.swift"),
             .product(name: "Logging", package: "swift-log"),

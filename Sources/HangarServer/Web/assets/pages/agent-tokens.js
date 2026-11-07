@@ -27,15 +27,22 @@ export function scopeLabel(value) {
 /** Where the commands below keep the agent's token. */
 const TOKEN_FILE = '~/.config/hangar/mcp-token';
 
+/** POSIX single quotes around `text`. */
+function shellQuote(text) {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
 /**
- * The commands that register `hangar mcp` with Claude Code for this server. The token never appears in them: the
- * first asks for it without echoing and saves it to a private file, and Claude Code gets the file's path. A token on
- * a command line would stay in the shell history and in Claude Code's settings.
+ * The commands that connect Claude Code to this server's MCP endpoint (`/mcp`). The token never appears in them: the
+ * first asks for it without echoing and saves it to a private file, and Claude Code reads it from there for every
+ * request (`headersHelper`). A token on a command line would stay in the shell history and in Claude Code's settings.
  */
 export function claudeCommand(origin) {
+  const headers = `printf '{"Authorization":"Bearer %s"}' "$(cat ${TOKEN_FILE})"`;
+  const server = JSON.stringify({ type: 'http', url: `${origin}/mcp`, headersHelper: headers });
   return [
     `mkdir -p ~/.config/hangar && (umask 077; printf 'Paste the token: '; read -rs t; echo; printf '%s\\n' "$t" > ${TOKEN_FILE})`,
-    `claude mcp add hangar --scope user --env HANGAR_SERVER=${origin} --env HANGAR_API_TOKEN_FILE="$HOME/.config/hangar/mcp-token" -- hangar mcp`,
+    `claude mcp add-json hangar --scope user ${shellQuote(server)}`,
   ].join('\n');
 }
 

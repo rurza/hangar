@@ -64,11 +64,5 @@ struct MCP: AsyncParsableCommand {
         }
     }
 
-    static func server(api: HangarAPI) -> MCPServer {
-        let tools = HangarTools(api: api)
-        let url = api.baseURL
-        return MCPServer(
-            name: "hangar", version: HangarVersion.current, instructions: HangarTools.instructions, tools: tools.all,
-            describe: { HangarTools.describe($0, server: url) })
-    }
+    static func server(api: HangarAPI) -> MCPServer { HangarTools.server(api: api) }
 }

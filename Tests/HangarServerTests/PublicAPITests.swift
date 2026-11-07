@@ -92,7 +92,8 @@ struct APIFixture {
         now: @escaping @Sendable () -> Date = Date.init, boundHost: String = "127.0.0.1", allowedHosts: [String] = [],
         iconTransport: any HTTPTransport = StubTransport(), workerBinaryPath: String? = nil, port: Int = 8787,
         githubTransport: any HTTPTransport = StubTransport(), setup: SetupEnvironment? = nil,
-        tailnet: FakeTailnet = FakeTailnet(), ownerCheck: (any OwnerIdentifying)? = FixedOwner("owner@github")
+        tailnet: FakeTailnet = FakeTailnet(), ownerCheck: (any OwnerIdentifying)? = FixedOwner("owner@github"),
+        mcpTransport: any HTTPTransport = StubTransport()
     ) throws {
         directory = TestScratch.directory("api")
         let database = try HangarServer.Database(path: ":memory:")
@@ -103,7 +104,8 @@ struct APIFixture {
                 workerBinaryPath: workerBinaryPath), database: database, tailnet: tailnet,
             appStoreConnectFactory: appStoreConnectFactory, sourceHost: host, clock: clock,
             numberSources: sources.map { sources in { @Sendable in sources } }, iconTransport: iconTransport, githubTransport: githubTransport,
-            now: now, setup: setup ?? Self.inertSetup(directory), ownerCheck: ownerCheck)
+            now: now, setup: setup ?? Self.inertSetup(directory), ownerCheck: ownerCheck,
+            mcpTransport: mcpTransport)
     }
 
     /// Nothing of this Mac: an empty home, no tools (every command exits 0 silently), an installer that does nothing.

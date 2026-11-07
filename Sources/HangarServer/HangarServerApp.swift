@@ -20,6 +20,8 @@ public struct HangarServerApp: Sendable {
     public let machines: MachineRepository
     /// Bearer tokens for agents; only their hashes are stored.
     public let apiTokens: APITokenRepository
+    /// How `/mcp`'s tools reach this server's API (`MCPRoutes`).
+    let mcpTransport: any HTTPTransport
     /// Tokens a job's VM uses instead of its machine's; only their hashes are stored.
     public let jobTokens: JobTokenRepository
     public let variables: VariableRepository
@@ -82,8 +84,10 @@ public struct HangarServerApp: Sendable {
         iconTransport: any HTTPTransport = URLSessionTransport(),
         githubTransport: any HTTPTransport = URLSessionTransport(),
         now: @escaping @Sendable () -> Date = Date.init, setup: SetupEnvironment = .live(),
-        signingRunner: any ProcessRunner = LiveProcessRunner(), ownerCheck: (any OwnerIdentifying)? = nil
+        signingRunner: any ProcessRunner = LiveProcessRunner(), ownerCheck: (any OwnerIdentifying)? = nil,
+        mcpTransport: any HTTPTransport = URLSessionTransport()
     ) throws {
+        self.mcpTransport = mcpTransport
         self.configuration = configuration
         self.database = database
         self.clock = clock

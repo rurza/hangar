@@ -775,3 +775,14 @@ extension HangarTools {
         throw ToolError("The build has \(build.jobs.count) jobs and none failed; pass job_id, one of: \(jobs.joined(separator: "; ")).")
     }
 }
+
+extension HangarTools {
+    /// Hangar's MCP server over `api`, whose token decides what the agent may do: what `hangar mcp` serves on
+    /// stdio and the server at `/mcp`.
+    public static func server(api: HangarAPI) -> MCPServer {
+        let url = api.baseURL
+        return MCPServer(
+            name: "hangar", version: HangarVersion.current, instructions: instructions, tools: HangarTools(api: api).all,
+            describe: { describe($0, server: url) })
+    }
+}
