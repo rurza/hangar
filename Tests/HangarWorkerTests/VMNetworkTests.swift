@@ -357,3 +357,95 @@ import Testing
         #expect(upstream.received.withLock { $0.isEmpty })
     }
 }
+
+/// The relay on real sockets: whatever happens to the server or the guest, the guest's connection ends, so the job's
+/// SSH session (which waits for every forwarded connection) ends with the job.
+@Suite(.timeLimit(.minutes(1))) struct GuestRelayConnectionTests {
+    static let job = UUID()
+
+    static func request() -> Data {
+        Data((
+            "POST /api/v1/worker/jobs/\(job.uuidString)/log HTTP/1.1\r\nHost: 127.0.0.1:8787\r\n"
+                + "Authorization: Bearer hgj_secret\r\nContent-Length: 2\r\n\r\n{}"
+        ).utf8)
+    }
+
+    /// A loopback port nothing listens on.
+    static func closedPort() throws -> UInt16 {
+        let socket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(socket) }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(socket, $0, length) }
+        }
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(socket, $0, &length) }
+        }
+        return UInt16(bigEndian: address.sin_port)
+    }
+
+    /// Connects to the relay, sends the request and reads until the relay closes; `hangUpAfter` closes first.
+    static func exchange(port: UInt16, hangUpAfter: Duration? = nil) async throws -> String {
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        let queue = DispatchQueue(label: "test.guest")
+        connection.start(queue: queue)
+        connection.send(content: request(), completion: .contentProcessed { _ in })
+        if let hangUpAfter {
+            try await Task.sleep(for: hangUpAfter)
+            connection.cancel()
+            return ""
+        }
+        var answer = Data()
+        while true {
+            let (data, done) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(Data?, Bool), any Error>) in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, complete, error in
+                    continuation.resume(returning: (data, complete || error != nil))
+                }
+            }
+            if let data { answer.append(data) }
+            if done { break }
+        }
+        connection.cancel()
+        return String(decoding: answer, as: UTF8.self)
+    }
+
+    @Test func aServerThatCannotBeReachedGetsTheGuestA502() async throws {
+        let relay = try GuestRelay(
+            rule: .init(jobID: Self.job, token: "hgj_secret"), server: URL(string: "http://127.0.0.1:\(try Self.closedPort())")!)
+        defer { relay.stop() }
+        let port = try await relay.start()
+        let answer = try await Self.exchange(port: port)
+        #expect(answer.hasPrefix("HTTP/1.1 502"))
+    }
+
+    @Test func aGuestThatHangsUpEndsTheServersConnection() async throws {
+        // A server that takes the connection and never answers.
+        let server = try NWListener(using: .tcp, on: .any)
+        let closed = AsyncStream<Void>.makeStream()
+        server.newConnectionHandler = { connection in
+            connection.start(queue: .global())
+            func drain() {
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { _, _, complete, error in
+                    if complete || error != nil { closed.continuation.yield() } else { drain() }
+                }
+            }
+            drain()
+        }
+        let listening = AsyncStream<UInt16>.makeStream()
+        server.stateUpdateHandler = { if case .ready = $0 { listening.continuation.yield(server.port!.rawValue) } }
+        server.start(queue: .global())
+        defer { server.cancel() }
+        var ports = listening.stream.makeAsyncIterator()
+        let serverPort = try #require(await ports.next())
+
+        let relay = try GuestRelay(rule: .init(jobID: Self.job, token: "hgj_secret"), server: URL(string: "http://127.0.0.1:\(serverPort)")!)
+        defer { relay.stop() }
+        let port = try await relay.start()
+        _ = try await Self.exchange(port: port, hangUpAfter: .milliseconds(300))
+        var events = closed.stream.makeAsyncIterator()
+        await events.next()
+    }
+}

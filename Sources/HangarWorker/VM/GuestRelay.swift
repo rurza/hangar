@@ -98,7 +98,7 @@ public final class GuestRelay: Sendable {
 
     private func refuse(_ guest: NWConnection, status: Int, message: String) {
         let body = #"{"error":{"code":"relay_refused","message":"\#(message)"}}"#
-        let reason = status == 403 ? "Forbidden" : status == 411 ? "Length Required" : "Bad Request"
+        let reason = [403: "Forbidden", 411: "Length Required", 502: "Bad Gateway"][status] ?? "Bad Request"
         let response = "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         guest.send(content: Data(response.utf8), contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in
             guest.cancel()
@@ -110,9 +110,13 @@ public final class GuestRelay: Sendable {
         let secure = server.scheme == "https"
         let port = NWEndpoint.Port(rawValue: UInt16(server.port ?? (secure ? 443 : 80))) ?? .http
         let upstream = NWConnection(host: host, port: port, using: secure ? .tls : .tcp)
+        let answering = Flag()
+        // Waiting is how a refused or unreachable server shows: it would wait for the network to change, and the
+        // guest's connection (and with it the job's SSH session) would stay open for good. Ending it fails the read
+        // in `pumpAnswer`, which answers the guest.
         upstream.stateUpdateHandler = { state in
             switch state {
-            case .failed, .cancelled: guest.cancel()
+            case .failed, .waiting: upstream.cancel()
             default: break
             }
         }
@@ -120,12 +124,16 @@ public final class GuestRelay: Sendable {
         let first = body.prefix(length)
         upstream.send(content: Data(head.utf8) + first, completion: .contentProcessed { _ in })
         pumpBody(from: guest, to: upstream, remaining: length - first.count)
-        pumpAnswer(from: upstream, to: guest)
+        pumpAnswer(from: upstream, to: guest, answering: answering)
     }
 
-    /// Exactly `remaining` more bytes from the guest; anything after them is never read.
+    /// Exactly `remaining` more bytes from the guest; anything after them is never relayed. Then it watches the
+    /// guest: one that hangs up (its request timed out) ends the server's connection and its own.
     private func pumpBody(from guest: NWConnection, to upstream: NWConnection, remaining: Int) {
-        guard remaining > 0 else { return }
+        guard remaining > 0 else {
+            watch(guest, upstream)
+            return
+        }
         guest.receive(minimumIncompleteLength: 1, maximumLength: min(remaining, 1 << 20)) { [self] data, _, complete, error in
             if let data, !data.isEmpty {
                 let chunk = data.prefix(remaining)
@@ -134,26 +142,42 @@ public final class GuestRelay: Sendable {
                 })
             } else if complete || error != nil {
                 upstream.cancel()
+                guest.cancel()
             } else {
                 pumpBody(from: guest, to: upstream, remaining: remaining)
             }
         }
     }
 
-    private func pumpAnswer(from upstream: NWConnection, to guest: NWConnection) {
+    private func watch(_ guest: NWConnection, _ upstream: NWConnection) {
+        guest.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [self] data, _, complete, error in
+            if complete || error != nil {
+                upstream.cancel()
+                guest.cancel()
+            } else {
+                watch(guest, upstream)
+            }
+        }
+    }
+
+    private func pumpAnswer(from upstream: NWConnection, to guest: NWConnection, answering: Flag) {
         upstream.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [self] data, _, complete, error in
             if let data, !data.isEmpty {
+                answering.set()
                 guest.send(content: data, completion: .contentProcessed { [self] _ in
                     if complete || error != nil {
                         finish(guest, upstream)
                     } else {
-                        pumpAnswer(from: upstream, to: guest)
+                        pumpAnswer(from: upstream, to: guest, answering: answering)
                     }
                 })
+            } else if error != nil, !answering.isSet {
+                upstream.cancel()
+                refuse(guest, status: 502, message: "the Hangar server cannot be reached")
             } else if complete || error != nil {
                 finish(guest, upstream)
             } else {
-                pumpAnswer(from: upstream, to: guest)
+                pumpAnswer(from: upstream, to: guest, answering: answering)
             }
         }
     }
@@ -163,6 +187,13 @@ public final class GuestRelay: Sendable {
         guest.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in
             guest.cancel()
         })
+    }
+
+    /// Whether the server's answer has started reaching the guest: after that, a failure can only cut it off.
+    private final class Flag: Sendable {
+        private let value = Mutex(false)
+        var isSet: Bool { value.withLock { $0 } }
+        func set() { value.withLock { $0 = true } }
     }
 
     // MARK: The check
