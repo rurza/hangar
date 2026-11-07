@@ -1,4 +1,4 @@
-// The Deploy sheet: pick a branch (or type a tag or commit) and a workflow, read what the deploy will do, see
+// The Deploy sheet: pick a branch (or enter a tag or commit) and a workflow, read what the deploy will do, see
 // where it runs and the build number it gets, and start the build. Deploy stays off while no Mac can run the
 // workflow, so a build number is never spent on a build that would wait forever. Whether a Mac can run it is the
 // server's call (`deploy-check`, the scheduler's own rules and clock), asked again as machines change.
@@ -13,7 +13,9 @@ import { allowsBranch, listText, suggestedBranch, workflowSteps } from '../workf
 const REF_DEBOUNCE_MS = 500;
 const CHECK_INTERVAL_MS = 15_000;
 const CHECK_DEBOUNCE_MS = 400;
-const REF_HINT = 'Pick a branch, or type a tag or commit SHA.';
+const REF_HINT = 'Builds the branch’s latest commit. For a tag or a commit SHA, pick “Tag or commit…”.';
+/** The branch pop-up's last item: a text field for a tag or commit takes over. */
+const OTHER_REF = '#other';
 
 /** Error codes that are about the branch or commit and the workflow file found there. */
 const REF_ERRORS = new Set([
@@ -50,18 +52,43 @@ export function openDeploySheet(app) {
   // MARK: Fields
 
   const refHint = h('p', { class: 'field-hint', id: 'deploy-ref-hint' }, REF_HINT);
-  const branchList = h('datalist', { id: 'deploy-branches' });
+  const branchSelect = h('select', {
+    class: 'input select', id: 'deploy-ref', disabled: true, 'aria-describedby': 'deploy-ref-hint',
+    onChange: () => {
+      refTyped = true;
+      showRefControls();
+      if (branchSelect.value === OTHER_REF) refInput.focus();
+      scheduleWorkflows();
+    },
+  }, h('option', { value: '' }, 'Loading branches…'));
+  // A tag or commit SHA; also the only control when the branches could not be listed.
   const refInput = h('input', {
-    class: 'input mono', type: 'text', id: 'deploy-ref', autocomplete: 'off', spellcheck: 'false',
-    autocapitalize: 'off', placeholder: 'Loading branches…', list: 'deploy-branches',
+    class: 'input mono', type: 'text', id: 'deploy-ref-text', autocomplete: 'off', spellcheck: 'false',
+    autocapitalize: 'off', placeholder: 'v1.2.0 or a commit SHA', 'aria-label': 'Tag or commit', hidden: true,
     'aria-describedby': 'deploy-ref-hint',
     onInput: () => { refTyped = true; scheduleWorkflows(); },
   });
   const refField = h('div', { class: 'field' },
     h('label', { class: 'field-label', for: 'deploy-ref' }, 'Branch'),
+    branchSelect,
     refInput,
-    branchList,
     refHint);
+
+  /** The text field is in charge when the branches could not be listed, or "Tag or commit…" is picked. */
+  function typingRef() {
+    return (!branchesLoading && !repository) || branchSelect.value === OTHER_REF;
+  }
+
+  /** The ref the sheet deploys: the picked branch, or what was typed. */
+  function currentRef() {
+    if (typingRef()) return refInput.value.trim();
+    return branchesLoading ? '' : branchSelect.value;
+  }
+
+  function showRefControls() {
+    branchSelect.hidden = !branchesLoading && !repository;
+    refInput.hidden = !typingRef();
+  }
 
   const workflowSelect = h('select', {
     class: 'input select', id: 'deploy-workflow', 'aria-describedby': 'deploy-workflow-hint',
@@ -114,7 +141,7 @@ export function openDeploySheet(app) {
 
   // MARK: Branches
 
-  /** The repository's branches, the default one pre-filled; a typed tag or SHA still works. */
+  /** The repository's branches, the default one picked; a tag or SHA goes in the text field. */
   async function loadBranches() {
     let branches = null;
     try {
@@ -125,37 +152,36 @@ export function openDeploySheet(app) {
       setRefError(null);
     }
     branchesLoading = false;
-    repository = branches;
-    refInput.placeholder = 'main';
-    renderBranchList();
-    // Only when nothing was typed meanwhile.
-    if (refInput.value.trim() === '') {
-      refInput.value = branches?.defaultBranch ?? branches?.branches?.[0] ?? '';
-      if (refInput.value) loadWorkflows();
-      else { renderWorkflows(); update(); }
+    repository = branches?.branches?.length ? branches : null;
+    if (repository) {
+      renderBranchList(repository.defaultBranch ?? repository.branches[0]);
+      branchSelect.disabled = false;
     }
-    if (document.activeElement === handle.element || document.activeElement === document.body) refInput.focus();
+    showRefControls();
+    if (currentRef()) loadWorkflows();
+    else { renderWorkflows(); update(); }
   }
 
-  /** The branch list offers only the selected workflow's branches (all of them for any branch), the default first. */
-  function renderBranchList() {
-    const workflow = selectedWorkflow();
-    const names = (repository?.branches ?? []).filter((name) => !workflow || allowsBranch(workflow, name));
-    replaceChildren(branchList, names.map((name) => h('option', { value: name })));
+  /** Every branch, the default first, then "Tag or commit…". Keeps `selected`, else what was picked. */
+  function renderBranchList(selected = branchSelect.value) {
+    const names = repository?.branches ?? [];
+    replaceChildren(branchSelect,
+      names.map((name) => h('option', { value: name }, name)),
+      h('option', { value: OTHER_REF }, 'Tag or commit…'));
+    branchSelect.value = names.includes(selected) || selected === OTHER_REF ? selected : names[0] ?? OTHER_REF;
   }
 
   /**
-   * Until the user types a ref, it follows the selected workflow: its first exact branch, else the repository's
-   * default. A typed branch the workflow doesn't list gets a warning, not a block (tags and SHAs get none).
+   * Until the user picks a ref, it follows the selected workflow: its first exact branch, else the repository's
+   * default. A picked branch the workflow doesn't list gets a warning, not a block (tags and SHAs get none).
    */
   function followWorkflowBranch() {
     const workflow = selectedWorkflow();
-    renderBranchList();
     if (!workflow) return;
-    const ref = refInput.value.trim();
+    const ref = currentRef();
     const wanted = suggestedBranch(workflow) ?? repository?.defaultBranch;
-    if (!refTyped && wanted && wanted !== ref) {
-      refInput.value = wanted;
+    if (!refTyped && !typingRef() && wanted && wanted !== ref && repository?.branches.includes(wanted)) {
+      branchSelect.value = wanted;
       scheduleWorkflows();
       return;
     }
@@ -178,14 +204,14 @@ export function openDeploySheet(app) {
     check = null;
     checkRequest?.abort();
     setRefError(null);
-    workflowsLoading = refInput.value.trim() !== '';
+    workflowsLoading = currentRef() !== '';
     renderWorkflows();
     update();
     if (workflowsLoading) debounce = setTimeout(loadWorkflows, REF_DEBOUNCE_MS);
   }
 
   async function loadWorkflows() {
-    const ref = refInput.value.trim();
+    const ref = currentRef();
     if (!ref) return;
     const controller = new AbortController();
     workflowsRequest = controller;
@@ -212,8 +238,10 @@ export function openDeploySheet(app) {
     refError = message;
     refHint.textContent = message ?? branchesHint ?? REF_HINT;
     refHint.classList.toggle('field-error', Boolean(message));
-    if (invalid) refInput.setAttribute('aria-invalid', 'true');
-    else refInput.removeAttribute('aria-invalid');
+    for (const control of [branchSelect, refInput]) {
+      if (invalid) control.setAttribute('aria-invalid', 'true');
+      else control.removeAttribute('aria-invalid');
+    }
   }
 
   function renderWorkflows() {
@@ -275,7 +303,7 @@ export function openDeploySheet(app) {
    */
   async function loadCheck() {
     const workflow = selectedWorkflow();
-    const ref = refInput.value.trim();
+    const ref = currentRef();
     checkRequest?.abort();
     if (!workflow || !ref) {
       checkRequest = null;
@@ -307,13 +335,19 @@ export function openDeploySheet(app) {
     return whereOptions.querySelector('input:checked')?.value ?? '';
   }
 
-  /** "Archive – iOS · LegiloMobile: mini (offline)" per blocked action. */
-  function blockingText(entries) {
-    return entries.map((entry) => {
-      const machines = Object.entries(entry.reasons ?? {}).sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, reasons]) => `${name} (${reasons.join(', ')})`);
-      return `${entry.action}: ${machines.length ? listText(machines) : 'no Mac'}`;
-    }).join('; ');
+  /** "rurzobuk-max (busy, no visionOS simulator) and rurzomac-mini (busy)": each Mac once, its reasons merged. */
+  function machineReasons(entries) {
+    const byMachine = new Map();
+    for (const entry of entries) {
+      for (const [name, reasons] of Object.entries(entry.reasons ?? {})) {
+        const merged = byMachine.get(name) ?? new Set();
+        for (const reason of reasons) merged.add(reason);
+        byMachine.set(name, merged);
+      }
+    }
+    if (byMachine.size === 0) return 'no Mac';
+    return listText([...byMachine].sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, reasons]) => `${name} (${[...reasons].join(', ')})`));
   }
 
   /** Why no machine can run the deploy (with what to do), or null. Read from the server's answer only. */
@@ -330,7 +364,8 @@ export function openDeploySheet(app) {
       return { text: `${pinned.name} can’t run this build: ${listText(pinned.problems)}.`, link: ['Open Machines', '/machines'] };
     }
     if (!pinned && !check.canDeploy) {
-      return { text: `No Mac can run this build now. ${blockingText(check.blocking)}.`, link: ['Open Machines', '/machines'] };
+      const actions = listText(check.blocking.map((entry) => entry.action));
+      return { text: `No Mac can run ${actions} now: ${machineReasons(check.blocking)}.`, link: ['Open Machines', '/machines'] };
     }
     return null;
   }
@@ -347,7 +382,7 @@ export function openDeploySheet(app) {
     if (capable.length && capable.every((machine) => machine.paused)) {
       return `It will wait until builds are resumed on ${listText(capable.map((machine) => machine.name))} (Machines page).`;
     }
-    return `It will wait for a free Mac: ${blockingText(check.warnings)}.`;
+    return `It will wait for a free Mac: ${machineReasons(check.warnings)}.`;
   }
 
   function renderWhere() {
@@ -371,7 +406,7 @@ export function openDeploySheet(app) {
     // Nothing to judge yet: no branch, no workflow, or the branch failed. Say so instead of spinning.
     const waitingFor = !check && !checkError && !noMachines
       ? (workflowsLoading || branchesLoading ? null
-        : !refInput.value.trim() ? 'Pick a branch to see which Mac can run it.'
+        : !currentRef() ? 'Pick a branch to see which Mac can run it.'
           : refError || !selectedWorkflow() ? 'Which Mac can run it shows once there is a workflow to deploy.' : null)
       : null;
     if (noMachines) {
@@ -452,8 +487,8 @@ export function openDeploySheet(app) {
 
   /** Why Deploy is unavailable, or null when it can run. */
   function blocker() {
-    if (branchesLoading && !refInput.value.trim()) return 'Loading the branches…';
-    if (!refInput.value.trim()) return 'Enter a branch or commit to deploy.';
+    if (branchesLoading && !currentRef()) return 'Loading the branches…';
+    if (!currentRef()) return 'Enter a branch or commit to deploy.';
     if (workflowsLoading) return 'Reading the workflow at this branch…';
     if (refError) return 'Fix the branch or commit first.';
     const workflow = selectedWorkflow();
@@ -483,7 +518,7 @@ export function openDeploySheet(app) {
       update();
       return false;
     }
-    const request = { app: app.slug, workflow: workflowSelect.value, ref: refInput.value.trim() };
+    const request = { app: app.slug, workflow: workflowSelect.value, ref: currentRef() };
     const machine = selectedMachineID();
     if (machine) request.machine = machine;
     let build;
@@ -495,7 +530,7 @@ export function openDeploySheet(app) {
         setRefError(error.message, error.code === 'ref_not_found');
         renderWorkflows();
         update();
-        refInput.focus();
+        (typingRef() ? refInput : branchSelect).focus();
         return false;
       }
       if (NUMBER_ERRORS.has(error.code)) {

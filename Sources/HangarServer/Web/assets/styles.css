@@ -1380,6 +1380,8 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
 
 /* MARK: Deploy sheet */
 
+/* The Deploy sheet keeps its height while the checks come in: what changes scrolls inside instead of resizing it. */
+.sheet:has(.deploy-form) { height: min(86vh, 860px); }
 .field-hint.field-error { color: var(--failure); overflow-wrap: anywhere; }
 .field-hint.field-warning { color: var(--text); }
 .field-hint.field-warning::before { content: "⚠︎ "; color: var(--warning); }
