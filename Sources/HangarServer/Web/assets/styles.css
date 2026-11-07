@@ -1365,9 +1365,10 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
   font-weight: 600;
 }
 
-.select { appearance: auto; padding-block: 0; cursor: pointer; }
-/* A text field with suggestions (the Deploy sheet's branch): the chevron of a pop-up, not the browser's ▼. */
-.input[list] {
+/* A pop-up and a text field with suggestions (the Deploy sheet's branch) look the same: the field's size and fill,
+   and one chevron instead of the browser's own control. */
+.select { appearance: none; -webkit-appearance: none; cursor: pointer; }
+.input[list], .select {
   padding-right: 32px;
   /* A stroked chevron in the grey that reads on both appearances (a data: image, which the CSP allows). */
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e8e93' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
