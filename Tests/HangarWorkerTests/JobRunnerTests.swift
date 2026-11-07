@@ -2,6 +2,7 @@ import Clocks
 import Foundation
 import HangarAppStoreConnect
 import HangarCore
+import Logging
 import Synchronization
 import Testing
 
@@ -908,11 +909,13 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(fixture.connection.events.last == .finish(result))
     }
 
-    @Test func finishGivesUpAfterFiveAttemptsAndTreatsAConflictAsDone() async throws {
-        let down = try Fixture(connection: FakeServerConnection(finishErrors: Array(repeating: FakeServerConnection.Unavailable(), count: 9)))
+    /// Ten minutes of attempts: a server restarting, or a network drop, does not lose a finished build.
+    @Test func finishGivesUpAfterTenMinutesAndTreatsAConflictAsDone() async throws {
+        #expect(JobRunner.finishRetryDelays.reduce(.zero, +) == .seconds(600))
+        let down = try Fixture(connection: FakeServerConnection(finishErrors: Array(repeating: FakeServerConnection.Unavailable(), count: 40)))
         defer { down.removeAll() }
         _ = await down.runTicking(cancelled: { false })
-        #expect(down.connection.finishAttempts == 5)
+        #expect(down.connection.finishAttempts == JobRunner.finishRetryDelays.count + 1)
         #expect(down.connection.result == nil)
 
         // 409: the job is already terminal on the server (e.g. failed as lost); nothing to retry.
@@ -921,6 +924,19 @@ private final class Shared<Value: Sendable>: Sendable {
         defer { terminal.removeAll() }
         _ = await terminal.runTicking(cancelled: { false })
         #expect(terminal.connection.finishAttempts == 1)
+    }
+
+    /// A worker shutting down does not wait out the retries: launchd kills it two minutes after asking it to stop.
+    @Test func aWorkerShuttingDownMakesOneLastAttemptToReportTheResult() async throws {
+        let connection = FakeServerConnection(finishErrors: Array(repeating: FakeServerConnection.Unavailable(), count: 40))
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await JobRunner.reportFinish(
+                jobID: UUID(), JobResult(status: .succeeded), connection: connection, clock: TestClock(),
+                logger: Logger(label: "test"))
+        }
+        await task.value
+        #expect(connection.finishAttempts == 2)
     }
 
     /// A 409 at start: the job was handed out twice, or moved or ended meanwhile. The copy that does run it must not

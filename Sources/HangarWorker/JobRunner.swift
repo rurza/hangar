@@ -260,13 +260,22 @@ public struct JobRunner: Sendable {
         }
     }
 
-    /// Delays between attempts to report a job's result; five attempts in all.
-    static let finishRetryDelays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8)]
+    /// Delays between attempts to report a job's result: ten minutes in all, so a server that restarts or a network
+    /// that drops meanwhile does not lose a finished build. The job stays in the worker's reports while it retries,
+    /// so the server does not fail it as lost.
+    static let finishRetryDelays: [Duration] =
+        [1, 2, 4, 8, 15].map { Duration.seconds($0) } + Array(repeating: .seconds(30), count: 19)
 
-    /// Reports the result, retrying on the injected clock: a lost finish would leave the job running on the server
-    /// until the heartbeat stops listing it. A 409 means the job is already terminal there, which counts as done.
     func reportFinish(jobID: UUID, _ result: JobResult) async {
-        var delays = Self.finishRetryDelays[...]
+        await Self.reportFinish(jobID: jobID, result, connection: connection, clock: clock, logger: logger)
+    }
+
+    /// Reports the result, retrying on `clock`. A 409 means the job is already terminal there, which counts as done.
+    /// A worker shutting down cuts the wait short: one last attempt, as launchd kills it two minutes after asking.
+    static func reportFinish(
+        jobID: UUID, _ result: JobResult, connection: any ServerConnection, clock: any Clock<Duration>, logger: Logger
+    ) async {
+        var delays = finishRetryDelays[...]
         while true {
             do {
                 try await connection.finish(jobID: jobID, result)
@@ -280,8 +289,7 @@ public struct JobRunner: Sendable {
                     return
                 }
                 logger.warning("could not report the job's result: \(error); retrying in \(delay)", metadata: ["job": "\(jobID)"])
-                // A cancelled sleep (the worker shutting down) still gets the remaining attempts, without waiting.
-                try? await clock.sleep(for: delay)
+                do { try await clock.sleep(for: delay) } catch { delays = [] }
             }
         }
     }

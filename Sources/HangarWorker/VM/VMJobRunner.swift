@@ -419,17 +419,7 @@ public struct VMJobRunner: JobRunning {
 
     /// The host's own finish, for what the guest could not report; a 409 means the guest (or the server) already did.
     private func finish(_ jobID: UUID, _ result: JobResult) async -> JobResult {
-        for delay in [Duration.zero] + JobRunner.finishRetryDelays {
-            if delay > .zero { try? await host.clock.sleep(for: delay) }
-            do {
-                try await connection.finish(jobID: jobID, result)
-                return result
-            } catch ServerConnectionError.status(409, _, _) {
-                return result
-            } catch {
-                logger.warning("could not report the job's result: \(error)", metadata: ["job": "\(jobID)"])
-            }
-        }
+        await JobRunner.reportFinish(jobID: jobID, result, connection: connection, clock: host.clock, logger: logger)
         return result
     }
 }
