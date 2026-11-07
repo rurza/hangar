@@ -2,6 +2,7 @@
 // the route table. Pages live in ./pages/ and are registered below.
 
 import { h, svg } from './ui.js';
+import { watchFreshness } from './freshness.js';
 import { route, start } from './router.js';
 import { appsPage } from './pages/apps.js';
 import { appDetailPage } from './pages/app-detail.js';
@@ -133,3 +134,4 @@ route('/setup', setupPage);
 
 const app = shell(document.getElementById('app'));
 start(app.main, { onRendered: (path) => app.rendered(path) });
+watchFreshness();
