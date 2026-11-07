@@ -102,7 +102,9 @@ extension HangarServerApp {
         // Only while the job runs: the worker uploads in its `upload-artifacts` step, before it reports the finish.
         worker.post("jobs/:id/artifacts/:name") { request, context in
             let job = try running(workerJob(context))
-            let name = try context.parameters.require("name")
+            // Hummingbird leaves the segment percent-encoded: "Horzono%20Mac.xcresult.zip" is "Horzono Mac.xcresult.zip".
+            let raw = try context.parameters.require("name")
+            let name = raw.removingPercentEncoding ?? raw
             // Streamed to disk chunk by chunk, so Hummingbird's upload limit (which applies to collected bodies)
             // does not cap archives and dSYMs.
             let url = try await artifactStore.write(jobID: job.id, name: name, stream: request.body)

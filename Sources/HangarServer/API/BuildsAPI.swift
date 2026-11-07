@@ -41,7 +41,9 @@ extension HangarServerApp {
         }
         api.get("jobs/:id/artifacts") { _, context in try Response.json(artifactStore.list(jobID: job(context).id)) }
         api.get("jobs/:id/artifacts/:name") { _, context in
-            let name = try context.parameters.require("name")
+            // Hummingbird leaves the segment percent-encoded: "Horzono%20Mac.xcresult.zip" is "Horzono Mac.xcresult.zip".
+            let raw = try context.parameters.require("name")
+            let name = raw.removingPercentEncoding ?? raw
             let url = try artifactStore.url(jobID: job(context).id, name: name)
             let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
             guard attributes?[.type] as? FileAttributeType == .typeRegular, let size = attributes?[.size] as? Int else {

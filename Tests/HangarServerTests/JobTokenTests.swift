@@ -84,6 +84,24 @@ import Testing
         #expect(try server.builds.job(id: job.id)?.runInfo?.machineName == "studio")
     }
 
+    /// A scheme with a space ("Horzono Mac") names its artifacts with one: stored as named, not percent-encoded.
+    @Test func anArtifactNameWithASpaceIsStoredDecoded() async throws {
+        let setup = try await Setup()
+        let job = setup.build.jobs[0]
+        let id = job.id.uuidString
+        try await setup.fixture.test { client in
+            let token = try await Self.issue(job, setup, client: client)
+            try await Self.expectStatus(client, .post, "jobs/\(id)/start", token: token, .ok)
+            try await Self.expectStatus(
+                client, .post, "jobs/\(id)/artifacts/Horzono%20Mac.xcresult.zip", token: token, body: ByteBuffer(string: "zip"),
+                .created)
+            // An encoded slash is still refused once decoded.
+            try await Self.expectStatus(
+                client, .post, "jobs/\(id)/artifacts/a%2Fb.zip", token: token, body: ByteBuffer(string: "zip"), .badRequest)
+        }
+        #expect(try setup.fixture.server.artifactStore.list(jobID: job.id).map(\.name) == ["Horzono Mac.xcresult.zip"])
+    }
+
     @Test func aJobTokenCannotCallAnythingElse() async throws {
         let setup = try await Setup()
         let job = setup.build.jobs[0]
