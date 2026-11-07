@@ -36,6 +36,20 @@ public enum ServerConnectionError: Error, Equatable, CustomStringConvertible {
         case .notHTTP(let path): "\(path) did not answer with an HTTP response"
         }
     }
+
+    /// The server could not be reached, or failed (5xx): worth trying again shortly.
+    public static func isTransient(_ error: any Error) -> Bool {
+        if case .status(let status, _, _) = error as? ServerConnectionError { return status >= 500 }
+        return (error as NSError).domain == NSURLErrorDomain
+    }
+
+    /// A few words for a log line or a failure reason: "Could not connect to the server.", not the URL error's dump.
+    public static func brief(_ error: any Error) -> String {
+        let bridged = error as NSError
+        guard bridged.domain == NSURLErrorDomain else { return "\(error)" }
+        return bridged.userInfo[NSLocalizedDescriptionKey] as? String
+            ?? "the server could not be reached (URL error \(bridged.code))"
+    }
 }
 
 /// `ServerConnection` over HTTP with the machine's bearer token on every request.

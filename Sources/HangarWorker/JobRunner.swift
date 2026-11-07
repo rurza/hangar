@@ -208,7 +208,7 @@ public struct JobRunner: Sendable {
         _ assignment: JobAssignment, layout: WorkspaceLayout, log: JobLog, pipeline: inout JobPipeline
     ) async {
         let jobID = assignment.job.id
-        await pipeline.step(StepName.uploadArtifacts, .always) { [connection, runner] in
+        await pipeline.step(StepName.uploadArtifacts, .always) { [connection, runner, clock] in
             let lines = log.lines(StepName.uploadArtifacts)
             // Every piece is attempted; the step fails at the end if any could not be zipped or uploaded.
             let collection = try await ArtifactCollector(runner: runner)
@@ -225,17 +225,52 @@ public struct JobRunner: Sendable {
                 lines("error: could not copy the full log: \(error)")
                 failures.append("could not copy the full log: \(error)")
             }
+            // Artifacts that could not be uploaded, by why: one line per reason.
+            var unsent: [(reason: String, names: [String])] = []
             for artifact in artifacts {
                 lines("uploading \(artifact.name)")
-                do {
-                    try await connection.uploadArtifact(jobID: jobID, name: artifact.name, fileURL: artifact.url)
-                } catch {
-                    lines("error: could not upload \(artifact.name): \(error)")
-                    failures.append("could not upload \(artifact.name): \(error)")
+                if let reason = await Self.upload(artifact, jobID: jobID, connection: connection, clock: clock, log: lines) {
+                    lines("error: could not upload \(artifact.name): \(reason)")
+                    if let index = unsent.firstIndex(where: { $0.reason == reason }) {
+                        unsent[index].names.append(artifact.name)
+                    } else {
+                        unsent.append((reason, [artifact.name]))
+                    }
                 }
             }
+            failures += unsent.map { "could not upload \(Self.listText($0.names)): \($0.reason)" }
             if !failures.isEmpty { throw ArtifactError.incomplete(failures) }
         }
+    }
+
+    /// Delays between attempts to upload one artifact the server could not take: a minute and a half in all, which
+    /// covers a server restarting as the build ends.
+    static let uploadRetryDelays: [Duration] = [2, 4, 8, 15, 30, 30].map { Duration.seconds($0) }
+
+    /// Uploads one artifact, trying again while the server cannot be reached or fails (5xx); a refusal (4xx) is
+    /// final. Nil once it is up, else why not, in a few words.
+    static func upload(
+        _ artifact: (name: String, url: URL), jobID: UUID, connection: any ServerConnection, clock: any Clock<Duration>,
+        log: @escaping @Sendable (String) -> Void
+    ) async -> String? {
+        var delays = uploadRetryDelays[...]
+        while true {
+            do {
+                try await connection.uploadArtifact(jobID: jobID, name: artifact.name, fileURL: artifact.url)
+                return nil
+            } catch {
+                let reason = ServerConnectionError.brief(error)
+                guard ServerConnectionError.isTransient(error), let delay = delays.popFirst() else { return reason }
+                log("could not upload \(artifact.name) (\(reason)); trying again in \(delay)")
+                do { try await clock.sleep(for: delay) } catch { return reason }
+            }
+        }
+    }
+
+    /// "a", "a and b", "a, b and c".
+    static func listText(_ items: [String]) -> String {
+        guard items.count > 1 else { return items.first ?? "" }
+        return items.dropLast().joined(separator: ", ") + " and " + items[items.count - 1]
     }
 
     /// The Mac's computer name (System Settings › General › Sharing), read once without a DNS lookup.

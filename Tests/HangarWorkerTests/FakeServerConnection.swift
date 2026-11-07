@@ -5,7 +5,8 @@ import Synchronization
 @testable import HangarWorker
 
 /// Records every call a worker makes to the server, in order. `failLogCalls` makes that many `log` calls throw first;
-/// uploads named in `failUploads` always throw; `finishErrors` are thrown, in order, by the first `finish` calls.
+/// uploads named in `failUploads` always throw; one named in `unreachableUploads` cannot reach the server that many
+/// times first; `finishErrors` are thrown, in order, by the first `finish` calls.
 /// `refuseLog` may answer a log batch with an error (an HTTP 413, say) instead of taking it. `startError` is thrown by
 /// `start`.
 final class FakeServerConnection: ServerConnection {
@@ -26,6 +27,7 @@ final class FakeServerConnection: ServerConnection {
         var finishErrors: [any Error] = []
         var finishAttempts = 0
         var updates: [StepUpdate] = []
+        var unreachableUploads: [String: Int] = [:]
     }
 
     private let state: Mutex<State>
@@ -34,10 +36,11 @@ final class FakeServerConnection: ServerConnection {
     private let startError: (any Error)?
 
     init(
-        failLogCalls: Int = 0, failUploads: Set<String> = [], finishErrors: [any Error] = [],
+        failLogCalls: Int = 0, failUploads: Set<String> = [], unreachableUploads: [String: Int] = [:],
+        finishErrors: [any Error] = [],
         refuseLog: @escaping @Sendable (LogBatch) -> (any Error)? = { _ in nil }, startError: (any Error)? = nil
     ) {
-        state = Mutex(State(failLogCalls: failLogCalls, finishErrors: finishErrors))
+        state = Mutex(State(failLogCalls: failLogCalls, finishErrors: finishErrors, unreachableUploads: unreachableUploads))
         self.failUploads = failUploads
         self.refuseLog = refuseLog
         self.startError = startError
@@ -116,7 +119,14 @@ final class FakeServerConnection: ServerConnection {
 
     func uploadArtifact(jobID: UUID, name: String, fileURL: URL) async throws {
         if failUploads.contains(name) { throw Unavailable() }
-        state.withLock { $0.events.append(.upload(name: name, path: fileURL.path)) }
+        try state.withLock {
+            if let left = $0.unreachableUploads[name], left > 0 {
+                $0.unreachableUploads[name] = left - 1
+                // As URLSession throws it: with its description.
+                throw URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: "Could not connect to the server."])
+            }
+            $0.events.append(.upload(name: name, path: fileURL.path))
+        }
     }
 
     func finish(jobID: UUID, _ result: JobResult) async throws {

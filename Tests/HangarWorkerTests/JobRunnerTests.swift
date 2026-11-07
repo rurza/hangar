@@ -885,6 +885,33 @@ private final class Shared<Value: Sendable>: Sendable {
         #expect(result.failureReason?.contains("could not upload Demo.ipa") == true)
     }
 
+    /// A server restarting as the build ends: the upload is tried again, and the build does not fail for it.
+    @Test func anUploadTheServerMissedIsTriedAgain() async throws {
+        let fixture = try Fixture(connection: FakeServerConnection(unreachableUploads: ["Demo.ipa": 3]))
+        defer { fixture.removeAll() }
+
+        let result = await fixture.runTicking(cancelled: { false })
+
+        #expect(result.status == .succeeded)
+        #expect(fixture.connection.uploads.contains("Demo.ipa"))
+        #expect(fixture.connection.status(of: "upload-artifacts") == .succeeded)
+    }
+
+    /// One line per reason, not a dump of the URL error for every artifact.
+    @Test func uploadsThatNeverGetThroughFailWithOneShortReason() async throws {
+        let fixture = try Fixture(connection: FakeServerConnection(
+            unreachableUploads: ["Demo.ipa": .max, "Demo.xcresult.zip": .max, "ExportOptions.plist": .max]))
+        defer { fixture.removeAll() }
+
+        let result = await fixture.runTicking(cancelled: { false })
+
+        #expect(result.status == .failed)
+        let reason = try #require(result.failureReason)
+        #expect(reason.contains(
+            "could not upload Demo.xcresult.zip, Demo.ipa and ExportOptions.plist: Could not connect to the server."))
+        #expect(!reason.contains("NSURLErrorDomain"))
+    }
+
     @Test func aRefusedLogBatchIsStillDelivered() async throws {
         let fixture = try Fixture(connection: FakeServerConnection(failLogCalls: 1))
         defer { fixture.removeAll() }
