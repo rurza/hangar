@@ -20,12 +20,16 @@ function setActionKind(action, kind) {
   action.kind = kind;
 }
 
-/** An action in the API's JSON shape: archives `{kind, scheme, platform, export}`, tests
+/** An action in the API's JSON shape: archives `{kind, scheme, platform, export, notarize?}` (only `false`), tests
  * `{kind, scheme, platform, destination?, testPlan?}`. An empty or "recommended" destination is left out, as is any
  * destination of a macOS test (it runs on the Mac). */
 function actionToJSON(action) {
   const base = { kind: action.kind, scheme: action.scheme.trim(), platform: action.platform };
-  if (action.kind !== 'test') return { ...base, kind: 'archive', export: action.export };
+  if (action.kind !== 'test') {
+    const archive = { ...base, kind: 'archive', export: action.export };
+    if (action.export === 'developer-id' && action.notarize === false) archive.notarize = false;
+    return archive;
+  }
   const destination = (action.destination ?? '').trim();
   if (destination && destination.toLowerCase() !== 'recommended' && action.platform !== 'macos') {
     base.destination = destination;
@@ -232,7 +236,9 @@ function describeArchive(action, model) {
   const file = action.platform === 'ios' || action.platform === 'tvos' || action.platform === 'visionos' || action.platform === 'watchos'
     ? '.ipa' : action.export === 'developer-id' ? '.app' : '.pkg';
   const signing = action.export === 'developer-id'
-    ? 'signs it with Developer ID for download outside the App Store'
+    ? action.notarize === false
+      ? 'signs it with Developer ID for download outside the App Store (not notarized)'
+      : 'signs it with Developer ID, notarizes it with Apple for download outside the App Store'
     : 'signs it for the App Store and TestFlight';
   const pieces = ['Archives ', strong(scheme), ' for ', strong(platformName(action.platform)),
     `, stamps the build number, ${signing} and keeps the ${file} as an artifact.`];
@@ -380,7 +386,11 @@ function firstScheme(schemes, platform, kind) {
   const all = schemesFor(schemes, platform, kind);
   const verified = all.filter((scheme) => !scheme.unverified);
   const list = verified.length ? verified : all;
-  if (kind === 'test') return (list.find((scheme) => scheme.isApplication && scheme.hasTests) ?? list.find((s) => s.hasTests) ?? list[0])?.name;
+  // A scheme the repository has a file for comes before one Xcode generates from a package.
+  if (kind === 'test') {
+    return (list.find((scheme) => scheme.isApplication && scheme.hasTests) ?? list.find((s) => s.hasTests && !s.package)
+      ?? list.find((s) => s.hasTests) ?? list[0])?.name;
+  }
   return list.find((scheme) => scheme.isApplication)?.name ?? list[0]?.name;
 }
 

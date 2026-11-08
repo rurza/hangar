@@ -481,6 +481,7 @@ public struct JobRunner: Sendable {
             return ([:], handOff)
         }
         let exported = await export(assignment, prepared: prepared, layout: layout, log: log, pipeline: &pipeline)
+        let notarization = await notarize(assignment, prepared: prepared, layout: layout, exported: exported, log: log, pipeline: &pipeline)
         let additions = CIEnvironment.postXcodebuildAdditions(
             exitCode: pipeline.xcodebuildExitCode ?? 0, action: action,
             exportedAppPath: exported?.exportedArtifactPath)
@@ -491,7 +492,7 @@ public struct JobRunner: Sendable {
         }
         let outputs = await postActions(
             assignment, prepared: prepared, layout: layout, exported: exported, log: log, masker: masker, pipeline: &pipeline)
-        return (outputs, nil)
+        return (notarization.merging(outputs) { _, new in new }, nil)
     }
 
     /// The `export` step: `xcodebuild -exportArchive` with the team key, if any.
@@ -512,6 +513,26 @@ public struct JobRunner: Sendable {
                 }
             }
         }
+    }
+
+    /// The `notarize` step of a Developer ID archive that notarizes (`WorkflowAction.notarizes`): the exported app is
+    /// notarized with the team key and stapled in place. Returns the submission as the job's outputs
+    /// (`notarization.submissionID`, `notarization.status`), empty for other actions or when it never got one.
+    func notarize(
+        _ assignment: JobAssignment, prepared: Prepared, layout: WorkspaceLayout, exported: ExportResult?, log: JobLog,
+        pipeline: inout JobPipeline
+    ) async -> [String: String] {
+        guard assignment.job.action.notarizes else { return [:] }
+        let submission = await pipeline.step(StepName.notarize) { [runner] in
+            try await prepared.keyFile.with(prepared.teamKey) { key in
+                try await NotarizeStep(runner: runner).run(
+                    appPath: exported?.exportedArtifactPath, scratchDirectory: layout.temporary, key: key,
+                    developerDir: prepared.developerDir, environment: prepared.environment,
+                    log: log.lines(StepName.notarize))
+            }
+        }
+        guard let submission else { return [:] }
+        return ["notarization.submissionID": submission.id, "notarization.status": submission.status ?? ""]
     }
 
     /// The post-actions, one step each; returns their merged outputs.

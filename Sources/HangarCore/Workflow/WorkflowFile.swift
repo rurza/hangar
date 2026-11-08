@@ -57,13 +57,16 @@ public struct WorkflowAction: Codable, Hashable, Sendable {
     public var destination: String?
     /// Tests only: the test plan passed to `xcodebuild -testPlan`.
     public var testPlan: String?
+    /// Developer ID archives only: false skips notarization (`notarize: false`); nil and true notarize.
+    public var notarize: Bool?
 
     /// An archive action.
-    public init(scheme: String, platform: Platform, export: ExportMethod) {
+    public init(scheme: String, platform: Platform, export: ExportMethod, notarize: Bool? = nil) {
         self.kind = .archive
         self.scheme = scheme
         self.platform = platform
         self.export = export
+        self.notarize = notarize
     }
 
     private init(test scheme: String, platform: Platform, destination: String?, testPlan: String?) {
@@ -83,8 +86,11 @@ public struct WorkflowAction: Codable, Hashable, Sendable {
     /// "Archive – iOS", "Test – macOS".
     public var kindLabel: String { "\(kind.label) – \(platform.ciName)" }
 
+    /// A Developer ID archive is notarized with Apple and stapled unless the workflow says `notarize: false`.
+    public var notarizes: Bool { kind == .archive && export == .developerID && notarize != false }
+
     private enum CodingKeys: String, CodingKey {
-        case kind, scheme, platform, export, destination, testPlan
+        case kind, scheme, platform, export, destination, testPlan, notarize
     }
 
     public init(from decoder: any Decoder) throws {
@@ -95,6 +101,7 @@ public struct WorkflowAction: Codable, Hashable, Sendable {
         switch kind {
         case .archive:
             export = try container.decode(ExportMethod.self, forKey: .export)
+            notarize = try container.decodeIfPresent(Bool.self, forKey: .notarize)
         case .test:
             destination = try container.decodeIfPresent(String.self, forKey: .destination)
             testPlan = try container.decodeIfPresent(String.self, forKey: .testPlan)

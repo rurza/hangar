@@ -71,7 +71,14 @@ private final class PipelineRunner: ProcessRunner {
             try Self.plist(["CFBundleVersion": "1"], to: app + "/Info.plist")
             try Self.plist(["ApplicationProperties": ["CFBundleVersion": "1"]], to: archive + "/Info.plist")
         } else if arguments.contains("-exportArchive"), let index = arguments.firstIndex(of: "-exportPath") {
-            fileManager.createFile(atPath: arguments[index + 1] + "/Demo.ipa", contents: Data("ipa".utf8))
+            // A Developer ID export leaves the .app; App Store exports here stand in with an .ipa.
+            let options = arguments.firstIndex(of: "-exportOptionsPlist").flatMap { FileManager.default.contents(atPath: arguments[$0 + 1]) }
+                .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) as? [String: Any] }
+            if options?["method"] as? String == "developer-id" {
+                try fileManager.createDirectory(atPath: arguments[index + 1] + "/Demo.app/Contents", withIntermediateDirectories: true)
+            } else {
+                fileManager.createFile(atPath: arguments[index + 1] + "/Demo.ipa", contents: Data("ipa".utf8))
+            }
         }
         return outcome
     }
@@ -1114,7 +1121,7 @@ extension JobRunnerTests {
     @Test func aDeveloperIDExportFirstTakesHangarsDevelopmentProfileOutOfTheArchive() async throws {
         var fixture = try Fixture()
         defer { fixture.removeAll() }
-        let action = WorkflowAction(scheme: "Demo", platform: .macOS, export: .developerID)
+        let action = WorkflowAction(scheme: "Demo", platform: .macOS, export: .developerID, notarize: false)
         fixture.assignment.job.action = action
         fixture.assignment.workflow.actions = [action]
         fixture.assignment.workflow.postActions = []
@@ -1134,6 +1141,80 @@ extension JobRunnerTests {
         let export = try #require(commands.firstIndex { $0.arguments.contains("-exportArchive") })
         #expect(resign < export)
         #expect(commands[resign].arguments.last == app)
+    }
+
+    /// BatFi 263 left Hangar signed with Developer ID but not notarized: Gatekeeper and Sparkle refused it.
+    @Test func aDeveloperIDExportIsNotarizedAndStapledBeforeItIsUploaded() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let action = WorkflowAction(scheme: "Demo", platform: .macOS, export: .developerID)
+        fixture.assignment.job.action = action
+        fixture.assignment.workflow.actions = [action]
+        fixture.assignment.workflow.postActions = []
+        try handedOffFiles(fixture)
+        fixture.runner.recording.script(
+            { $0.arguments.prefix(2) == ["notarytool", "submit"] },
+            lines: [#"{"id":"2efe2717-52ef-43a5-96dc-0797e4ca1041","message":"Processing complete","status":"Accepted"}"#])
+
+        let result = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: false, cancelled: { false })
+
+        #expect(result.status == .succeeded)
+        #expect(result.outputs == [
+            "notarization.submissionID": "2efe2717-52ef-43a5-96dc-0797e4ca1041", "notarization.status": "Accepted",
+        ])
+        #expect(fixture.connection.finalStatuses.map(\.name) == ["export", "notarize", "upload-artifacts", "cleanup"])
+        let commands = fixture.runner.commands
+        let export = try #require(commands.firstIndex { $0.arguments.contains("-exportArchive") })
+        let submit = try #require(commands.firstIndex { $0.arguments.prefix(2) == ["notarytool", "submit"] })
+        let staple = try #require(commands.firstIndex { $0.arguments.prefix(2) == ["stapler", "staple"] })
+        let validate = try #require(commands.firstIndex { $0.arguments.prefix(2) == ["stapler", "validate"] })
+        let zipApp = try #require(commands.lastIndex { $0.executable == "/usr/bin/ditto" && $0.arguments.last?.hasSuffix("Demo.app.zip") == true })
+        #expect(export < submit && submit < staple && staple < validate && validate < zipApp)
+        #expect(commands[submit].arguments.contains(fixture.layout.keyDirectory + "/AuthKey_KEY123.p8"))
+        #expect(commands[submit].arguments.contains("--wait"))
+        #expect(commands[staple].arguments.last == fixture.layout.export + "/Demo.app")
+        #expect(commands[zipApp].arguments.contains("--noextattr"))
+        #expect(fixture.connection.uploads.contains("Demo.app.zip"))
+        #expect(fixture.connection.logLines.contains { $0.contains("submission 2efe2717-52ef-43a5-96dc-0797e4ca1041: Accepted") })
+    }
+
+    @Test func anInvalidNotarizationFailsTheJobWithTheNotaryLog() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let action = WorkflowAction(scheme: "Demo", platform: .macOS, export: .developerID)
+        fixture.assignment.job.action = action
+        fixture.assignment.workflow.actions = [action]
+        fixture.assignment.workflow.postActions = []
+        try handedOffFiles(fixture)
+        fixture.runner.recording.script(
+            { $0.arguments.prefix(2) == ["notarytool", "submit"] },
+            lines: [#"{"id":"abc-123","message":"Processing complete","status":"Invalid"}"#], exitCode: 1)
+        fixture.runner.recording.script(
+            { $0.arguments.prefix(2) == ["notarytool", "log"] },
+            lines: [#"{"issues":[{"message":"The binary is not signed with a valid Developer ID certificate."}]}"#])
+
+        let result = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: false, cancelled: { false })
+
+        #expect(result.status == .failed)
+        #expect(fixture.connection.status(of: "notarize") == .failed)
+        #expect(result.failureReason?.contains("Invalid") == true)
+        #expect(!fixture.runner.commands.contains { $0.arguments.first == "stapler" })
+        #expect(fixture.runner.commands.contains { $0.arguments.prefix(3) == ["notarytool", "log", "abc-123"] })
+        #expect(fixture.connection.logLines.contains { $0.contains("not signed with a valid Developer ID certificate") })
+    }
+
+    @Test func notarizeFalseSkipsTheNotaryService() async throws {
+        var fixture = try Fixture()
+        defer { fixture.removeAll() }
+        let action = WorkflowAction(scheme: "Demo", platform: .macOS, export: .developerID, notarize: false)
+        fixture.assignment.job.action = action
+        fixture.assignment.workflow.actions = [action]
+        fixture.assignment.workflow.postActions = []
+        try handedOffFiles(fixture)
+        let result = await fixture.jobRunner().runHostExport(fixture.assignment, guestLogAbridged: false, cancelled: { false })
+        #expect(result.status == .succeeded)
+        #expect(!fixture.runner.commands.contains { $0.arguments.first == "notarytool" || $0.arguments.first == "stapler" })
+        #expect(fixture.connection.status(of: "notarize") == nil)
     }
 
     @Test func anAppStoreExportLeavesTheArchiveAlone() async throws {

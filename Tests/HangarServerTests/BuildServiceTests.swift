@@ -231,6 +231,37 @@ final class FakeSourceHost: SourceHost {
         #expect(try builds.builds(appID: app.id, limit: 10).isEmpty)
     }
 
+    /// BatFi 263 spent its number on a Test job that could only fail: scheme BatFi has no tests.
+    @Test func aTestActionOnASchemeWithoutTestsReservesNothing() async throws {
+        let scheme = "Legilo.xcodeproj/xcshareddata/xcschemes/LegiloTests.xcscheme"
+        host.state.withLock {
+            $0.tree = RepositoryTree(paths: [scheme])
+            $0.files[scheme] = #"<Scheme><TestAction shouldAutocreateTestPlan = "YES"></TestAction></Scheme>"#
+        }
+        do {
+            _ = try await service.deploy(request(workflow: "ci"))
+            Issue.record("the deploy went through")
+        } catch DeployError.workflowCannotRun(let problems) {
+            #expect(problems.count == 1)
+            #expect(problems.first?.contains("“LegiloTests” has no tests") == true)
+        }
+        #expect(try builds.highestAssigned(appID: app.id) == nil)
+
+        // With tests in the scheme, the deploy goes ahead (the cached verdict is per commit).
+        host.state.withLock {
+            $0.commit = "fedcba9876543210fedcba9876543210fedcba98"
+            $0.files[scheme] = #"<Scheme><TestAction><Testables><TestableReference skipped = "NO"></TestableReference></Testables></TestAction></Scheme>"#
+        }
+        _ = try await service.deploy(request(workflow: "ci"))
+    }
+
+    @Test func aSchemeTheRepositoryHasNoFileForIsNotJudged() async throws {
+        host.state.withLock { $0.tree = RepositoryTree(paths: ["Legilo.xcodeproj/project.pbxproj"]) }
+        _ = try await service.deploy(request(workflow: "ci"))
+        host.state.withLock { $0.treeError = .http(status: 500, body: "") }
+        _ = try await service.deploy(request(workflow: "ci"))
+    }
+
     @Test func missingWorkflowFileIsExplicit() async throws {
         host.state.withLock { $0.files = [:] }
         let commit = host.state.withLock { $0.commit }

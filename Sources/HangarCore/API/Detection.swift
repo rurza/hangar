@@ -25,7 +25,8 @@ public struct GitHubRepo: Codable, Equatable, Sendable {
     }
 }
 
-/// A scheme found in the repository: a shared `.xcscheme`, or one XcodeGen generates.
+/// A scheme found in the repository: a shared `.xcscheme`, one XcodeGen generates, or one Xcode generates from a
+/// local Swift package (`package`).
 public struct DetectedScheme: Codable, Equatable, Sendable {
     public var name: String
     /// Nil when the platform could not be worked out.
@@ -38,18 +39,22 @@ public struct DetectedScheme: Codable, Equatable, Sendable {
     /// iOS and macOS lists both, so each can be its own build. `platform` stays the single one when there is
     /// exactly one, and is nil when there are several.
     public var platforms: [Platform]
+    /// The `Package.swift` Xcode generates this scheme from; nil for a scheme the repository has a file for.
+    public var package: String?
 
     public init(
-        name: String, platform: Platform?, isApplication: Bool, hasTests: Bool = false, platforms: [Platform]? = nil
+        name: String, platform: Platform?, isApplication: Bool, hasTests: Bool = false, platforms: [Platform]? = nil,
+        package: String? = nil
     ) {
         self.name = name
         self.platform = platform
         self.isApplication = isApplication
         self.hasTests = hasTests
         self.platforms = platforms ?? platform.map { [$0] } ?? []
+        self.package = package
     }
 
-    private enum CodingKeys: String, CodingKey { case name, platform, isApplication, hasTests, platforms }
+    private enum CodingKeys: String, CodingKey { case name, platform, isApplication, hasTests, platforms, package }
 
     /// A scheme from a server before `hasTests` reads it as false, and before `platforms` reads it as `platform`.
     public init(from decoder: any Decoder) throws {
@@ -59,6 +64,7 @@ public struct DetectedScheme: Codable, Equatable, Sendable {
         isApplication = try container.decode(Bool.self, forKey: .isApplication)
         hasTests = try container.decodeIfPresent(Bool.self, forKey: .hasTests) ?? false
         platforms = try container.decodeIfPresent([Platform].self, forKey: .platforms) ?? platform.map { [$0] } ?? []
+        package = try container.decodeIfPresent(String.self, forKey: .package)
     }
 }
 

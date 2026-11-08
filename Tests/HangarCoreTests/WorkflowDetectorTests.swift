@@ -650,6 +650,57 @@ private let batFi = Fixture(
         #expect(suggestion.schemes.map(\.hasTests) == [true, true, false])
     }
 
+    /// BatFi 263: the Release workflow tested scheme BatFi, which has no tests; they are in AppSharedTests and in the
+    /// schemes Xcode generates from BatFiKit.
+    @Test func schemesWithTestsIncludeTestSchemeFilesAndThoseGeneratedFromLocalPackages() throws {
+        let empty = """
+            <Scheme><TestAction buildConfiguration = "Debug" shouldAutocreateTestPlan = "YES"></TestAction></Scheme>
+            """
+        let testable = """
+            <Scheme><TestAction><Testables><TestableReference skipped = "NO"><BuildableReference BlueprintName = "AppSharedTests" ReferencedContainer = "container:BatFiKit"></BuildableReference></TestableReference></Testables></TestAction></Scheme>
+            """
+        let package = """
+            let package = Package(
+                name: "BatFiKit",
+                products: [
+                    .library(name: "AppShared", targets: ["AppShared"]),
+                    .library(name: "Settings", targets: ["Settings"]),
+                ],
+                targets: [
+                    .target(name: "AppShared"),
+                    .target(name: "LicenseToken"),
+                    .testTarget(
+                        name: "AppSharedTests",
+                        dependencies: ["AppShared"]),
+                    .testTarget(name: "LicenseTokenTests", dependencies: ["LicenseToken"]),
+                ])
+            """
+        let project = pbxproj(targets: [("T1", "BatFi", "application", "macosx", nil)])
+            .replacingOccurrences(
+                of: "\tobjects = {\n",
+                with: "\tobjects = {\n\t\tK1 /* XCLocalSwiftPackageReference \"BatFiKit\" */ = {isa = XCLocalSwiftPackageReference; relativePath = BatFiKit; };\n")
+        let fixture = Fixture(
+            files: [
+                "BatFi.xcodeproj/project.pbxproj": project,
+                "BatFi.xcodeproj/xcshareddata/xcschemes/BatFi.xcscheme": empty,
+                "BatFi.xcodeproj/xcshareddata/xcschemes/AppSharedTests.xcscheme": testable,
+                "BatFiKit/Package.swift": package,
+                "Vendor/Unused/Package.swift": "let package = Package(name: \"U\", targets: [.testTarget(name: \"UTests\")])",
+            ])
+        var requests = 0
+        let suggestion = try fixture.detect(requests: &requests)
+        #expect(requests <= WorkflowDetector.maxFileFetches)
+        let byName = Dictionary(uniqueKeysWithValues: suggestion.schemes.map { ($0.name, $0) })
+        #expect(byName["BatFi"]?.hasTests == false)
+        #expect(byName["AppSharedTests"]?.hasTests == true)
+        #expect(byName["AppSharedTests"]?.package == nil)
+        #expect(byName["AppShared"]?.hasTests == true)
+        #expect(byName["AppShared"]?.package == "BatFiKit/Package.swift")
+        #expect(byName["LicenseTokenTests"]?.hasTests == true)
+        #expect(byName["UTests"] == nil)
+        #expect(suggestion.notes.contains("BatFi has no tests; a test action runs them with AppSharedTests, AppShared or LicenseTokenTests."))
+    }
+
     @Test func inspectListsEveryProject() throws {
         let fixture = Fixture(
             files: ["iOS/Winyl.xcodeproj/project.pbxproj": pbxproj(targets: [("T1", "Winyl", "application", "iphoneos", nil)])],

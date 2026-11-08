@@ -3,7 +3,7 @@ import HangarCore
 import Hummingbird
 
 /// `GET /apps/{id}/deploy-check`: the scheduler's verdict on a deploy before it is made, so the Deploy sheet never
-/// spends a build number on a build no machine can run. Reads the workflow as a deploy does and judges every action
+/// spends a build number on a build no machine can run, or one bound to fail (`workflowProblems`). Reads the workflow as a deploy does and judges every action
 /// with `Scheduler.ineligibility` against the machines as a tick sees them (online by the server's clock). Busy, low
 /// disk and a paused machine pass with time: they are warnings, not blockers.
 extension HangarServerApp {
@@ -48,6 +48,8 @@ extension HangarServerApp {
                 notReceived: try variables.globalSecretsNotReceived(appID: app.id),
                 appStoreConnect: { try appStoreConnectClient() })
             check.notices += Self.unknownWorkflowNotices(own, links, workflows: Set(file.workflows.keys))
+            check.workflowProblems = await buildService.testSchemeProblems(app: app, workflow: workflow, commit: resolved)
+            if !check.workflowProblems.isEmpty { check.canDeploy = false }
             return try Response.json(check)
         }
     }

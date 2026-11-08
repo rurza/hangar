@@ -1,7 +1,8 @@
 /// `GET /apps/{id}/deploy-check?workflow=&ref=&machine=`: whether a deploy could run now, judged by the scheduler's
 /// own rules per action, without reserving a number or creating a build.
 public struct DeployCheck: Codable, Equatable, Sendable {
-    /// Every action has a machine that can run it (perhaps after waiting for a free slot or disk space).
+    /// Every action has a machine that can run it (perhaps after waiting for a free slot or disk space), and the
+    /// workflow has no `workflowProblems`.
     public var canDeploy: Bool
     /// Actions no machine can run, with each machine's reasons.
     public var blocking: [DeployCheckAction]
@@ -13,19 +14,24 @@ public struct DeployCheck: Codable, Equatable, Sendable {
     /// Problems in the repository or App Store Connect the build is likely to hit, found before it runs. They never
     /// block the deploy. Empty from an older server.
     public var notices: [DeployCheckNotice]
+    /// Why the workflow would fail on any machine at this commit (a test action on a scheme without tests), one
+    /// sentence each. They block the deploy: the server refuses it before reserving a number. Empty from an older
+    /// server.
+    public var workflowProblems: [String]
 
     public init(
         canDeploy: Bool, blocking: [DeployCheckAction], warnings: [DeployCheckAction], machines: [DeployCheckMachine],
-        notices: [DeployCheckNotice] = []
+        notices: [DeployCheckNotice] = [], workflowProblems: [String] = []
     ) {
         self.canDeploy = canDeploy
         self.blocking = blocking
         self.warnings = warnings
         self.machines = machines
         self.notices = notices
+        self.workflowProblems = workflowProblems
     }
 
-    private enum CodingKeys: String, CodingKey { case canDeploy, blocking, warnings, machines, notices }
+    private enum CodingKeys: String, CodingKey { case canDeploy, blocking, warnings, machines, notices, workflowProblems }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -34,6 +40,7 @@ public struct DeployCheck: Codable, Equatable, Sendable {
         warnings = try container.decode([DeployCheckAction].self, forKey: .warnings)
         machines = try container.decode([DeployCheckMachine].self, forKey: .machines)
         notices = try container.decodeIfPresent([DeployCheckNotice].self, forKey: .notices) ?? []
+        workflowProblems = try container.decodeIfPresent([String].self, forKey: .workflowProblems) ?? []
     }
 }
 

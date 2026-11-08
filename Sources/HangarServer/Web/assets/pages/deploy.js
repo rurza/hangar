@@ -367,7 +367,7 @@ export function openDeploySheet(app) {
     if (pinned && pinned.problems.length) {
       return { text: `${pinned.name} can’t run this build: ${listText(pinned.problems)}.`, link: ['Open Machines', '/machines'] };
     }
-    if (!pinned && !check.canDeploy) {
+    if (!pinned && check.blocking.length) {
       const actions = listText(check.blocking.map((entry) => entry.action));
       return { text: `No Mac can run ${actions} now: ${machineReasons(check.blocking)}.`, link: ['Open Machines', '/machines'] };
     }
@@ -434,14 +434,26 @@ export function openDeploySheet(app) {
     renderNotice();
   }
 
-  /** The deploy check's notices: they never block the deploy, but say what to fix first. */
+  /** Why the workflow would fail on any Mac at this commit (a test action on a scheme without tests). */
+  function workflowProblems() {
+    return Array.isArray(check?.workflowProblems) ? check.workflowProblems.filter((text) => typeof text === 'string' && text) : [];
+  }
+
+  /** The deploy check's workflow problems, which block the deploy, then its notices, which only say what to fix. */
   function renderPreflight() {
+    const problems = workflowProblems();
     const notices = Array.isArray(check?.notices) ? check.notices.filter((notice) => notice?.message) : [];
-    replaceChildren(preflight, notices.length
-      ? h('div', { class: 'deploy-preflight', role: 'note' },
-        h('p', { class: 'deploy-preflight-title' }, notices.length === 1 ? 'Before you deploy' : `Before you deploy (${notices.length})`),
-        h('ul', { class: 'deploy-preflight-list' }, notices.map((notice) => h('li', null, notice.message))))
-      : null);
+    replaceChildren(preflight,
+      problems.length
+        ? h('div', { class: ['deploy-preflight', 'deploy-preflight-blocking'], role: 'alert' },
+          h('p', { class: 'deploy-preflight-title' }, 'This build would fail'),
+          h('ul', { class: 'deploy-preflight-list' }, problems.map((text) => h('li', null, text))))
+        : null,
+      notices.length
+        ? h('div', { class: 'deploy-preflight', role: 'note' },
+          h('p', { class: 'deploy-preflight-title' }, notices.length === 1 ? 'Before you deploy' : `Before you deploy (${notices.length})`),
+          h('ul', { class: 'deploy-preflight-list' }, notices.map((notice) => h('li', null, notice.message))))
+        : null);
   }
 
   function renderNotice() {
@@ -499,6 +511,7 @@ export function openDeploySheet(app) {
     if (!workflow) return 'There is no workflow to deploy.';
     const gated = (workflow.postActions ?? []).find((spec) => spec.requiresApproval);
     if (gated) return `The post-action “${gated.name}” needs approval, which Hangar does not support yet.`;
+    if (workflowProblems().length) return 'Fix the workflow first (see above): this build would fail, so Deploy stays off and no build number is used.';
     if (machineBlocker()) return 'No Mac can run this build now (see Where), so Deploy stays off and no build number is used.';
     if (checkError && !check) return 'Hangar could not check which Mac can run it (see above).';
     if (!check) return 'Checking which Mac can run it…';

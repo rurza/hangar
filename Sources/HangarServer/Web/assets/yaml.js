@@ -104,7 +104,11 @@ function settingsEntries(spec) {
 /** Archives in the flat form, tests as `test: { ... }` with only the fields they set. */
 function actionLine(action) {
   const fields = [`scheme: ${string(action.scheme)}`, `platform: ${string(action.platform)}`];
-  if (action.kind !== 'test') return `{ ${[...fields, `export: ${string(action.export)}`].join(', ')} }`;
+  if (action.kind !== 'test') {
+    fields.push(`export: ${string(action.export)}`);
+    if (action.export === 'developer-id' && typeof action.notarize === 'boolean') fields.push(`notarize: ${action.notarize}`);
+    return `{ ${fields.join(', ')} }`;
+  }
   if (action.destination !== undefined && action.destination !== null) fields.push(`destination: ${name(action.destination)}`);
   if (action.testPlan !== undefined && action.testPlan !== null) fields.push(`test-plan: ${name(action.testPlan)}`);
   return `test: { ${fields.join(', ')} }`;

@@ -118,6 +118,7 @@ extension JobRunner {
         }
         guard pipeline.status == .succeeded else {
             await pipeline.skip(StepName.export)
+            if action.notarizes { await pipeline.skip(StepName.notarize) }
             for spec in assignment.workflow.postActions { await pipeline.skip(StepName.postAction(spec.name)) }
             return nil
         }
@@ -168,10 +169,14 @@ extension JobRunner {
                     environment: prepared.environment, log: log.lines(StepName.export))
             }
             let exported = await export(assignment, prepared: prepared, layout: layout, log: log, pipeline: &pipeline)
-            outputs = await postActions(
+            outputs = await notarize(
+                assignment, prepared: prepared, layout: layout, exported: exported, log: log, pipeline: &pipeline)
+            outputs.merge(await postActions(
                 assignment, prepared: prepared, layout: layout, exported: exported, log: log, masker: masker, pipeline: &pipeline)
+            ) { _, new in new }
         } catch {
             await pipeline.step(StepName.export) { () async throws -> Void in throw error }
+            if assignment.job.action.notarizes { await pipeline.skip(StepName.notarize) }
             for spec in assignment.workflow.postActions { await pipeline.skip(StepName.postAction(spec.name)) }
         }
 

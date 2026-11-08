@@ -47,7 +47,7 @@ import Testing
              "postActions": [{"name": "testflight", "settings": {}, "requiresApproval": false}]}
             """#
         #expect(try Self.steps(workflow)
-            == "Archives Legilo (macOS) with Xcode 27.2. | Exports a Developer ID app to download from the build page.")
+            == "Archives Legilo (macOS) with Xcode 27.2. | Exports a notarized Developer ID app to download from the build page.")
         #expect(try Self.summary(workflow) == "Archives Legilo (macOS) · Download only")
     }
 

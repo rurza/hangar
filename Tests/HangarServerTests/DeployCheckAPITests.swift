@@ -109,6 +109,33 @@ private struct DescriptionASC: AppStoreConnectClient {
         #expect(check.blocking.first?.reasons["mini"] == ["update the worker (run the install command again)"])
     }
 
+    /// BatFi 263: the Release workflow's test action named scheme BatFi, whose Test action is empty.
+    @Test func aTestActionOnASchemeWithoutTestsBlocksTheDeploy() async throws {
+        let fixture = try fixture()
+        let scheme = "Legilo.xcodeproj/xcshareddata/xcschemes/LegiloMobile.xcscheme"
+        fixture.host.state.withLock {
+            $0.files[WorkflowFile.path] = testWorkflow
+            $0.tree = RepositoryTree(paths: [scheme])
+            $0.files[scheme] = #"<Scheme><TestAction shouldAutocreateTestPlan = "YES"></TestAction></Scheme>"#
+        }
+        _ = try addMachine(fixture, "mini", report: report())
+        let check = try await check(fixture, "workflow=ci&ref=main")
+        #expect(!check.canDeploy)
+        #expect(check.blocking.isEmpty)
+        #expect(check.workflowProblems.count == 1)
+        #expect(check.workflowProblems.first?.contains("“LegiloMobile” has no tests") == true)
+
+        try await fixture.test { client in
+            let body = #"{"app": "legilo", "workflow": "ci", "ref": "main"}"#
+            try await client.execute(uri: "/api/v1/builds", method: .post, headers: [.contentType: "application/json"], body: ByteBuffer(string: body)) { response in
+                #expect(response.status == .unprocessableContent, "\(response.status) \(String(buffer: response.body))")
+                #expect(String(buffer: response.body).contains("workflow_cannot_run"))
+            }
+        }
+        let app = try #require(try fixture.server.apps.find(slugOrID: "legilo"))
+        #expect(try fixture.server.builds.highestAssigned(appID: app.id) == nil)
+    }
+
     @Test func aBusyMachineIsAWarningNotABlocker() async throws {
         let fixture = try fixture()
         let machine = try addMachine(fixture, "mini", report: report(freeDisk: 5))

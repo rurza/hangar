@@ -61,6 +61,7 @@ An action archives a scheme or runs its tests, like Xcode Cloud's Archive and Te
     actions:
       - { scheme: LegiloMobile, platform: ios, export: app-store-connect }              # archive (flat form)
       - archive: { scheme: Legilo, platform: macos, export: developer-id }              # archive (explicit form)
+      - { scheme: Legilo Beta, platform: macos, export: developer-id, notarize: false }   # not notarized
       - test: { scheme: LegiloMobile, platform: ios, destination: "iPhone 17 Pro", test-plan: Smoke }
       - test: { scheme: Legilo, platform: macos }
 ```
@@ -70,12 +71,24 @@ An action archives a scheme or runs its tests, like Xcode Cloud's Archive and Te
 | `scheme` | required | required | Xcode scheme name. |
 | `platform` | required | required | `ios`, `macos`, `visionos`, `tvos`, `watchos`. |
 | `export` | required | not allowed | `app-store-connect`, `developer-id`. |
+| `notarize` | optional, `developer-id` only | not allowed | `true` (the default) or `false`. See [Notarization](#notarization). |
 | `destination` | not allowed | optional | A simulator name, or `recommended` (the default). Not allowed on a macOS test. |
 | `test-plan` | not allowed | optional | Test plan passed to `xcodebuild -testPlan`; default: the scheme's. |
 
+#### Notarization
+
+A `developer-id` archive is notarized by default, like Xcode Cloud's Notarize action. After `export`, a `notarize` step zips the exported `.app`, sends it to Apple with `xcrun notarytool submit --wait` and the server's App Store Connect team key (the one the export uses), staples the ticket with `xcrun stapler staple` and checks it with `xcrun stapler validate`. The `.app.zip` artifact is then the stapled app, zipped with `ditto -c -k --keepParent` without resource forks or extended attributes (a stray `com.apple.FinderInfo` breaks Sparkle's validation). It passes `spctl -a -vv` ("accepted, source=Notarized Developer ID") on any Mac.
+
+- Apple's submission ID is in the step's log and in the job's outputs (`notarization.submissionID`, `notarization.status`), on the build page and in the MCP `get_build`.
+- Any status but Accepted fails the job: the log then has `notarytool log` for the submission, with Apple's reasons. Hangar waits for an answer for at most an hour.
+- Without a team key on the server the step fails and says so.
+- `notarize: false` skips the step: the app is signed with Developer ID but Gatekeeper and Sparkle refuse it until it is notarized.
+
 #### What a test action runs
 
-A test job runs `checkout` → `post-clone` → `pre-xcodebuild` → `test` → `post-xcodebuild` → `upload-artifacts` → `cleanup`. It has no stamp, export or post-actions. The `test` step resolves Swift packages as an archive does, then runs `xcodebuild test -scheme … -destination … [-testPlan …] -resultBundlePath <job>/result.xcresult` with the same signing flags as an archive (`-allowProvisioningUpdates`, and the team API key when there is one) and without secret variables. The worker does not need the App Store Connect key for a test job, but a deploy still does: the server reserves the build number through App Store Connect, for test-only workflows too.
+A test job runs `checkout` → `post-clone` → `pre-xcodebuild` → `test` → `post-xcodebuild` → `upload-artifacts` → `cleanup`. It has no stamp, export or post-actions.
+
+The scheme's Test action must have something to run. When the repository has the scheme's shared `.xcscheme` and its Test action lists no test targets or test plan, `xcodebuild test` would fail at once ("Scheme X is not currently configured for the test action"), so the deploy check reports it under `workflowProblems` and the server refuses the deploy before it reserves a build number. A scheme the repository has no file for (one Xcode generates from a local Swift package, say) is not judged. The workflow editor and `suggest_workflow` mark schemes with tests, including the ones Xcode generates from a local package's `Package.swift`: a test target `<Product>Tests` runs in the product's scheme, any other test target in a scheme of its own. The `test` step resolves Swift packages as an archive does, then runs `xcodebuild test -scheme … -destination … [-testPlan …] -resultBundlePath <job>/result.xcresult` with the same signing flags as an archive (`-allowProvisioningUpdates`, and the team API key when there is one) and without secret variables. The worker does not need the App Store Connect key for a test job, but a deploy still does: the server reserves the build number through App Store Connect, for test-only workflows too.
 
 Destinations:
 

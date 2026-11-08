@@ -176,7 +176,13 @@ extension HangarTools {
         }
 
         let check = try await api.deployCheck(app: app, workflow: workflowName, ref: ref, machine: machine)
-        if !check.canDeploy && !allowBlocked {
+        if !check.workflowProblems.isEmpty {
+            throw ToolError(
+                "The build would fail at '\(ref)', so it was not started and no build number was used:\n- "
+                    + check.workflowProblems.joined(separator: "\n- ")
+                    + "\nFix the workflow (set_workflow) and try again.")
+        }
+        if !check.blocking.isEmpty && !allowBlocked {
             let reasons = check.blocking.map { action in
                 action.reasons.isEmpty
                     ? "\(action.action): no build Mac is enrolled" + (machine.map { " named \($0)" } ?? "")

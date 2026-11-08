@@ -102,7 +102,7 @@ public enum WorkflowFileParser {
         return WorkflowStart(branches: branches)
     }
 
-    /// `- { scheme, platform, export }` (an archive), `- archive: { scheme, platform, export }` or
+    /// `- { scheme, platform, export, notarize? }` (an archive), `- archive: { scheme, platform, export, notarize? }` or
     /// `- test: { scheme, platform, destination?, test-plan? }`.
     private static func action(_ value: JSONValue, workflow: String) throws(WorkflowFileError) -> WorkflowAction {
         guard case .object(let map) = value else { throw .invalidYAML("workflow '\(workflow)': each action must be a map") }
@@ -130,17 +130,27 @@ public enum WorkflowFileParser {
         if let testKey = ["destination", "test-plan"].first(where: { map[$0] != nil }) {
             throw .invalidYAML("\(context): '\(testKey)' only applies to test actions")
         }
-        try rejectUnknownKeys(map, allowed: ["scheme", "platform", "export"], context: context)
+        try rejectUnknownKeys(map, allowed: ["scheme", "platform", "export", "notarize"], context: context)
         let (scheme, platform) = try schemeAndPlatform(map, workflow: workflow)
         let exportName = try required(map, "export", workflow: workflow)
         guard let export = ExportMethod(rawValue: exportName) else { throw .unknownExportMethod(exportName) }
-        return WorkflowAction(scheme: scheme, platform: platform, export: export)
+        var notarize: Bool?
+        if let value = map["notarize"] {
+            guard case .bool(let flag) = value else { throw .invalidYAML("\(context): 'notarize' must be true or false") }
+            guard export == .developerID else {
+                throw .invalidYAML("\(context): 'notarize' only applies to 'export: developer-id': App Store builds are not notarized")
+            }
+            notarize = flag
+        }
+        return WorkflowAction(scheme: scheme, platform: platform, export: export, notarize: notarize)
     }
 
     private static func testFields(
         _ map: [String: JSONValue], context: String, workflow: String
     ) throws(WorkflowFileError) -> WorkflowAction {
-        if map["export"] != nil { throw .invalidYAML("\(context): 'export' is not allowed on a test action") }
+        if let key = ["export", "notarize"].first(where: { map[$0] != nil }) {
+            throw .invalidYAML("\(context): '\(key)' is not allowed on a test action")
+        }
         try rejectUnknownKeys(map, allowed: ["scheme", "platform", "destination", "test-plan"], context: context)
         let (scheme, platform) = try schemeAndPlatform(map, workflow: workflow)
         var destination = try optionalString(map["destination"], key: "destination", workflow: workflow)

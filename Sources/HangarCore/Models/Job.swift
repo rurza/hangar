@@ -48,6 +48,8 @@ public enum StepName {
     public static let test = "test"
     public static let stamp = "stamp"
     public static let export = "export"
+    /// A Developer ID archive's notarization and stapling, after the export.
+    public static let notarize = "notarize"
     public static let postXcodebuild = "post-xcodebuild"
     public static let uploadArtifacts = "upload-artifacts"
     public static let cleanup = "cleanup"
@@ -55,11 +57,12 @@ public enum StepName {
     /// `"post-action:testflight"` for `"testflight"`.
     public static func postAction(_ name: String) -> String { "post-action:\(name)" }
 
-    /// Every step a job of `action` reports, in order. Test jobs have no stamp, export or post-actions.
+    /// Every step a job of `action` reports, in order. Test jobs have no stamp, export or post-actions; only Developer
+    /// ID archives that notarize have `notarize`.
     public static func sequence(for action: WorkflowAction, postActions: [String]) -> [String] {
         switch action.kind {
         case .archive:
-            [checkout, postClone, preXcodebuild, archive, stamp, export, postXcodebuild]
+            [checkout, postClone, preXcodebuild, archive, stamp, export] + (action.notarizes ? [notarize] : []) + [postXcodebuild]
                 + postActions.map(postAction) + [uploadArtifacts, cleanup]
         case .test:
             [checkout, postClone, preXcodebuild, test, postXcodebuild, uploadArtifacts, cleanup]

@@ -46,6 +46,7 @@ public enum WorkflowYAMLWriter {
         switch action.kind {
         case .archive:
             fields.append("export: \((action.export ?? .appStoreConnect).rawValue)")
+            if action.export == .developerID, let notarize = action.notarize { fields.append("notarize: \(notarize)") }
             return "{ \(fields.joined(separator: ", ")) }"
         case .test:
             if let destination = action.destination { fields.append("destination: \(scalar(destination))") }

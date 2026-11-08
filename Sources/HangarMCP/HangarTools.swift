@@ -327,7 +327,7 @@ public struct HangarTools: Sendable {
                 repository's .hangar.yml. Give exactly one of: `yaml` (the whole file, format of .hangar.yml, kept \
                 verbatim), `workflow_name` with `workflow` (one workflow as JSON, merged into the current file: \
                 {project|workspace, xcode, teamID?, tools?, actions: [{kind: archive|test, scheme, platform: \
-                ios|macos|visionos|tvos|watchos, export?: app-store-connect|developer-id, destination?, testPlan?}], \
+                ios|macos|visionos|tvos|watchos, export?: app-store-connect|developer-id, notarize?: false (developer-id only; default notarizes and staples), destination?, testPlan?}], \
                 postActions?: [{name: "testflight", settings: {groups: [..], "submit-for-external-review": false}}], \
                 start?: {manual: {branches: "any" | ["main", "release/*"]}}}), or `remove` (a workflow's name). \
                 Structured edits rewrite the file in canonical form, dropping comments. The result is validated with the \
@@ -388,7 +388,9 @@ public struct HangarTools: Sendable {
             description: """
                 A dry run of start_build: whether every action of the workflow has a Mac that can run it now, judged by \
                 the scheduler's own rules. `blocking` actions cannot run anywhere (offline, missing Xcode, tools, \
-                signing, simulator, outdated worker); `warnings` only wait (busy, low disk). Reserves nothing.
+                signing, simulator, outdated worker); `warnings` only wait (busy, low disk); `workflowProblems` say why \
+                the build would fail on any Mac (a test action on a scheme without tests), and start_build refuses \
+                those. Reserves nothing.
                 """,
             inputSchema: Schema.object(
                 [
@@ -414,7 +416,7 @@ public struct HangarTools: Sendable {
                 can upload to App Store Connect, add the build to TestFlight groups (testers get it) or submit it for \
                 beta review. Call it only when the user asked for this build. Needs confirm: true. Runs deploy_check \
                 first and refuses when an action cannot run on any Mac, unless allow_blocked: true (the build then \
-                waits in the queue). Without `ref` it uses the workflow's first start branch, else the default branch.
+                waits in the queue), and always when the workflow would fail (deploy_check's workflowProblems). Without `ref` it uses the workflow's first start branch, else the default branch.
                 """,
             inputSchema: Schema.object(
                 [

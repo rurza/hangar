@@ -52,10 +52,23 @@ enum Views {
         var queueNote: String?
         var failureReason: String?
         var tests: TestOutputs?
+        /// A Developer ID archive's notarization: Apple's submission ID and its status ("Accepted").
+        var notarization: Notarization?
         var startedAt: Date?
         var finishedAt: Date?
         /// The last lines of the failed step's log, for a failed job.
         var logExcerpt: [String]?
+    }
+
+    struct Notarization: Encodable, Equatable {
+        var submissionID: String
+        var status: String?
+
+        init?(_ outputs: [String: String]) {
+            guard let id = outputs["notarization.submissionID"], !id.isEmpty else { return nil }
+            submissionID = id
+            status = outputs["notarization.status"].flatMap { $0.isEmpty ? nil : $0 }
+        }
     }
 
     struct BuildView: Encodable {
@@ -128,7 +141,8 @@ enum Views {
             currentStep: job.steps.first { $0.status == .running }?.name,
             failedStep: job.steps.first { $0.status == .failed }?.name,
             steps: job.steps.map { "\($0.name): \($0.status.rawValue)" }, queueNote: job.queueNote,
-            failureReason: job.failureReason, tests: TestOutputs(job.outputs), startedAt: job.startedAt,
+            failureReason: job.failureReason, tests: TestOutputs(job.outputs), notarization: Notarization(job.outputs),
+            startedAt: job.startedAt,
             finishedAt: job.finishedAt, logExcerpt: excerpt)
     }
 

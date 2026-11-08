@@ -62,7 +62,9 @@ function workflowSteps(workflow) {
   } else if (archives.length) {
     const developerID = archives.every((action) => action.export === 'developer-id');
     steps.push(developerID
-      ? 'Exports a Developer ID app to download from the build page.'
+      ? archives.every((action) => action.notarize === false)
+        ? 'Exports a Developer ID app, not notarized, to download from the build page.'
+        : 'Exports a notarized Developer ID app to download from the build page.'
       : 'Uploads nothing: the .ipa or .pkg is on the build page to download.');
   }
   for (const spec of workflow?.postActions ?? []) {

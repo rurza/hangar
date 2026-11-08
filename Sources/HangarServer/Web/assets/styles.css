@@ -1278,6 +1278,8 @@ button.detected-item:hover:not(:disabled), button.detected-item:focus-visible { 
   font: var(--subhead);
   letter-spacing: -0.24px;
 }
+.deploy-preflight-blocking { background: color-mix(in srgb, var(--failure) 14%, transparent); }
+.deploy-preflight + .deploy-preflight { margin-top: 8px; }
 .deploy-preflight-title { margin: 0 0 4px; font-weight: 600; }
 .deploy-preflight-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; overflow-wrap: anywhere; }
 .facts { display: grid; gap: var(--space-1); margin: 0; }

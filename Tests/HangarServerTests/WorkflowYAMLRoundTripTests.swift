@@ -69,6 +69,15 @@ import Testing
             postActions: [PostActionSpec(name: "testflight")]),
     ])
 
+    static let notarizeOptOut = WorkflowFile(version: 1, workflows: [
+        "release": Workflow(
+            project: "BatFi.xcodeproj", xcode: "27.2",
+            actions: [
+                WorkflowAction(scheme: "BatFi", platform: .macOS, export: .developerID),
+                WorkflowAction(scheme: "BatFi Beta", platform: .macOS, export: .developerID, notarize: false),
+            ]),
+    ])
+
     static let withStart = WorkflowFile(version: 1, workflows: [
         "release": Workflow(
             project: "Legilo.xcodeproj", xcode: "27.2",
@@ -87,6 +96,7 @@ import Testing
         ("strings needing quotes", needsQuotes),
         ("test actions", withTests),
         ("manual start branches", withStart),
+        ("notarize opt-out", notarizeOptOut),
     ])
     func roundTrip(name: String, file: WorkflowFile) throws {
         let yaml = try Self.workflowToYAML(file)
@@ -108,6 +118,7 @@ import Testing
         ("strings needing quotes", needsQuotes),
         ("test actions", withTests),
         ("manual start branches", withStart),
+        ("notarize opt-out", notarizeOptOut),
     ])
     func roundTripThroughTheForm(name: String, file: WorkflowFile) throws {
         let yaml = try Self.runJXA(file, "workflowToYAML(fileFromModels(modelsFromFile(input)))")
@@ -294,7 +305,7 @@ import Testing
             })()
             """)
         #expect(output == """
-            [{"kind":"test","scheme":"Legilo","platform":"macos"},{"kind":"archive","scheme":"Legilo","platform":"macos","export":"developer-id"}] | false | Tests Legilo (macOS). Archives Legilo (macOS) with Xcode 27.2. Exports a Developer ID app to download from the build page.
+            [{"kind":"test","scheme":"Legilo","platform":"macos"},{"kind":"archive","scheme":"Legilo","platform":"macos","export":"developer-id"}] | false | Tests Legilo (macOS). Archives Legilo (macOS) with Xcode 27.2. Exports a notarized Developer ID app to download from the build page.
             [{"kind":"archive","scheme":"LegiloMobile","platform":"ios","export":"app-store-connect"}] | false | Archives LegiloMobile (iOS) with Xcode 27.2. Uploads nothing: the .ipa or .pkg is on the build page to download.
             [{"kind":"test","scheme":"LegiloMobile","platform":"ios"}] | false | Tests LegiloMobile (iOS) with Xcode 27.2.
             """)

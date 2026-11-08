@@ -936,7 +936,8 @@ function workflowEditor({ app, stored: initial, context }) {
     const apps = schemes.filter((scheme) => scheme.isApplication);
     const others = schemes.filter((scheme) => !scheme.isApplication);
     // A scheme of unknown platform is listed under every platform, saying so.
-    const label = (scheme) => [scheme.name, action.kind === 'test' && scheme.hasTests && 'has tests', scheme.unverified && 'platform not detected']
+    const label = (scheme) => [scheme.name, action.kind === 'test' && scheme.hasTests && 'has tests',
+      action.kind === 'test' && scheme.package && `from ${scheme.package}`, scheme.unverified && 'platform not detected']
       .filter(Boolean).join(' · ');
     const groupsOfOptions = action.kind === 'test'
       ? [['', schemes.map((scheme) => [scheme.name, label(scheme)])]]
@@ -982,6 +983,18 @@ function workflowEditor({ app, stored: initial, context }) {
                   : 'Signs the Mac app for direct download, outside the App Store. Can’t go to TestFlight.'
                 : 'Mac apps only.',
               disabled: action.platform !== 'macos',
+              extra: action.platform === 'macos' ? h('ul', { class: 'wf-checklist' }, checkRow({
+                title: 'Notarize with Apple',
+                detail: action.notarize === false
+                  ? 'Off: Gatekeeper and Sparkle refuse the app until it is notarized.'
+                  : 'Sends the app to Apple’s notary service and staples the ticket, so it opens on any Mac.',
+                checked: action.notarize !== false,
+                onChange: (on) => {
+                  action.notarize = on ? undefined : false;
+                  draw();
+                  onChange();
+                },
+              })) : null,
             },
           ],
           onChange: (value) => {

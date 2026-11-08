@@ -257,10 +257,37 @@ private func yaml(project: String = "project: A.xcodeproj", actions: String = "-
         ("- test: { scheme: A, platform: macos, destination: \"iPhone 17\" }", "macOS"),
         ("- { test: { scheme: A, platform: ios }, scheme: B }", "cannot be mixed"),
         ("- test: { scheme: A, platform: ios, test-plan: \"\" }", "test-plan"),
+        ("- test: { scheme: A, platform: macos, notarize: false }", "notarize"),
+        ("- { scheme: A, platform: macos, export: app-store-connect, notarize: false }", "developer-id"),
+        ("- { scheme: A, platform: macos, export: developer-id, notarize: \"no\" }", "true or false"),
     ])
     func rejectsInvalidActionCombinations(action: String, mentioned: String) {
         let message = invalidYAMLMessage(yaml(actions: action))
         #expect(message?.contains(mentioned) == true, "\(action): \(message ?? "parsed")")
+    }
+
+    @Test func developerIDArchivesNotarizeUnlessTheyOptOut() throws {
+        let actions = """
+            - { scheme: A, platform: macos, export: developer-id }
+                  - { scheme: B, platform: macos, export: developer-id, notarize: false }
+                  - archive: { scheme: C, platform: macos, export: developer-id, notarize: true }
+                  - { scheme: D, platform: macos, export: app-store-connect }
+            """
+        let file = try WorkflowFileParser.parse(yaml(actions: actions, post: "[]"))
+        let workflow = try #require(file.workflows["testflight"])
+        #expect(workflow.actions.map(\.notarize) == [nil, false, true, nil])
+        #expect(workflow.actions.map(\.notarizes) == [true, false, true, false])
+        #expect(StepName.sequence(for: workflow.actions[0], postActions: []).contains(StepName.notarize))
+        #expect(!StepName.sequence(for: workflow.actions[1], postActions: []).contains(StepName.notarize))
+        #expect(StepName.sequence(for: workflow.actions[0], postActions: [])
+            .split(separator: StepName.notarize).first?.last == StepName.export)
+
+        let text = WorkflowYAMLWriter.yaml(file)
+        #expect(text.contains("{ scheme: B, platform: macos, export: developer-id, notarize: false }"))
+        #expect(text.contains("{ scheme: A, platform: macos, export: developer-id }"))
+        #expect(try WorkflowFileParser.parse(text) == file)
+        let data = try JSONEncoder().encode(workflow.actions[1])
+        #expect(try JSONDecoder().decode(WorkflowAction.self, from: data) == workflow.actions[1])
     }
 
     @Test func testActionJSONRoundTripsAndOldJSONDecodesAsArchive() throws {

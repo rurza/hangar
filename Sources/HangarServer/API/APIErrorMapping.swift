@@ -53,7 +53,7 @@ enum APIErrorMapping {
         if code == "github_rate_limited" { return .serviceUnavailable }
         if code == "asc_unavailable" || code == "asc_refused" { return .badGateway }
         if code == "detection_timeout" { return .gatewayTimeout }
-        if code == "no_project_found" { return .unprocessableContent }
+        if code == "no_project_found" || code == "workflow_cannot_run" { return .unprocessableContent }
         if notFoundCodes.contains(code) { return .notFound }
         if conflictCodes.contains(code) { return .conflict }
         return .badRequest
@@ -95,6 +95,8 @@ enum APIErrorMapping {
                 "approval_not_supported", "Post-action '\(postAction)' requires approval, which is not supported yet.")
         case .numbering(let error): map(error)
         case .buildNotFound(let id): self.error("build_not_found", "No build \(id.uuidString).")
+        case .workflowCannotRun(let problems):
+            self.error("workflow_cannot_run", problems.joined(separator: " ") + " No build number was used.")
         }
     }
 

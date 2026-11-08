@@ -24,6 +24,7 @@ const STEP_LABELS = {
   test: 'Test',
   stamp: 'Stamp build number',
   export: 'Export',
+  notarize: 'Notarize',
   'post-xcodebuild': 'Post-xcodebuild script',
   'upload-artifacts': 'Upload artifacts',
   cleanup: 'Clean up',
@@ -33,6 +34,8 @@ const STEP_LABELS = {
 const OUTPUT_LABELS = {
   'testflight.processingState': 'TestFlight build state',
   'testflight.buildID': 'TestFlight build ID',
+  'notarization.submissionID': 'Notarization submission',
+  'notarization.status': 'Notarization status',
 };
 
 // MARK: Shared helpers

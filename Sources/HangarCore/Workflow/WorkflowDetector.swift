@@ -16,11 +16,15 @@ public enum WorkflowDetector {
     static let ciScriptNames = ["ci_post_clone.sh", "ci_pre_xcodebuild.sh"]
     /// Shared schemes whose target is unknown by name; each costs a request.
     static let maxSchemeFetches = 3
+    /// Shared schemes named like tests whose file is read to know whether they run any.
+    static let maxTestSchemeFetches = 2
+    /// Local packages whose `Package.swift` is read for the schemes Xcode generates from it.
+    static let maxPackageFetches = 2
     /// Apps whose `.appiconset` Contents.json is fetched.
     static let maxIconFetches = 4
     /// How many files a reader fetches in all beyond the commit and the tree, and in how many rounds of
     /// `filesToFetch` (shared by the server and the tests).
-    public static let maxFileFetches = 9
+    public static let maxFileFetches = 12
     public static let maxFetchRounds = 4
     /// Text files bigger than this are not fetched.
     public static let maxTextBytes = 8 * 1024 * 1024
@@ -278,17 +282,27 @@ extension WorkflowDetector {
             // Schemes, each with the target it builds when known.
             var found: [(name: String, target: Target?)] = []
             var withTests = spec?.schemesWithTests ?? []
+            // What a read scheme file says about its tests wins over guesses from target names.
+            var schemeFileHasTests: [String: Bool] = [:]
             var platformsFromSpec = false
             if !layout.sharedSchemes.isEmpty {
                 var fetches = 0
+                var testFetches = 0
                 for scheme in layout.sharedSchemes {
+                    let text = files[scheme.path]
+                    if let text { schemeFileHasTests[scheme.name] = SchemeTests.hasTests(schemeXML: text) }
                     if let match = target(named: scheme.name) {
                         found.append((scheme.name, match))
-                    } else if let text = files[scheme.path] {
+                    } else if let text {
                         found.append((scheme.name, WorkflowDetector.blueprintName(text).flatMap(target(named:))))
-                        if text.contains("<TestableReference") { withTests.insert(scheme.name) }
                     } else {
-                        if !targets.isEmpty && fetches < WorkflowDetector.maxSchemeFetches
+                        // A scheme named like tests is what a test action wants: read it to know whether it has any.
+                        if WorkflowDetector.looksLikeTests(scheme.name) {
+                            if testFetches < WorkflowDetector.maxTestSchemeFetches {
+                                wanted.append(scheme.path)
+                                testFetches += 1
+                            }
+                        } else if !targets.isEmpty && fetches < WorkflowDetector.maxSchemeFetches
                             && !WorkflowDetector.looksLikeNonApp(scheme.name)
                         {
                             wanted.append(scheme.path)
@@ -323,13 +337,46 @@ extension WorkflowDetector {
             schemes = found.map { scheme in
                 let isApplication = !WorkflowDetector.looksLikeNonApp(scheme.name) && (scheme.target?.isApplication ?? true)
                 let names = [scheme.name, scheme.target?.name].compactMap { $0 }
-                let hasTests = withTests.contains(scheme.name)
-                    || names.contains { testTargetNames.contains("\($0)Tests") || testTargetNames.contains("\($0)UITests") }
+                let hasTests = schemeFileHasTests[scheme.name] ?? (withTests.contains(scheme.name)
+                    || names.contains { testTargetNames.contains("\($0)Tests") || testTargetNames.contains("\($0)UITests") })
                 let platforms = scheme.target?.platforms ?? []
                 return DetectedScheme(
                     name: scheme.name, platform: platforms.count == 1 ? platforms[0] : nil, isApplication: isApplication,
                     hasTests: hasTests, platforms: platforms)
             }
+            // Local Swift packages: Xcode generates a scheme per product, and test targets run in them.
+            let pbxText = layout.pbxproj.flatMap { files[$0] }
+            for package in WorkflowDetector.localPackages(paths: paths, pbxproj: pbxText) {
+                guard let text = files[package] else {
+                    wanted.append(package)
+                    continue
+                }
+                let generated = SchemeTests.generatedSchemesWithTests(packageSwift: text)
+                guard !generated.isEmpty else { continue }
+                for name in generated {
+                    if let index = schemes.firstIndex(where: { $0.name == name }) {
+                        // A shared scheme of that name replaces the generated one; its own file has the last word.
+                        if schemeFileHasTests[name] == nil { schemes[index].hasTests = true }
+                    } else {
+                        schemes.append(DetectedScheme(
+                            name: name, platform: nil, isApplication: false, hasTests: true, platforms: [], package: package))
+                    }
+                }
+                notes.append(
+                    "Xcode generates schemes from \(package): \(WorkflowDetector.listText(generated)) run its tests.")
+            }
+
+            // Where a test action should point when the app's own scheme runs no tests.
+            let appSchemes = schemes.filter(\.isApplication)
+            if !appSchemes.isEmpty, !appSchemes.contains(where: \.hasTests) {
+                let tested = schemes.filter { $0.hasTests && $0.package == nil }.map(\.name).sorted()
+                    + schemes.filter { $0.hasTests && $0.package != nil }.map(\.name).sorted()
+                if !tested.isEmpty {
+                    notes.append(
+                        "\(WorkflowDetector.listText(appSchemes.map(\.name))) \(appSchemes.count == 1 ? "has" : "have") no tests; a test action runs them with \(WorkflowDetector.listText(Array(tested.prefix(3)), or: true)).")
+                }
+            }
+
             if let spec {
                 let specNames = Set(spec.targets.map(\.name))
                 platformsFromSpec = found.contains { $0.target.map { specNames.contains($0.name) && !$0.platforms.isEmpty } ?? false }
@@ -524,6 +571,31 @@ extension WorkflowDetector {
     /// Named like tests, a framework or a library rather than an app.
     static func looksLikeNonApp(_ name: String) -> Bool {
         ["Tests", "UITests", "Kit", "Framework"].contains { name.hasSuffix($0) }
+    }
+
+    /// Named like a scheme that runs tests ("AppSharedTests", "Unit Tests").
+    static func looksLikeTests(_ name: String) -> Bool {
+        name.range(of: "test", options: .caseInsensitive) != nil
+    }
+
+    /// `Package.swift` files of local packages the project builds: at most `maxPackageFetches`, shallowest first,
+    /// and, when the project file is known, only those it references by directory name.
+    static func localPackages(paths: [String], pbxproj: String?) -> [String] {
+        paths.filter { $0 == "Package.swift" || $0.hasSuffix("/Package.swift") }
+            .filter { path in
+                guard let pbxproj else { return true }
+                let directory = parent(path)
+                return directory.isEmpty
+                    ? pbxproj.contains("XCLocalSwiftPackageReference")
+                    : pbxproj.contains((directory as NSString).lastPathComponent)
+            }
+            .sorted { (depth($0), $0) < (depth($1), $1) }
+            .prefix(maxPackageFetches).map { $0 }
+    }
+
+    /// "A", "A and B", "A, B and C" (or "A, B or C").
+    static func listText(_ items: [String], or: Bool = false) -> String {
+        items.count < 2 ? items.joined() : items.dropLast().joined(separator: ", ") + (or ? " or " : " and ") + items.last!
     }
 
     /// The target's icon, and the Contents.json to fetch first when its `.appiconset` has not been read yet.

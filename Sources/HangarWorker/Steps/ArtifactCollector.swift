@@ -40,14 +40,14 @@ public struct ArtifactCollector: Sendable {
         try fileManager.createDirectory(atPath: staging, withIntermediateDirectories: true)
         var collection = ArtifactCollection()
 
-        func zip(_ source: String, as name: String) async {
+        func zip(_ source: String, as name: String, arguments: [String]? = nil) async {
             guard fileManager.fileExists(atPath: source) else { return }
             let destination = staging + "/" + name
             log("zipping \(name)")
             do {
                 let outcome = try await runner.run(
                     ProcessCommand(
-                        executable: "/usr/bin/ditto", arguments: ["-c", "-k", "--keepParent", source, destination]),
+                        executable: "/usr/bin/ditto", arguments: arguments ?? ["-c", "-k", "--keepParent", source, destination]),
                     onLine: log)
                 guard outcome.exitCode == 0 else { throw ArtifactError.zipFailed(name: name, exitCode: outcome.exitCode) }
                 collection.artifacts.append((name, URL(fileURLWithPath: destination)))
@@ -69,7 +69,10 @@ public struct ArtifactCollector: Sendable {
         let exported = ((try? fileManager.contentsOfDirectory(atPath: layout.export)) ?? []).sorted()
         for name in exported {
             switch (name as NSString).pathExtension {
-            case "app": await zip(layout.export + "/" + name, as: name + ".zip")
+            // The app is zipped as one to distribute: no AppleDouble files, which Sparkle's validation trips on.
+            case "app":
+                let source = layout.export + "/" + name
+                await zip(source, as: name + ".zip", arguments: NotarizeStep.zipArguments(source, staging + "/" + name + ".zip"))
             case "ipa", "pkg": file(name)
             default: break
             }

@@ -13,6 +13,8 @@ public enum DeployError: Error, Equatable, Sendable {
     case buildNotFound(UUID)
     /// A token deploy named something other than one of the app's branches or tags.
     case refNotAllowed(String)
+    /// The workflow would fail for sure at this commit (a test action on a scheme without tests): one sentence each.
+    case workflowCannotRun([String])
 }
 
 /// Which refs a deploy may build.
@@ -40,13 +42,16 @@ public struct BuildService: Sendable {
     let cancelRequests: CancelRequests
     /// Repository workflow files parsed per commit (stored workflows are read from the database every time).
     let repositoryFiles: WorkflowFileCache
+    let testSchemes: TestSchemeCheck
 
     public init(
         apps: AppRepository, builds: BuildRepository, machines: MachineRepository, variables: VariableRepository,
         workflowFiles: WorkflowFileRepository, numbers: BuildNumberService, sourceHost: any SourceHost, events: EventBus, scheduler: SchedulerLoop,
-        cancelRequests: CancelRequests, repositoryFiles: WorkflowFileCache = WorkflowFileCache()
+        cancelRequests: CancelRequests, repositoryFiles: WorkflowFileCache = WorkflowFileCache(),
+        testSchemes: TestSchemeCheck = TestSchemeCheck()
     ) {
         self.repositoryFiles = repositoryFiles
+        self.testSchemes = testSchemes
         self.apps = apps
         self.builds = builds
         self.machines = machines
@@ -75,6 +80,8 @@ public struct BuildService: Sendable {
         if let gated = workflow.postActions.first(where: \.requiresApproval) {
             throw DeployError.approvalNotSupported(postAction: gated.name)
         }
+        let problems = await testSchemeProblems(app: app, workflow: workflow, commit: commit)
+        if !problems.isEmpty { throw DeployError.workflowCannotRun(problems) }
 
         let buildID = UUID()
         let number: Int
@@ -151,6 +158,13 @@ public struct BuildService: Sendable {
         }
         let file = cached ? try await repositoryFiles.file(appID: app.id, commit: commit, load: read) : try await read()
         return (file, .repository)
+    }
+
+    /// Test actions of `workflow` that cannot run at `commit`: the scheme has no tests (`TestSchemeCheck`).
+    public func testSchemeProblems(app: App, workflow: Workflow, commit: String) async -> [String] {
+        guard workflow.actions.contains(where: { $0.kind == .test }) else { return [] }
+        return await testSchemes.problems(
+            app: app, workflow: workflow, commit: commit, token: try? token(app), sourceHost: sourceHost)
     }
 
     private func token(_ app: App) throws -> String? {
