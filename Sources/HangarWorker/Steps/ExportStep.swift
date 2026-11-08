@@ -37,6 +37,24 @@ public enum ExportOptions {
     }
 }
 
+extension ExportStep {
+    /// xcodebuild leaves `<Scheme>_<date>.xcdistributionlogs` in the user's temporary folder (it ignores `TMPDIR`) at
+    /// every export and says where (`Created bundle at path "…"`). Only that bundle, and only there, is removed.
+    static func removeDistributionLogs(reportedIn output: String, temporaryDirectory: String = NSTemporaryDirectory()) {
+        let marker = "Created bundle at path \""
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard let start = line.range(of: marker) else { continue }
+            let rest = line[start.upperBound...]
+            guard let end = rest.firstIndex(of: "\"") else { continue }
+            let path = String(rest[..<end])
+            guard path.hasSuffix(".xcdistributionlogs") else { continue }
+            let root = (temporaryDirectory as NSString).resolvingSymlinksInPath
+            let resolved = (path as NSString).resolvingSymlinksInPath
+            try? SafeRemoval.removeItem(atPath: resolved, within: root)
+        }
+    }
+}
+
 public struct ExportResult: Sendable, Equatable {
     /// First `.ipa`, `.pkg` or `.app` under the export directory; nil for destination `upload` or an empty export.
     public var exportedArtifactPath: String?
@@ -77,6 +95,7 @@ public struct ExportStep: Sendable {
             ] + (key?.xcodebuildArguments ?? []),
             environment: environment)
         let outcome = try await runner.run(command, onLine: log)
+        Self.removeDistributionLogs(reportedIn: outcome.output)
         guard outcome.exitCode == 0 else { throw ExportError.xcodebuildFailed(exitCode: outcome.exitCode) }
 
         guard destination == "export" else { return ExportResult(exportedArtifactPath: nil) }

@@ -185,4 +185,19 @@ private final class ExportingRunner: ProcessRunner {
         #expect(FileManager.default.fileExists(atPath: sentinel))
         #expect(FileManager.default.fileExists(atPath: job))
     }
+
+    @Test func theDistributionLogsXcodebuildReportsAreRemovedAndNothingElse() throws {
+        let temporary = TestScratch.directory("tmp-\(UUID().uuidString)").path
+        let bundle = temporary + "/BatFi_2026-11-08_13-56-23.572.xcdistributionlogs"
+        let other = temporary + "/Other.xcdistributionlogs"
+        for path in [bundle, other] { try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true) }
+        let output = """
+            2026-11-08 13:56:23.572 xcodebuild[43273:13647250] [MT] IDEDistribution: -[IDEDistributionLogging _createLoggingBundleAtPath:]: Created bundle at path "\(bundle)".
+            Created bundle at path "/etc/hosts".
+            """
+        ExportStep.removeDistributionLogs(reportedIn: output, temporaryDirectory: temporary)
+        #expect(!FileManager.default.fileExists(atPath: bundle))
+        #expect(FileManager.default.fileExists(atPath: other))
+        #expect(FileManager.default.fileExists(atPath: "/etc/hosts"))
+    }
 }
