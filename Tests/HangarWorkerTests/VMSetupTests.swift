@@ -100,8 +100,9 @@ import Testing
         let enable = actions.firstIndex { if case .run(let a) = $0 { a.contains("enable") && a.contains(VMDataVolume.storage) } else { false } }
         let remove = actions.firstIndex(of: .run(["/bin/rm", "-rf", "/Users/adam/.hangar/vm"]))
         #expect(actions.first { $0 == .setUpDataVolume } != nil)
-        // Deleted only once the restarted worker uses the volume; the images are made again there.
-        #expect(enable! < remove!)
+        let build = actions.firstIndex { if case .run(let a) = $0 { a.contains("build") } else { false } }
+        // Deleted last: the worker restarted onto the volume may still be finishing a slot state in the old storage.
+        #expect(enable! < build! && build! < remove!)
         #expect(actions[enable! + 1] == .restartWorker)
         #expect(actions.contains { if case .run(let a) = $0 { a.contains("import") } else { false } })
         #expect(actions.last == .restartWorker)

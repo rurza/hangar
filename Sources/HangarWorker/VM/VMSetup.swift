@@ -250,13 +250,6 @@ public enum VMSetup {
             steps.append(VMSetupStep(title: "Turn VM builds on", done: "already on"))
         }
 
-        // After the restart, so the worker no longer uses it; freeing it first leaves room for the new images.
-        if let old = facts.storageToRemove {
-            steps.append(VMSetupStep(
-                title: "Delete the old VM storage at \(old) (its images are made again on the volume)",
-                actions: [.run(["/bin/rm", "-rf", old])]))
-        }
-
         steps.append(VMSetupStep(
             title: "Install the network filter that keeps VMs off this Mac, the LAN and the tailnet",
             done: facts.filterProblem == nil ? "already loaded" : nil,
@@ -285,6 +278,13 @@ public enum VMSetup {
         } else {
             steps.append(VMSetupStep(
                 title: "Build the job image", done: facts.imageForXcode.map { "\($0.name) is here" } ?? "no Xcode"))
+        }
+
+        // Last: the worker that used it may still be saving a slot state there for a while after the restart.
+        if let old = facts.storageToRemove {
+            steps.append(VMSetupStep(
+                title: "Delete the old VM storage at \(old) (the images are on the volume now)",
+                actions: [.run(["/bin/rm", "-rf", old])]))
         }
 
         // Only after a change: on a Mac that is set up already, a restart would only cancel a running build.

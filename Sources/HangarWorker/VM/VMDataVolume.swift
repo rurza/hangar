@@ -131,7 +131,7 @@ public enum VMDataVolume {
         try daemonPlist.write(toFile: daemonPath, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: unlockerPath)
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: daemonPath)
-        _ = try? run(["/bin/launchctl", "bootout", "system/" + daemonLabel])
+        _ = try? run(["/bin/launchctl", "bootout", "system/" + daemonLabel], quiet: true)
         try run(["/bin/launchctl", "bootstrap", "system", daemonPath])
 
         try run(["/usr/sbin/diskutil", "enableOwnership", mountPoint])
@@ -158,12 +158,16 @@ public enum VMDataVolume {
         return plist
     }
 
-    /// Runs a command with this terminal's output, `stdin` (a file) as its input.
-    static func run(_ arguments: [String], stdin: String? = nil) throws {
+    /// Runs a command with this terminal's output (none when `quiet`), `stdin` (a file) as its input.
+    static func run(_ arguments: [String], stdin: String? = nil, quiet: Bool = false) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: arguments[0])
         process.arguments = Array(arguments.dropFirst())
         if let stdin { process.standardInput = FileHandle(forReadingAtPath: stdin) }
+        if quiet {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {

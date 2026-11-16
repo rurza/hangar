@@ -31,10 +31,10 @@ To use an external SSD for the VMs, or two VMs at once, install with `HANGAR_VM_
 2. accepts the Xcode license;
 3. on the Mac's own disk, creates the encrypted volume `HangarVM` for the VMs (see [The VM volume](#the-vm-volume)) with the storage directory `/Volumes/HangarVM/vm` for the worker's user, mode 0700; on an external volume (`--storage`), turns its ownership on (`diskutil enableOwnership`) and creates the storage directory there;
 4. turns VM builds on in the worker's configuration (`vm enable`, as the worker's user) and restarts the worker at once, so it stops taking host builds;
-5. on a Mac whose VMs were in `~/.hangar/vm` (before 0.19), deletes that folder: the next steps make the images again on the volume;
-6. installs the network filter (see [How VM builds work](#how-vm-builds-work));
-7. imports the vanilla macOS image (as the worker's user; about 5 minutes, 26 GB);
-8. builds the job image from this Mac's Xcode (as the worker's user; about 10 minutes): `/Applications/Xcode.app`, else the newest `/Applications/Xcode*.app`, or `--xcode <path>`;
+5. installs the network filter (see [How VM builds work](#how-vm-builds-work));
+6. imports the vanilla macOS image (as the worker's user; about 5 minutes, 26 GB);
+7. builds the job image from this Mac's Xcode (as the worker's user; about 10 minutes): `/Applications/Xcode.app`, else the newest `/Applications/Xcode*.app`, or `--xcode <path>`;
+8. on a Mac whose VMs were in `~/.hangar/vm` (before 0.19), deletes that folder: the images are on the volume now;
 9. restarts the worker, which saves each slot's state when it starts.
 
 ### The VM volume
