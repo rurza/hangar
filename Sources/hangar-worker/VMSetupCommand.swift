@@ -10,14 +10,14 @@ extension VMCommand {
             abstract: "Sets up VM builds on this Mac in one go (run it with sudo; safe to run again).",
             discussion: """
                 Checks this Mac first (Apple silicon, macOS, Xcode and its license, free space, the server), then: \
-                keeps the Mac awake, accepts the Xcode license, prepares the storage, turns VM builds on, installs the \
+                keeps the Mac awake, accepts the Xcode license, prepares the storage (an encrypted volume of its own, outside Time Machine), turns VM builds on, installs the \
                 network filter, downloads the macOS image, builds the job image with this Mac's Xcode, and restarts \
                 the worker (your own launch agent, which the install command set up). Steps that are done already are skipped, so running it again finishes an interrupted setup.
                 """)
 
         @Option(help: "The worker's configuration file. Default: the one its launchd job uses.")
         var config: String?
-        @Option(help: "VM storage directory on an APFS volume (an external SSD works). Default: the configuration's, else ~/.hangar/vm of the worker's user.")
+        @Option(help: "VM storage directory on an APFS volume (an external SSD works). Default: the configuration's, else an encrypted volume of its own on this Mac's disk (/Volumes/HangarVM/vm).")
         var storage: String?
         @Option(help: "VMs at once (1 or 2).")
         var slots: Int?
@@ -49,8 +49,17 @@ extension VMCommand {
             do { configuration = try WorkerConfiguration.load(from: target.config) } catch {
                 throw VMCommand.fail("cannot read the worker's configuration \(target.config): \(error)")
             }
-            var settings = configuration.vm ?? VMSettings(storage: VMSettings.defaultStorage(home: target.home))
-            if let storage { settings.storage = URL(fileURLWithPath: storage).standardizedFileURL.path }
+            let homeStorage = VMSettings.defaultStorage(home: target.home)
+            var settings = configuration.vm ?? VMSettings(storage: homeStorage)
+            if let storage {
+                settings.storage = URL(fileURLWithPath: storage).standardizedFileURL.path
+            } else if settings.storage == homeStorage {
+                // The Mac's own disk: the encrypted volume, out of Time Machine's local snapshots.
+                settings.storage = VMDataVolume.storage
+            }
+            // The defaults before 0.19, sized when purgeable space did not count as free.
+            if settings.floorGB == 40 { settings.floorGB = VMSettings.defaultFloorGB }
+            if settings.jobReserveGB == 25 { settings.jobReserveGB = VMSettings.defaultJobReserveGB }
             if let slots { settings.slots = slots }
             if let cpus { settings.cpus = cpus }
             if let memoryGb { settings.memoryGB = memoryGb }
@@ -72,7 +81,9 @@ extension VMCommand {
                 filterProblem: VMNetworkFilter.current().problem(installCommand: target.commands.asRoot("vm", "network", "install")),
                 images: host.images().map(\.metadata),
                 storageExists: FileManager.default.fileExists(atPath: settings.storage),
-                volumeIgnoringOwnership: VMVolume.ownershipEnabled(at: settings.storage) ? nil : VMVolume.mountPoint(of: settings.storage))
+                volumeIgnoringOwnership: VMVolume.ownershipEnabled(at: settings.storage) ? nil : VMVolume.mountPoint(of: settings.storage),
+                dataVolumeReady: VMDataVolume.isReady,
+                homeStorageExists: FileManager.default.fileExists(atPath: homeStorage))
 
             VMCommand.say("VM builds for the worker running as \(target.user) (\(target.binary))")
             VMCommand.say("")
@@ -213,6 +224,8 @@ extension VMCommand {
                 guard status == 0 else { throw VMSetupFailure("\(arguments.joined(separator: " ")) exited with status \(status)") }
             case .installNetworkFilter:
                 if let problem = try await VMCommand.installNetworkFilter(dryRun: false) { throw VMSetupFailure(problem) }
+            case .setUpDataVolume:
+                try VMDataVolume.setUp(user: target.user, say: { VMCommand.say("    " + $0) })
             case .restartWorker:
                 if Self.run(["/bin/launchctl", "kill", "SIGTERM", target.launchdTarget]) != 0 {
                     // Not running (or not loaded yet): start it.
@@ -225,6 +238,13 @@ extension VMCommand {
             switch action {
             case .run(let arguments): arguments.map(GuestSSH.quote).joined(separator: " ")
             case .installNetworkFilter: target.commands.asRoot("vm", "network", "install")
+            case .setUpDataVolume:
+                """
+                diskutil apfs addVolume <the Data volume's container> APFS \(VMDataVolume.name) -stdinpassphrase \
+                < \(GuestSSH.quote(VMDataVolume.keyPath)) (a random passphrase only root reads), then the \
+                \(VMDataVolume.daemonLabel) LaunchDaemon that unlocks it at boot, tmutil addexclusion -v, mdutil -i off, \
+                and \(VMDataVolume.storage) for \(target.user), mode 700
+                """
             case .restartWorker: "/bin/launchctl kill SIGTERM \(target.launchdTarget)"
             }
         }

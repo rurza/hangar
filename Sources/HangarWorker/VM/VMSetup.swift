@@ -98,11 +98,15 @@ public struct VMSetupFacts: Sendable {
     public var storageExists: Bool
     /// The mount point of an external volume that ignores ownership, which the storage is on.
     public var volumeIgnoringOwnership: String?
+    /// Whether the encrypted VM volume is set up (`VMDataVolume.isReady`); only asked when the storage is on it.
+    public var dataVolumeReady: Bool
+    /// Whether `~/.hangar/vm` of the worker's user (the storage before the volume) is there.
+    public var homeStorageExists: Bool
 
     public init(
         target: VMSetupTarget, settings: VMSettings, currentSettings: VMSettings?, xcode: VMSetupXcode?,
         licenseAccepted: Bool, filterProblem: String?, images: [VMImageMetadata], storageExists: Bool,
-        volumeIgnoringOwnership: String? = nil
+        volumeIgnoringOwnership: String? = nil, dataVolumeReady: Bool = false, homeStorageExists: Bool = false
     ) {
         self.target = target
         self.settings = settings
@@ -113,6 +117,15 @@ public struct VMSetupFacts: Sendable {
         self.images = images
         self.storageExists = storageExists
         self.volumeIgnoringOwnership = volumeIgnoringOwnership
+        self.dataVolumeReady = dataVolumeReady
+        self.homeStorageExists = homeStorageExists
+    }
+
+    /// The storage VM builds used before they moved to the encrypted volume: the old default in the worker's home,
+    /// deleted once the worker uses the volume (its images are made again there). Never a path the owner chose.
+    public var storageToRemove: String? {
+        guard VMDataVolume.holds(settings.storage), homeStorageExists else { return nil }
+        return VMSettings.defaultStorage(home: target.home)
     }
 
     /// The job image made from this Mac's Xcode (same build, or the same version when the image has no build).
@@ -136,6 +149,8 @@ public enum VMSetupAction: Sendable, Equatable {
     /// Runs a command (as root, or as the worker's user through `sudo -u`), its output shown as it comes.
     case run([String])
     case installNetworkFilter
+    /// Creates (or unlocks) the encrypted VM volume and gives its storage directory to the worker's user.
+    case setUpDataVolume
     /// SIGTERM to the worker's launchd job, which starts it again; a kickstart when it was not running.
     case restartWorker
 }
@@ -195,33 +210,51 @@ public enum VMSetup {
             steps.append(VMSetupStep(title: "Accept the Xcode license", done: "already accepted"))
         }
 
-        // Storage inside the worker's home is created by `vm enable` as the worker's user; elsewhere (an external
-        // SSD) root makes the directory and gives it to that user, and turns on the volume's ownership.
+        // On the Mac's own disk the storage gets the encrypted volume, which root makes. Storage inside the worker's
+        // home is created by `vm enable` as the worker's user; elsewhere (an external SSD) root makes the directory
+        // and gives it to that user, and turns on the volume's ownership.
         var storage: [VMSetupAction] = []
-        if let volume = facts.volumeIgnoringOwnership {
+        if VMDataVolume.holds(settings.storage) {
+            let ready = facts.dataVolumeReady
+            steps.append(VMSetupStep(
+                title: "Encrypted volume \(VMDataVolume.name) for the VMs, outside Time Machine and Spotlight",
+                done: ready ? "ready" : nil, actions: ready ? [] : [.setUpDataVolume]))
+        } else if let volume = facts.volumeIgnoringOwnership {
             storage.append(.run(["/usr/sbin/diskutil", "enableOwnership", volume]))
         }
-        if !facts.storageExists, !settings.storage.hasPrefix(target.home + "/") {
-            storage += [
-                .run(["/bin/mkdir", "-p", settings.storage]),
-                .run(["/usr/sbin/chown", target.user + ":staff", settings.storage]),
-                .run(["/bin/chmod", "700", settings.storage]),
-            ]
+        if !VMDataVolume.holds(settings.storage) {
+            if !facts.storageExists, !settings.storage.hasPrefix(target.home + "/") {
+                storage += [
+                    .run(["/bin/mkdir", "-p", settings.storage]),
+                    .run(["/usr/sbin/chown", target.user + ":staff", settings.storage]),
+                    .run(["/bin/chmod", "700", settings.storage]),
+                ]
+            }
+            steps.append(VMSetupStep(
+                title: "VM storage at \(settings.storage)",
+                done: storage.isEmpty ? (facts.storageExists ? "ready" : "the worker's user creates it next") : nil,
+                actions: storage))
         }
-        steps.append(VMSetupStep(
-            title: "VM storage at \(settings.storage)",
-            done: storage.isEmpty ? (facts.storageExists ? "ready" : "the worker's user creates it next") : nil,
-            actions: storage))
 
         if facts.currentSettings != settings {
             var enable = ["vm", "enable", "--config", target.config, "--storage", settings.storage]
             enable += ["--slots", String(settings.slots), "--cpus", String(settings.cpus), "--memory-gb", String(settings.memoryGB)]
+            enable += ["--floor-gb", String(settings.floorGB), "--job-reserve-gb", String(settings.jobReserveGB)]
             // Restarted at once, so the worker stops taking host builds; it takes none until the rest is ready.
             steps.append(VMSetupStep(
-                title: "Turn VM builds on, and restart the worker so it stops building on this Mac itself",
+                title: facts.currentSettings == nil
+                    ? "Turn VM builds on, and restart the worker so it stops building on this Mac itself"
+                    : "Update the VM settings, and restart the worker",
                 actions: [.run(target.asWorker(enable)), .restartWorker]))
         } else {
             steps.append(VMSetupStep(title: "Turn VM builds on", done: "already on"))
+        }
+
+        // After the restart, so the worker no longer uses it; freeing it first leaves room for the new images.
+        if let old = facts.storageToRemove {
+            steps.append(VMSetupStep(
+                title: "Delete the old VM storage at \(old) (its images are made again on the volume)",
+                actions: [.run(["/bin/rm", "-rf", old])]))
         }
 
         steps.append(VMSetupStep(

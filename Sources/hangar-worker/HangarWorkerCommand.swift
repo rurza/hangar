@@ -43,6 +43,9 @@ struct HangarWorkerCommand: AsyncParsableCommand {
             if let settings = configuration.vm {
                 // VM builds: every job in a fresh VM, as many at once as there are slots.
                 let host = VMHost(settings: settings, runner: runner)
+                if VMDataVolume.holds(settings.storage), !(await VMDataVolume.waitForStorage()) {
+                    logger.error("the encrypted \(VMDataVolume.name) volume is still locked; run `sudo hangar-worker vm setup`, which unlocks it and restarts the worker")
+                }
                 for line in VMMaintenance.sweep(storage: host.storage) { logger.info("\(line)") }
                 do { try await GuestKeys.ensure(storage: host.storage, runner: runner) } catch {
                     logger.error("could not create the key for VM guests: \(error)")

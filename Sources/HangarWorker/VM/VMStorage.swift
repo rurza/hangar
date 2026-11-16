@@ -173,6 +173,8 @@ public enum VMStorageError: Error, Equatable, CustomStringConvertible {
     case ownershipIgnored(path: String)
     case cloneFailed(from: String, to: String, errno: Int32)
     case unreadable(String)
+    /// The encrypted VM volume is not mounted: still locked, or gone.
+    case volumeLocked
 
     public var description: String {
         switch self {
@@ -185,6 +187,8 @@ public enum VMStorageError: Error, Equatable, CustomStringConvertible {
                 ? "cannot clone \(from) to \(to): they are on different volumes"
                 : "cannot clone \(from) to \(to): \(String(cString: strerror(code)))"
         case .unreadable(let path): "cannot read \(path)"
+        case .volumeLocked:
+            "the encrypted \(VMDataVolume.name) volume is not mounted (\(VMDataVolume.daemonLabel) unlocks it at every boot)"
         }
     }
 }
@@ -231,6 +235,7 @@ public enum VMVolume {
 
     /// Nil when `path` can hold VM storage, else why not.
     public static func problem(at path: String) -> VMStorageError? {
+        if VMDataVolume.holds(path), !FileManager.default.fileExists(atPath: path) { return .volumeLocked }
         guard let type = fileSystemType(of: path) else { return .unreadable(path) }
         guard type == "apfs" else { return .notAPFS(path: path, type: type) }
         guard ownershipEnabled(at: path) else { return .ownershipIgnored(path: path) }

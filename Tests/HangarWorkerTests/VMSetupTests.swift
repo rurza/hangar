@@ -41,7 +41,7 @@ import Testing
         let config = Self.owner.config
         #expect(actions.contains(.run(asOwner + [
             "vm", "enable", "--config", config, "--storage", "/Users/adam/.hangar/vm", "--slots", "1", "--cpus", "4",
-            "--memory-gb", "8",
+            "--memory-gb", "8", "--floor-gb", "20", "--job-reserve-gb", "15",
         ])))
         #expect(actions.contains(.run(asOwner + ["vm", "image", "import", "--config", config])))
         #expect(actions.contains(.run(asOwner + [
@@ -82,6 +82,73 @@ import Testing
         #expect(actions.contains(.run(["/bin/chmod", "700", "/Volumes/SSD/hangar-vm"])))
     }
 
+    @Test func onTheMacsOwnDiskTheVMsGetTheEncryptedVolume() {
+        let steps = VMSetup.plan(Self.facts(storage: VMDataVolume.storage))
+        let actions = steps.flatMap(\.actions)
+        #expect(actions.contains(.setUpDataVolume))
+        // Root makes the volume's storage directory, not `vm enable`; nothing in the home to delete.
+        #expect(!actions.contains { if case .run(let a) = $0 { a.first == "/bin/mkdir" || a.first == "/bin/rm" } else { false } })
+        #expect(actions.firstIndex(of: .setUpDataVolume)! < actions.firstIndex { if case .run(let a) = $0 { a.contains("enable") } else { false } }!)
+    }
+
+    @Test func aMacWithVMsInItsHomeMovesThemToTheVolumeAndDeletesTheOldStorage() {
+        var facts = Self.facts(
+            current: VMSettings(storage: "/Users/adam/.hangar/vm"), storage: VMDataVolume.storage,
+            images: [], filterProblem: nil, licenseAccepted: true)
+        facts.homeStorageExists = true
+        let actions = VMSetup.plan(facts).flatMap(\.actions)
+        let enable = actions.firstIndex { if case .run(let a) = $0 { a.contains("enable") && a.contains(VMDataVolume.storage) } else { false } }
+        let remove = actions.firstIndex(of: .run(["/bin/rm", "-rf", "/Users/adam/.hangar/vm"]))
+        #expect(actions.first { $0 == .setUpDataVolume } != nil)
+        // Deleted only once the restarted worker uses the volume; the images are made again there.
+        #expect(enable! < remove!)
+        #expect(actions[enable! + 1] == .restartWorker)
+        #expect(actions.contains { if case .run(let a) = $0 { a.contains("import") } else { false } })
+        #expect(actions.last == .restartWorker)
+    }
+
+    @Test func aStorageTheOwnerChoseIsNeverDeleted() {
+        var facts = Self.facts(current: VMSettings(storage: "/Volumes/SSD/vm"), storage: "/Volumes/SSD/vm")
+        facts.homeStorageExists = true
+        #expect(facts.storageToRemove == nil)
+        #expect(!VMSetup.plan(facts).flatMap(\.actions).contains { if case .run(let a) = $0 { a.first == "/bin/rm" } else { false } })
+    }
+
+    @Test func aReadyVolumeIsLeftAlone() {
+        var facts = Self.facts(
+            current: VMSettings(storage: VMDataVolume.storage), storage: VMDataVolume.storage,
+            images: [Self.base(), Self.job()], filterProblem: nil, licenseAccepted: true)
+        facts.dataVolumeReady = true
+        let steps = VMSetup.plan(facts)
+        #expect(steps.dropFirst().allSatisfy { $0.done != nil })
+    }
+
+    @Test func theVolumeIsUnlockedAtBootWithTheRootOnlyPassphrase() {
+        let script = VMDataVolume.unlockerScript(volumeUUID: "7F89609D-B71E-4D70-8FA3-2282CE502A65")
+        #expect(script.contains(
+            "/usr/sbin/diskutil apfs unlockVolume '7F89609D-B71E-4D70-8FA3-2282CE502A65' -user disk -stdinpassphrase < '/Library/Application Support/Hangar/vm-volume.key'"))
+        #expect(script.contains("[ -d '/Volumes/HangarVM/vm' ] && exit 0"))
+        #expect(VMDataVolume.daemonPlist.contains("<string>/Library/Application Support/Hangar/vm-volume.sh</string>"))
+        #expect(VMSettings(storage: VMDataVolume.storage).problem == nil)
+    }
+
+    @Test func theVolumeIsFoundByNameInItsContainer() {
+        let list: [String: Any] = ["Containers": [
+            ["ContainerReference": "disk9", "Volumes": [["Name": "HangarVM", "APFSVolumeUUID": "OTHER"]]],
+            ["ContainerReference": "disk3", "Volumes": [
+                ["Name": "Data", "APFSVolumeUUID": "DATA"], ["Name": "HangarVM", "APFSVolumeUUID": "VM"],
+            ]],
+        ]]
+        #expect(VMDataVolume.volumeUUID(inAPFSList: list, container: "disk3") == "VM")
+        #expect(VMDataVolume.volumeUUID(inAPFSList: list, container: "disk5") == nil)
+    }
+
+    @Test func aLockedVolumeIsAStorageProblem() {
+        // The storage on a volume that is not mounted: the check must not fall back to the system volume's "/".
+        guard !FileManager.default.fileExists(atPath: VMDataVolume.storage) else { return }
+        #expect(VMVolume.problem(at: VMDataVolume.storage) == .volumeLocked)
+    }
+
     @Test func theOwnersAgentIsRestartedAndItsCommandsAreTypedByPath() {
         #expect(Self.owner.launchdTarget == "gui/501/app.hangar.worker")
         #expect(Self.owner.commands.vmSetup == "sudo /Users/adam/.local/bin/hangar-worker vm setup")
@@ -89,8 +156,8 @@ import Testing
 
     @Test func theBudgetCountsWhatIsStillToMake() {
         let settings = VMSettings(storage: "/x", slots: 2, memoryGB: 8)
-        #expect(VMSetup.requiredFreeGB(settings: settings, needsBaseImage: true, needsJobImage: true) == 26 + 6 + 16 + 25 + 40)
-        #expect(VMSetup.requiredFreeGB(settings: settings, needsBaseImage: false, needsJobImage: false) == 16 + 25 + 40)
+        #expect(VMSetup.requiredFreeGB(settings: settings, needsBaseImage: true, needsJobImage: true) == 26 + 6 + 16 + 15 + 20)
+        #expect(VMSetup.requiredFreeGB(settings: settings, needsBaseImage: false, needsJobImage: false) == 16 + 15 + 20)
     }
 
     @Test func theTargetIsTheInvokersLaunchAgent() throws {

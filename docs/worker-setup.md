@@ -25,18 +25,25 @@ To use an external SSD for the VMs, or two VMs at once, install with `HANGAR_VM_
 
 ## `vm setup`
 
-`sudo <path to hangar-worker> vm setup` does everything VM builds need, in one sudo session. It finds the worker through your own launch agent, the one the install command wrote. It checks the Mac first and stops, changing nothing, when something required is missing: Apple silicon, the virtualization entitlement, macOS against the image, Xcode, free space against the budget (the images still to make, a saved state per slot, one job's growth and the 40 GB floor). It reports the server and Tailscale too. Then:
+`sudo <path to hangar-worker> vm setup` does everything VM builds need, in one sudo session. It finds the worker through your own launch agent, the one the install command wrote. It checks the Mac first and stops, changing nothing, when something required is missing: Apple silicon, the virtualization entitlement, macOS against the image, Xcode, free space against the budget (the images still to make, a saved state per slot, one job's growth and the 20 GB floor). It reports the server and Tailscale too. Then:
 
 1. keeps the Mac awake (`pmset -a sleep 0 disksleep 0`);
 2. accepts the Xcode license;
-3. on an external volume, turns its ownership on (`diskutil enableOwnership`) and creates the storage directory for the worker's user, mode 0700;
+3. on the Mac's own disk, creates the encrypted volume `HangarVM` for the VMs (see [The VM volume](#the-vm-volume)) with the storage directory `/Volumes/HangarVM/vm` for the worker's user, mode 0700; on an external volume (`--storage`), turns its ownership on (`diskutil enableOwnership`) and creates the storage directory there;
 4. turns VM builds on in the worker's configuration (`vm enable`, as the worker's user) and restarts the worker at once, so it stops taking host builds;
-5. installs the network filter (see [How VM builds work](#how-vm-builds-work));
-6. imports the vanilla macOS image (as the worker's user; about 5 minutes, 26 GB);
-7. builds the job image from this Mac's Xcode (as the worker's user; about 10 minutes): `/Applications/Xcode.app`, else the newest `/Applications/Xcode*.app`, or `--xcode <path>`;
-8. restarts the worker, which saves each slot's state when it starts.
+5. on a Mac whose VMs were in `~/.hangar/vm` (before 0.19), deletes that folder: the next steps make the images again on the volume;
+6. installs the network filter (see [How VM builds work](#how-vm-builds-work));
+7. imports the vanilla macOS image (as the worker's user; about 5 minutes, 26 GB);
+8. builds the job image from this Mac's Xcode (as the worker's user; about 10 minutes): `/Applications/Xcode.app`, else the newest `/Applications/Xcode*.app`, or `--xcode <path>`;
+9. restarts the worker, which saves each slot's state when it starts.
 
-Steps that are done already are skipped, so running it again finishes an interrupted setup, and on a Mac that is set up it changes nothing and leaves the worker running. `--dry-run` prints the checks and the steps without sudo. Options: `--storage`, `--slots`, `--cpus`, `--memory-gb`, `--xcode`, `--config`.
+### The VM volume
+
+On the system's Data volume, Time Machine's local snapshots (taken every hour or two, kept a day) hold the blocks of every deleted job clone and every re-saved slot state, so VM builds there turn into tens of GB of "System Data" that macOS frees only when it runs short. Time Machine takes no snapshots of a volume it does not back up, so the VMs get an APFS volume of their own, excluded from Time Machine (`tmutil addexclusion -v`) and Spotlight (`mdutil -i off`): a deleted clone frees its space at once. The volume shares the disk's free space with the rest of the Mac; nothing is set aside for it.
+
+FileVault covers only the Data volume, so the VM volume is encrypted with its own random passphrase, in `/Library/Application Support/Hangar/vm-volume.key` (root only, on the Data volume, so FileVault covers it). A LaunchDaemon, `app.hangar.vm-volume`, unlocks the volume with it at every boot; the worker waits up to two minutes for it when it starts. If the card says the volume is not mounted, run `vm setup` again: it unlocks the volume and restarts the worker. To remove it all: `sudo launchctl bootout system/app.hangar.vm-volume`, `sudo diskutil apfs deleteVolume HangarVM` (its images go with it), then delete the key, `vm-volume.sh` next to it and `/Library/LaunchDaemons/app.hangar.vm-volume.plist`.
+
+Steps that are done already are skipped, so running it again finishes an interrupted setup, and on a Mac that is set up it changes nothing and leaves the worker running. `--dry-run` prints the checks and the steps without sudo. Options: `--storage` (another APFS volume, such as an external SSD, instead of the VM volume), `--slots`, `--cpus`, `--memory-gb`, `--xcode`, `--config`.
 
 The image itself holds only what a job needs: macOS, the Xcode, a standard user `builder` that owns an empty `/opt/homebrew`, and the `/Volumes/workspace` volume. `vm image build --homebrew`, `--metal-toolchain` and `--platform iOS` (a simulator runtime, for test jobs) add more, when a project needs them.
 
@@ -50,7 +57,7 @@ With VM builds on, a Mac runs **every** job in a fresh macOS VM and none on the 
 
 A Mac with VM builds on but not ready (no network filter, no image, a worker without the virtualization entitlement) takes **no** jobs, rather than building on the host; its card on the Machines page says what is missing. A Mac without VM builds builds locally.
 
-What it needs: Apple silicon, an up-to-date worker (the install scripts sign it with the `com.apple.security.virtualization` entitlement), and room on one APFS volume: about 26 GB for the vanilla macOS image, 6 GB more for an image with Xcode (plus 8 to 17 GB per simulator runtime, and 3 GB for the Metal toolchain if asked for), a few GB per slot's saved state, and up to `jobReserveGB` (25) per running job, above a floor of `floorGB` (40) that the worker never goes below. A Mac whose internal disk cannot hold that uses an external APFS SSD.
+What it needs: Apple silicon, an up-to-date worker (the install scripts sign it with the `com.apple.security.virtualization` entitlement), and room on one APFS volume: about 26 GB for the vanilla macOS image, 6 GB more for an image with Xcode (plus 8 to 17 GB per simulator runtime, and 3 GB for the Metal toolchain if asked for), a few GB per slot's saved state, and up to `jobReserveGB` (15) per running job, above a floor of `floorGB` (20) that the worker never goes below. A Mac whose internal disk cannot hold that uses an external APFS SSD.
 
 **What a job sees in its VM.** The same steps and `CI_*` variables as on the host, with the workspace in `/Volumes/workspace/hangar`, `HOMEBREW_NO_AUTO_UPDATE=1` set, and Xcode at `/Applications/Xcode.app`. The job log's first line says how the VM came up ("VM: restored slot 0's saved state in 4.5 s"). `tools:` in `.hangar.yml` is not checked on a VM Mac: a `ci_post_clone.sh` installs what it needs, as on Xcode Cloud. The workflow's `xcode:` is matched against the images.
 

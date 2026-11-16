@@ -4,7 +4,8 @@ import Foundation
 /// the switch: a worker with it runs every job in a VM, one without it builds on the host as before.
 public struct VMSettings: Codable, Equatable, Sendable {
     /// Where images, slot states and job clones live: one APFS volume, since clones only work within a volume. An
-    /// external SSD works. Default `~/.hangar/vm` of the worker's user.
+    /// external SSD works. `vm setup` uses the encrypted volume (`VMDataVolume`); `~/.hangar/vm` of the worker's user
+    /// without it.
     public var storage: String
     /// VMs at once. Apple allows two running macOS VMs per Mac, and a VM the owner runs takes one.
     public var slots: Int
@@ -21,8 +22,8 @@ public struct VMSettings: Codable, Equatable, Sendable {
     public static let defaultCPUs = 4
     public static let defaultMemoryGB = 8
     public static let defaultJobTimeoutMinutes = 120
-    public static let defaultFloorGB = 40
-    public static let defaultJobReserveGB = 25
+    public static let defaultFloorGB = 20
+    public static let defaultJobReserveGB = 15
 
     public init(
         storage: String = VMSettings.defaultStorage(home: NSHomeDirectory()), slots: Int = VMSettings.defaultSlots,

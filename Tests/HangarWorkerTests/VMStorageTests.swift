@@ -18,7 +18,7 @@ import Testing
         let vm = try #require(try JSONCoding.decoder.decode(WorkerConfiguration.self, from: Data(json.utf8)).vm)
         #expect(vm == VMSettings(storage: "/Volumes/SSD/vm"))
         #expect(vm.slots == 1 && vm.cpus == 4 && vm.memoryGB == 8 && vm.jobTimeoutMinutes == 120)
-        #expect(vm.floorGB == 40 && vm.jobReserveGB == 25)
+        #expect(vm.floorGB == 20 && vm.jobReserveGB == 15)
         #expect(vm.problem == nil)
     }
 

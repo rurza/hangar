@@ -343,10 +343,10 @@ enum InstallScript {
             case $free in '' | *[!0-9]*) free='' ;; esac
             if [ -z "$free" ]; then
                 check_line ! "Free space" unknown
-            elif [ "$free" -ge 105 ]; then
-                check_line ✓ "Free space" "$free GB on the startup disk (VM builds need about 105)"
+            elif [ "$free" -ge 75 ]; then
+                check_line ✓ "Free space" "$free GB on the startup disk (VM builds need about 75)"
             else
-                check_line ! "Free space" "$free GB on the startup disk; VM builds need about 105 (images, a job, a 40 GB floor): free some, or use an external SSD with vm setup --storage"
+                check_line ! "Free space" "$free GB on the startup disk; VM builds need about 75 (images, a job, a 20 GB floor): free some, or use an external SSD with vm setup --storage"
             fi
             tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale
             if [ -x "$tailscale" ] && "$tailscale" status >/dev/null 2>&1; then

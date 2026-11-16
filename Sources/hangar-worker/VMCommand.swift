@@ -65,7 +65,7 @@ struct VMCommand: AsyncParsableCommand {
 
         @Option(help: "Worker configuration file.")
         var config: String = defaultConfigPath
-        @Option(help: "VM storage directory on an APFS volume (an external SSD works). Default: ~/.hangar/vm.")
+        @Option(help: "VM storage directory on an APFS volume (an external SSD works). Default: ~/.hangar/vm; `vm setup` uses an encrypted volume of its own instead.")
         var storage: String?
         @Option(help: "VMs at once (1 or 2).")
         var slots: Int?
@@ -77,6 +77,8 @@ struct VMCommand: AsyncParsableCommand {
         var timeoutMinutes: Int?
         @Option(help: "Free space, in GB, to leave on the storage volume beyond each job's reserve.")
         var floorGb: Int?
+        @Option(help: "Free space, in GB, a job needs for its growth, on top of the floor.")
+        var jobReserveGb: Int?
 
         func run() async throws {
             var configuration: WorkerConfiguration
@@ -88,6 +90,7 @@ struct VMCommand: AsyncParsableCommand {
             if let memoryGb { settings.memoryGB = memoryGb }
             if let timeoutMinutes { settings.jobTimeoutMinutes = timeoutMinutes }
             if let floorGb { settings.floorGB = floorGb }
+            if let jobReserveGb { settings.jobReserveGB = jobReserveGb }
             if let problem = settings.problem { throw VMCommand.fail(problem) }
             try VMStorage(root: settings.storage).create()
             if let problem = VMVolume.problem(at: settings.storage) { VMCommand.say("warning: \(problem)") }
