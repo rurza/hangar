@@ -218,8 +218,14 @@ public enum VMVolume {
         }
     }
 
+    /// Free space as System Settings counts it: purgeable space too (local snapshots, which hold the blocks of every
+    /// deleted job clone for a day), since macOS frees it when a write needs it. "Important usage" can read 0 outside
+    /// a login session; the plain `statfs` count stands in for it then.
     public static func freeGB(at path: String) -> Double {
-        guard let info = volumeInfo(of: path) else { return 0 }
+        guard let info = volumeInfo(of: path), let mount = mountPoint(of: path) else { return 0 }
+        let important = (try? URL(fileURLWithPath: mount).resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?
+            .volumeAvailableCapacityForImportantUsage ?? 0
+        if important > 0 { return Double(important) / 1_000_000_000 }
         return Double(info.f_bavail) * Double(info.f_bsize) / 1_000_000_000
     }
 
