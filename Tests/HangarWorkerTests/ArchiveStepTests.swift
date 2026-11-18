@@ -64,7 +64,7 @@ import Testing
             command.arguments == [
                 "-resolvePackageDependencies", "-project", "/data/workspaces/legilo/repository/Legilo.xcodeproj",
                 "-scheme", "LegiloMobile", "-derivedDataPath", "/data/workspaces/legilo/DerivedData",
-                "-scmProvider", "system",
+                "-scmProvider", "system", "-disableAutomaticPackageResolution",
             ])
         #expect(
             command.environment

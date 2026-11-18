@@ -116,6 +116,8 @@ Hangar sets `CI_*` (the Xcode Cloud variables), `PATH`, `HOME`, `DEVELOPER_DIR`,
 
 Swift packages are resolved before the archive (or the tests), in a separate `xcodebuild -resolvePackageDependencies` run that uses the system git. That run, and only that run, can authenticate to github.com with the `HANGAR_GITHUB_TOKEN` variable, so private packages hosted on GitHub resolve as long as the token can read them. The archive itself then runs with automatic package resolution disabled and without the token. Packages on other hosts must be reachable without credentials.
 
+As on Xcode Cloud, resolution only uses the versions pinned in the committed `Package.resolved`: if the file is missing, or a dependency was added or changed without updating it, the build fails with "an out-of-date resolved file was detected". Resolve the packages in Xcode and commit the updated `Package.resolved`.
+
 ### Post-actions
 
 An entry is either a bare name (`- testflight`) or a one-key map (`- testflight: { ... }`). Every post-action accepts `requires-approval: true`, reserved for approvals, which Hangar does not have yet: a deploy of a workflow with such a step is refused (`approval_not_supported`). Unknown post-action names, unknown settings and wrongly typed settings are rejected when the file is parsed.

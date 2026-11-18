@@ -78,6 +78,8 @@ public enum ArchiveError: Error, Equatable, CustomStringConvertible {
 /// Swift packages are resolved first, in a separate `xcodebuild -resolvePackageDependencies` run that uses the system
 /// git with the GitHub token's credential helper, so private packages on GitHub resolve. Only that run sees the
 /// token; the archive itself runs with automatic package resolution disabled and no secret in its environment.
+/// Like Xcode Cloud, resolution sticks to the committed `Package.resolved`: a missing or out-of-date file fails the
+/// build instead of being silently rewritten on the worker.
 public struct ArchiveStep: Sendable {
     private let runner: any ProcessRunner
 
@@ -100,6 +102,7 @@ public struct ArchiveStep: Sendable {
                 "-scheme", action.scheme,
                 "-derivedDataPath", layout.derivedData,
                 "-scmProvider", "system",
+                "-disableAutomaticPackageResolution",
             ]
         var environment = environment.merging(gitHubToken.map(Checkout.credentialEnvironment) ?? [:]) { _, new in new }
         environment["DEVELOPER_DIR"] = developerDir
