@@ -235,6 +235,24 @@ import Testing
             + #"{"kind":"test","scheme":"","platform":"ios","export":"app-store-connect","destination":"","testPlan":""},[]]"#)
     }
 
+    /// A duplicate is a separate model with a free name: editing it leaves the original alone, and it is not saved yet.
+    @Test func duplicateIsIndependentAndUnsaved() throws {
+        let output = try Self.runJXA(
+            Self.legilo,
+            """
+            (() => {
+              const [original] = modelsFromFile(input);
+              original.savedName = 'testflight';
+              const copy = duplicateWorkflow(original, ['testflight', 'testflight Copy']);
+              copy.actions[0].scheme = 'Changed';
+              copy.tools.push('swiftlint');
+              return JSON.stringify([copy.name, copy.key !== original.key, copy.savedName ?? null,
+                original.actions[0].scheme, original.tools, fileFromModels([original, copy]).workflows['testflight Copy 2'].actions[1]]);
+            })()
+            """)
+        #expect(output == #"["testflight Copy 2",true,null,"Legilo",["brew"],{"kind":"archive","scheme":"LegiloMobile","platform":"ios","export":"app-store-connect"}]"#)
+    }
+
     @Test func defaultTestFlightSettingsAreLeftOut() throws {
         var file = Self.legilo
         file.workflows["testflight"]?.postActions = [PostActionSpec(name: "testflight", settings: [

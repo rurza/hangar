@@ -440,6 +440,18 @@ function wizardModel({ name, base, choices, distribution, groups = [], externalR
 }
 
 /** A name not in `taken`: `preferred`, else "preferred 2", "preferred 3"... */
+/**
+ * A copy of `model`, edits and all, under the first free "<name> Copy" name. Nothing of it is shared with the
+ * original, and it has no saved name: it is a new workflow until Save.
+ */
+function duplicateWorkflow(model, taken) {
+  const copy = JSON.parse(JSON.stringify(model));
+  delete copy.savedName;
+  copy.key = ++nextKey;
+  copy.name = uniqueName(`${model.name.trim() || 'Untitled'} Copy`, taken);
+  return copy;
+}
+
 function uniqueName(preferred, taken) {
   if (!taken.includes(preferred)) return preferred;
   let n = 2;
@@ -447,4 +459,4 @@ function uniqueName(preferred, taken) {
   return `${preferred} ${n}`;
 }
 
-export { ACTION_KINDS, automaticGroupNames, defaultGroup, groupRow, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, unique, uniqueName, wizardModel };
+export { ACTION_KINDS, automaticGroupNames, defaultGroup, groupRow, detectionNotes, firstExactBranch, firstScheme, PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, duplicateWorkflow, fileFromModels, itemProblems, modelsFromFile, plainText, platformHasSchemes, platformName, problems, schemePlatforms, schemesFor, scratchWorkflow, setActionKind, testDestinationText, toWorkflow, unique, uniqueName, wizardModel };

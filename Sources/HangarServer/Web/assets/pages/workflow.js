@@ -12,7 +12,7 @@ import {
 } from '../ui.js';
 import { workflowToYAML } from '../yaml.js';
 import {
-  PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, detectionNotes, fileFromModels,
+  PLATFORMS, actionTitle, allProblems, blankAction, describeArchive, describeTest, describeTestFlight, detectionNotes, duplicateWorkflow, fileFromModels,
   firstExactBranch, firstScheme, itemProblems, modelsFromFile, platformHasSchemes, platformName, schemesFor, scratchWorkflow,
   testDestinationText, toWorkflow, unique, uniqueName,
 } from '../workflow-model.js';
@@ -211,7 +211,21 @@ function workflowEditor({ app, stored: initial, context }) {
       }, models.map((other, index) => h('option', { value: String(index), selected: index === current }, other.name.trim() || 'Untitled')))
       : null;
     replaceChildren(headerActions, switcher,
+      button('Duplicate', { kind: 'secondary', onClick: duplicateCurrent }),
       button('New Workflow…', { kind: 'secondary', onClick: () => openWizard() }));
+  }
+
+  /** The workflow on screen, unsaved edits included, as a new workflow beside it: saved only by Save. */
+  function duplicateCurrent() {
+    const original = model().name.trim() || 'Untitled Workflow';
+    const copy = duplicateWorkflow(model(), takenNames());
+    models = [...models, copy];
+    current = models.length - 1;
+    selection = { kind: 'general' };
+    view = 'detail';
+    banner = { kind: 'info', text: `A copy of “${original}”. Rename it and change what differs, then Save.` };
+    renderEditor();
+    detail.querySelector('input')?.select();
   }
 
   function switchTo(index) {
