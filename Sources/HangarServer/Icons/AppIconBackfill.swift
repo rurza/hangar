@@ -3,8 +3,10 @@ import HangarCore
 import Logging
 import Synchronization
 
-/// Stores icons for apps that have none, resolving them in the background: one task per app, and at most one
-/// attempt per app per hour. `waitForIdle()` lets callers (tests) await the work in flight.
+/// Keeps each app's stored icon current, resolving it in the background: one task per app, and at most one attempt
+/// per app per hour. An app without an icon gets one; an app whose icon changed (a newer build shipped another one)
+/// gets the new one. A lookup that finds nothing keeps the stored icon. `waitForIdle()` lets callers (tests) await the
+/// work in flight.
 public final class AppIconBackfill: Sendable {
     static let retryInterval: TimeInterval = 3600
 
@@ -25,12 +27,12 @@ public final class AppIconBackfill: Sendable {
         self.now = now
     }
 
-    /// Starts resolving the icon of every app in `candidates` without one, unless that app is already being resolved
-    /// or was tried within the hour. Returns at once.
+    /// Starts resolving the icon of every app in `candidates`, unless that app is already being resolved or was tried
+    /// within the hour. Returns at once.
     public func fill(_ candidates: [App]) {
         let current = now()
         state.withLock { state in
-            for app in candidates where app.iconURL == nil && state.tasks[app.id] == nil {
+            for app in candidates where state.tasks[app.id] == nil {
                 if let last = state.lastAttempt[app.id], current.timeIntervalSince(last) < Self.retryInterval { continue }
                 state.lastAttempt[app.id] = current
                 // The task's own removal takes this lock, so it cannot run before the insertion below.
@@ -48,7 +50,7 @@ public final class AppIconBackfill: Sendable {
     }
 
     private func resolve(_ app: App) async {
-        guard let url = await resolver.iconURL(ascAppID: app.appStoreConnectAppID) else { return }
+        guard let url = await resolver.iconURL(ascAppID: app.appStoreConnectAppID), url != app.iconURL else { return }
         do {
             try apps.setIcon(id: app.id, url: url)
         } catch {

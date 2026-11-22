@@ -6,7 +6,7 @@ extension HangarServerApp {
     func addAppRoutes(to api: APIGroup) {
         api.get("apps") { _, _ in
             let all = try apps.all()
-            appIconBackfill.fill(all)  // apps without an icon; the UI shows a stored one on its next load
+            appIconBackfill.fill(all)  // missing or changed icons; the UI shows the stored one on its next load
             return try Response.json(all)
         }
         api.post("apps") { request, context in
@@ -16,7 +16,7 @@ extension HangarServerApp {
                 throw APIError(code: "invalid_repository", message: "'\(input.repoURL)' is not a GitHub repository URL.")
             }
             let app = try apps.create(input)
-            appIconBackfill.fill([app])  // only when no icon was given
+            appIconBackfill.fill([app])
             return try Response.json(app, status: .created)
         }
         api.get("apps/:id") { _, context in try Response.json(app(context)) }

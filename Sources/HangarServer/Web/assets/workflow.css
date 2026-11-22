@@ -749,5 +749,14 @@
 .wf-pattern-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 15px; }
 .wf-checklist > .wf-pattern + .wf-pattern::before { left: 12px; }
 .wf-pattern .button { margin-inline-end: calc(-1 * var(--space-1)); }
-.wf-fact-value { display: inline-flex; align-items: baseline; gap: var(--space-1); }
-.wf-fact .wf-branch-select { width: auto; min-height: 36px; max-width: 100%; }
+/* The source branch picker: as tall as the facts' text, so the row keeps its height. */
+.wf-fact .wf-branch-select {
+  width: auto;
+  max-width: 100%;
+  min-height: 0;
+  margin-block: -4px;
+  padding: 4px 28px 4px 10px;
+  font: var(--subhead);
+  letter-spacing: -0.24px;
+  text-align: left;
+}

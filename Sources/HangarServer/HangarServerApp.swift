@@ -154,7 +154,7 @@ public struct HangarServerApp: Sendable {
         preflight = DeployPreflight(sourceHost: sourceHost, now: now)
     }
 
-    /// Starts resolving icons for every app without one (at start-up); returns at once.
+    /// Starts resolving every app's icon, storing missing and changed ones (at start-up); returns at once.
     public func backfillAppIcons() throws {
         appIconBackfill.fill(try apps.all())
     }

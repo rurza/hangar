@@ -30,11 +30,9 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
     groupsTouched: false,
     name: uniqueName('Default', takenNames),
     touched: false,
-    sourceBranches: undefined, // manual start's branches: the default branch once known; 'any'; null when unknown
-    changingBranch: false,
+    sourceBranches: 'any', // manual start's branches: 'any' (the default), or the one branch chosen
   };
-  branches.load().then((known) => {
-    if (state.sourceBranches === undefined) state.sourceBranches = known?.defaultBranch ? [known.defaultBranch] : null;
+  branches.load().then(() => {
     if (state.step === 'review' && handle.element.isConnected) render();
   });
   const steps = h('ol', { class: 'wf-steps', 'aria-label': 'Steps' });
@@ -284,31 +282,27 @@ export function openWorkflowWizard({ app, loadSuggestion, groups, branches, take
       class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', value: state.name,
       onInput: (event) => { state.name = event.target.value; nameInput.removeAttribute('aria-invalid'); },
     });
-    // The source branch: the default branch, with Change for another one or any branch. Nothing else is asked.
+    // The source branch: any branch by default, or one of the repository's. The picker sits in the row from the
+    // start, as compact as the text beside it, so choosing a branch never resizes the sheet.
     const known = branches.state;
-    const branchValue = state.sourceBranches === undefined ? 'Loading…'
-      : Array.isArray(state.sourceBranches) ? state.sourceBranches.join(', ') : 'Any branch';
     let branchControl;
-    if (state.changingBranch && known) {
+    if (known?.branches?.length) {
       const select = h('select', {
         class: 'select wf-branch-select', 'aria-label': 'Source branch',
         onChange: () => {
           state.sourceBranches = select.value === OTHER_ANY ? 'any' : [select.value];
-          state.changingBranch = false;
           state.touched = true;
           render();
-          content.querySelector('.wf-change')?.focus();
+          content.querySelector('.wf-branch-select')?.focus();
         },
       },
       h('option', { value: OTHER_ANY }, 'Any branch'),
+      h('hr'),
       known.branches.map((name) => h('option', { value: name }, name === known.defaultBranch ? `${name} (default)` : name)));
       select.value = Array.isArray(state.sourceBranches) ? state.sourceBranches[0] : OTHER_ANY;
       branchControl = select;
-      queueMicrotask(() => select.focus());
     } else {
-      branchControl = h('span', { class: 'wf-fact-value' }, branchValue, known
-        ? h('button', { type: 'button', class: 'link-button wf-change', onClick: () => { state.changingBranch = true; render(); } }, 'Change')
-        : null);
+      branchControl = Array.isArray(state.sourceBranches) ? state.sourceBranches.join(', ') : 'Any branch';
     }
     const guessed = notes();
     const facts = [

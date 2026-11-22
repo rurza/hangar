@@ -218,18 +218,20 @@ func frames(_ response: TestResponse) -> [(event: String, data: String)] {
         }
     }
 
-    @Test func givenIconIsKeptAndListingBackfillsMissingOnes() async throws {
+    @Test func listingReplacesChangedIconsAndBackfillsMissingOnes() async throws {
         let fixture = try APIFixture()
         try fixture.storeASCKey(keyID: "KEY", issuerID: nil, privateKey: "PEM")
-        let own = "https://example.com/own.png"
         _ = try fixture.server.apps.create(CreateAppRequest(
-            name: "Atlas", repoURL: "https://github.com/acme/atlas.git", appStoreConnectAppID: "7", iconURL: own))
+            name: "Atlas", repoURL: "https://github.com/acme/atlas.git", appStoreConnectAppID: "7",
+            iconURL: "https://is1-ssl.mzstatic.com/icon/old/512x512bb.png"))  // since replaced by a newer build's
         try fixture.createApp()  // "42", no icon
         try await fixture.test { client in
             try await client.execute(uri: "/api/v1/apps", method: .get) { response in #expect(response.status == .ok) }
             await fixture.server.appIconBackfill.waitForIdle()
             try await client.execute(uri: "/api/v1/apps", method: .get) { response throws in
-                #expect(try decode([App].self, response).map(\.iconURL) == [own, "https://is1-ssl.mzstatic.com/icon/42/512x512bb.png"])
+                #expect(try decode([App].self, response).map(\.iconURL) == [
+                    "https://is1-ssl.mzstatic.com/icon/7/512x512bb.png", "https://is1-ssl.mzstatic.com/icon/42/512x512bb.png",
+                ])
             }
         }
     }

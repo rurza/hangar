@@ -194,4 +194,26 @@ private func lookup(_ artworkURL: String?) -> StubTransport.Response {
         await backfill.waitForIdle()
         #expect(try apps.find(slugOrID: "legilo")?.iconURL == artwork)
     }
+
+    @Test func backfillReplacesAChangedIconAndKeepsOneNoLongerFound() async throws {
+        let database = try HangarServer.Database(path: ":memory:")
+        try database.migrate()
+        let apps = AppRepository(database: database)
+        let app = try apps.create(CreateAppRequest(
+            name: "Velum", repoURL: "https://github.com/acme/velum.git", appStoreConnectAppID: "42", iconURL: ascIcon))
+        let now = Now()
+        let transport = StubTransport(responses: [lookup(artwork)])
+        let backfill = AppIconBackfill(resolver: resolver(nil, transport, now: now), apps: apps, now: { now.date })
+
+        backfill.fill([app])
+        await backfill.waitForIdle()
+        #expect(try apps.find(slugOrID: "velum")?.iconURL == artwork)
+
+        now.advance(minutes: 61)
+        transport.enqueue(lookup(nil))
+        transport.enqueue(lookup(nil))
+        backfill.fill([try #require(try apps.find(slugOrID: "velum"))])
+        await backfill.waitForIdle()
+        #expect(try apps.find(slugOrID: "velum")?.iconURL == artwork)
+    }
 }
